@@ -1,0 +1,25 @@
+---
+# =============================================================================
+# role: evaluation_reporting
+# Covers UML step 13: the Cyber Range provides a training summary + feedback on
+# response effectiveness. Installs the evidence-collection script and the
+# lessons-learned scoring template used to debrief the trainees.
+# =============================================================================
+
+- name: Create evaluation directory
+  ansible.builtin.file:
+    path: "{{ eval_root }}"
+    state: directory
+    mode: "0755"
+
+- name: Deploy lessons-learned / scoring template
+  ansible.builtin.copy:
+    src: lessons_learned_template.md
+    dest: "{{ eval_root }}/lessons_learned_template.md"
+    mode: "0644"
+
+- name: Deploy evidence-collection + scoring script
+  ansible.builtin.template:
+    src: collect_evaluation.sh.j2
+    dest: "{{ eval_root }}/collect_evaluation.sh"
+    mode: "0750"

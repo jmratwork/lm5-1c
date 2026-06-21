@@ -1,0 +1,12 @@
+# Never commit decrypted secrets / vault
+provisioning/group_vars/vault.yml
+provisioning/host_vars/**/vault.yml
+*.vault
+*.retry
+
+# Local Ansible / editor noise
+*.pyc
+__pycache__/
+.DS_Store
+.idea/
+.vscode/

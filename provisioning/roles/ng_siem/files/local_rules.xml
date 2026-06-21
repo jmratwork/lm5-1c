@@ -1,0 +1,52 @@
+<!--
+  NG-SIEM custom correlation rules - PUC2 Sub Case 2c.
+  These rules implement the detection/correlation logic from the scenario:
+    - malware payload execution on an endpoint (UML step 3 -> 5: alert)
+    - file-hash telemetry flagged against CTI (UML step 4)
+    - phishing + payload + lateral movement correlation (UML step 6)
+  Mapped loosely to MITRE ATT&CK (T1566 Phishing, T1204 User Execution,
+  T1021 Lateral Movement, T1048 Exfiltration).
+-->
+<group name="puc2,malware,local,">
+
+  <!-- Suspicious payload written to a user-writable path -->
+  <rule id="100100" level="8">
+    <if_sid>550</if_sid>
+    <field name="file">\.(exe|scr|js|vbs|ps1|sh)$</field>
+    <description>PUC2: suspicious payload file created (possible phishing payload)</description>
+    <mitre>
+      <id>T1204</id>
+    </mitre>
+  </rule>
+
+  <!-- File hash present on the CTI/IOC watchlist (enrichment from MISP) -->
+  <rule id="100101" level="12">
+    <if_sid>100100</if_sid>
+    <list field="md5" lookup="match_key">etc/lists/cti-malware-hashes</list>
+    <description>PUC2: file hash matches CTI-SS malware IOC - MALWARE DETECTED</description>
+    <mitre>
+      <id>T1566</id>
+    </mitre>
+  </rule>
+
+  <!-- Outbound C2 / exfiltration attempt from an endpoint -->
+  <rule id="100102" level="10">
+    <if_group>firewall</if_group>
+    <field name="dstport">4444|8080|443</field>
+    <field name="action">DROP|DENY</field>
+    <description>PUC2: blocked outbound connection from endpoint (possible C2/exfil)</description>
+    <mitre>
+      <id>T1048</id>
+    </mitre>
+  </rule>
+
+  <!-- Correlated targeted-attack pattern: payload + IOC + C2 within window -->
+  <rule id="100103" level="14" frequency="2" timeframe="600">
+    <if_matched_sid>100101</if_matched_sid>
+    <description>PUC2: correlated targeted malware attack confirmed (payload + IOC + C2)</description>
+    <mitre>
+      <id>T1021</id>
+    </mitre>
+  </rule>
+
+</group>

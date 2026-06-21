@@ -1,0 +1,37 @@
+---
+# NG-SOAR threat-elimination playbook: quarantine the payload and patch.
+# UML step 10 ("quarantine endpoints and apply security updates").
+- name: Quarantine malware and apply security updates
+  hosts: "{{ target | default('all') }}"
+  become: true
+  vars:
+    payload_paths:
+      - /home/victim/Downloads/invoice.exe
+      - /tmp/payload.sh
+    quarantine_dir: /var/quarantine
+  tasks:
+    - name: Ensure quarantine directory exists
+      ansible.builtin.file:
+        path: "{{ quarantine_dir }}"
+        state: directory
+        mode: "0700"
+
+    - name: Move suspected payloads to quarantine
+      ansible.builtin.command: "mv {{ item }} {{ quarantine_dir }}/"
+      args:
+        removes: "{{ item }}"
+      loop: "{{ payload_paths }}"
+
+    - name: Apply security updates
+      ansible.builtin.apt:
+        upgrade: safe
+        update_cache: true
+      when: ansible_os_family == "Debian"
+
+    - name: Record eradication status (feeds UML step 11)
+      ansible.builtin.copy:
+        dest: /var/run/ngsoar_eradication_status
+        mode: "0644"
+        content: |
+          quarantine_dir={{ quarantine_dir }}
+          status=eradicated

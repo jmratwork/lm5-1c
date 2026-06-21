@@ -1,0 +1,20 @@
+{
+  "case_name": "PUC2 Sub Case 2c - Malware Attack",
+  "case_description": "Targeted malware campaign initiated in the cyber range. Phishing email delivered a payload to a Lab Host/Endpoint; NG-SIEM raised a malware alert; case opened by NG-SOC Operator with SIEM context attached.",
+  "case_classification": "malware",
+  "case_soc_id": "PUC2-2C",
+  "tasks": [
+    {"title": "Attach NG-SIEM alert + correlated logs", "description": "Import the NG-SIEM alert (rule 100101/100103) and firewall/AV/host logs (UML step 7)."},
+    {"title": "Enrich IOCs from CTI-SS (MISP)", "description": "Pull malware family / TTPs / related IOCs from MISP (UML step 8)."},
+    {"title": "Map attack path / confirm targeted attack", "description": "UEBA + log correlation; confirm as targeted attack (UML step 6)."},
+    {"title": "Trigger NG-SOAR containment", "description": "Isolate host, block C2 IP, reset credentials, quarantine endpoint (UML steps 9-10)."},
+    {"title": "Record containment & eradication status", "description": "Capture NG-SOAR feedback (UML step 11)."},
+    {"title": "Share malware intel via CTI-SS", "description": "Publish IOCs + relevant playbooks to the sharing group (UML step 12)."},
+    {"title": "Post-incident analysis", "description": "Identify entry point and improvement areas; feed cyber-range evaluation (UML step 13)."}
+  ],
+  "iocs": [
+    {"ioc_type": "md5", "ioc_value": "44d88612fea8a8f36de82e1278abb02f"},
+    {"ioc_type": "domain", "ioc_value": "c2.puc2-training.lab"},
+    {"ioc_type": "ip-dst", "ioc_value": "10.10.30.10"}
+  ]
+}

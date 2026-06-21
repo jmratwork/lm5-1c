@@ -1,0 +1,152 @@
+# =============================================================================
+# CyberRangeCZ Sandbox Topology
+# PUC2 (CYNET) - Sub Case 2c: Malware Attack Detection & Response Training
+# -----------------------------------------------------------------------------
+# Schema reference:
+#   https://docs.platform.cyberrange.cz/user-guide-advanced/sandboxes/topology-definition/
+#
+# Network layout (disjoint CIDRs, routed through the WAN):
+#   soc-net      10.10.10.0/24  -> SOC stack (NG-SOAR/MISP/DFIR-IRIS) + NG-SIEM
+#   endpoint-net 10.10.20.0/24  -> Lab Hosts/Endpoints (malware victims, telemetry)
+#   attacker-net 10.10.30.0/24  -> Phishing/payload delivery origin (step 2)
+#
+# The endpoints live on a SEPARATE network from the SOC stack so that the
+# NG-SOAR network isolation action (UML step 10) is observable/verifiable.
+# =============================================================================
+name: puc2-malware-detection-response
+
+hosts:
+  # ---- SOC service stack: NG-SOAR + MISP (CTI-SS) + DFIR-IRIS (CICMS) --------
+  - name: soc-services
+    base_box:
+      image: ubuntu-noble-x86_64
+      mgmt_user: ubuntu
+      mgmt_protocol: ssh
+    flavor: standard.large          # 2 vCPU / 16 GB - heavy Docker stack
+    volumes:
+      - size: 40                    # /opt for container data & artifacts
+
+  # ---- NG-SIEM: log ingestion, correlation and alerting (gap-fill: Wazuh) ----
+  - name: ng-siem
+    base_box:
+      image: ubuntu-noble-x86_64
+      mgmt_user: ubuntu
+      mgmt_protocol: ssh
+    flavor: standard.large          # Wazuh indexer/dashboard are memory-hungry
+    volumes:
+      - size: 30
+
+  # ---- Lab Hosts / Endpoints: malware victims + telemetry sources -----------
+  - name: endpoint-1
+    base_box:
+      image: ubuntu-noble-x86_64
+      mgmt_user: ubuntu
+      mgmt_protocol: ssh
+    flavor: standard.medium
+
+  - name: endpoint-2
+    base_box:
+      image: ubuntu-noble-x86_64
+      mgmt_user: ubuntu
+      mgmt_protocol: ssh
+    flavor: standard.small
+
+  # ---- Phishing / payload delivery origin (UML step 2) ----------------------
+  - name: mail-attacker
+    base_box:
+      image: debian-12-x86_64
+      mgmt_user: debian
+      mgmt_protocol: ssh
+    flavor: standard.small
+
+routers:
+  - name: soc-router
+    base_box:
+      image: debian-12-x86_64
+      mgmt_user: debian
+    flavor: standard.small
+  - name: endpoint-router
+    base_box:
+      image: debian-12-x86_64
+      mgmt_user: debian
+    flavor: standard.small
+  - name: attacker-router
+    base_box:
+      image: debian-12-x86_64
+      mgmt_user: debian
+    flavor: standard.small
+
+wan:
+  name: internet-connection
+  cidr: 100.100.100.0/24
+
+networks:
+  - name: soc-net
+    cidr: 10.10.10.0/24
+    accessible_by_user: True        # analysts reach SIEM/SOAR/MISP/IRIS dashboards
+  - name: endpoint-net
+    cidr: 10.10.20.0/24
+    accessible_by_user: True
+  - name: attacker-net
+    cidr: 10.10.30.0/24
+    accessible_by_user: False       # adversary infra, hidden from trainees
+
+net_mappings:
+  - host: soc-services
+    network: soc-net
+    ip: 10.10.10.10
+  - host: ng-siem
+    network: soc-net
+    ip: 10.10.10.20
+  - host: endpoint-1
+    network: endpoint-net
+    ip: 10.10.20.11
+  - host: endpoint-2
+    network: endpoint-net
+    ip: 10.10.20.12
+  - host: mail-attacker
+    network: attacker-net
+    ip: 10.10.30.10
+
+router_mappings:
+  - router: soc-router
+    network: soc-net
+    ip: 10.10.10.1
+  - router: endpoint-router
+    network: endpoint-net
+    ip: 10.10.20.1
+  - router: attacker-router
+    network: attacker-net
+    ip: 10.10.30.1
+
+groups:
+  - name: soc_services
+    nodes:
+      - soc-services
+  - name: siem
+    nodes:
+      - ng-siem
+  - name: endpoints
+    nodes:
+      - endpoint-1
+      - endpoint-2
+  - name: attacker
+    nodes:
+      - mail-attacker
+
+# Expose the analyst-facing service ports so the platform monitors their health.
+monitoring_targets:
+  - node: ng-siem
+    targets:
+      - port: 443            # Wazuh dashboard (NG-SIEM UI)
+        interface: eth0
+      - port: 9200           # Wazuh indexer API
+        interface: eth0
+  - node: soc-services
+    targets:
+      - port: 443            # DFIR-IRIS (CICMS)
+        interface: eth0
+      - port: 8443           # MISP (CTI-SS)
+        interface: eth0
+      - port: 5000           # NG-SOAR API/UI
+        interface: eth0

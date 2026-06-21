@@ -1,0 +1,7 @@
+---
+# role: cti_ss (MISP / CTI-SS specific configuration)
+misp_url: "https://127.0.0.1:8443"
+misp_api_key: ""                 # vault-provided; empty = skip live API seeding
+misp_seed_dir: "/opt/cti-ss-seed"
+# Sharing group used when the SOC Analyst shares malware intel (UML step 12).
+misp_sharing_group_name: "PUC2-CYNET-Training"

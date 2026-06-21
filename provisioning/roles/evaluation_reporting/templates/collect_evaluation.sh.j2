@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Post-incident evidence collection + feedback generation (UML step 13).
+# Aggregates NG-SIEM alerts, containment status and case data into a report
+# the cyber-range platform presents to the SOC Analyst.
+set -euo pipefail
+
+EVAL_ROOT="{{ eval_root }}"
+OUT="${EVAL_ROOT}/report_$(hostname).txt"
+
+{
+  echo "==== PUC2 Sub Case 2c - Training Evaluation Report ===="
+  echo "Generated on host: $(hostname)"
+  echo
+  echo "---- NG-SIEM alerts (Wazuh) ----"
+  docker exec wazuh-manager sh -c 'tail -n 200 /var/ossec/logs/alerts/alerts.log' 2>/dev/null || \
+    echo "(alerts log not available - SIEM may still be initialising)"
+  echo
+  echo "---- Containment markers from endpoints ----"
+  echo "See /var/run/ngsoar_isolated and /var/run/ngsoar_eradication_status on each endpoint."
+} > "${OUT}"
+
+echo "Evaluation report written to ${OUT}"
+echo "Complete ${EVAL_ROOT}/lessons_learned_template.md with the trainees."

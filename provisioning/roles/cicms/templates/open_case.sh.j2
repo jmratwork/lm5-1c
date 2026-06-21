@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# CICMS case bootstrap - opens the PUC2 incident case in DFIR-IRIS via API.
+# Rendered by role cicms. API key injected from vault; no hardcoded secret.
+set -euo pipefail
+
+IRIS_URL="{{ iris_url }}"
+IRIS_API_KEY="{{ iris_api_key }}"
+TEMPLATE="{{ iris_assets_dir }}/case_template_puc2.json"
+
+curl -sk -X POST "${IRIS_URL}/manage/cases/add" \
+  -H "Authorization: Bearer ${IRIS_API_KEY}" \
+  -H "Content-Type: application/json" \
+  --data @"${TEMPLATE}"
+
+echo "CICMS case opened"

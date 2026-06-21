@@ -1,0 +1,21 @@
+---
+# NG-SOAR containment playbook: block malicious C2 IPs/domains.
+# UML step 10 ("block malicious IPs").
+- name: Block malicious infrastructure
+  hosts: "{{ target | default('all') }}"
+  become: true
+  vars:
+    block_ips: []
+  tasks:
+    - name: Drop traffic to malicious IPs
+      ansible.builtin.iptables:
+        chain: OUTPUT
+        destination: "{{ item }}"
+        jump: DROP
+      loop: "{{ block_ips }}"
+
+    - name: Blackhole malicious domains via /etc/hosts
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        line: "0.0.0.0 c2.puc2-training.lab"
+        state: present

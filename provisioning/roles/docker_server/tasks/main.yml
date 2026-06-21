@@ -1,0 +1,189 @@
+---
+# =============================================================================
+# role: docker_server
+# Installs Docker Engine + Compose and brings up the SOC service stack:
+#   NG-SOAR  (automated response / playbooks)         -> UML steps 9,10,11
+#   MISP     (CTI-SS, threat-intel sharing)           -> UML steps 4,8,12
+#   DFIR-IRIS(CICMS, incident case management)        -> UML steps 7,8
+#   Portainer(container ops convenience)
+#
+# This mirrors the NG-SOC `docker_server` role (apt Docker install, optional
+# CIFS artifact share, per-app docker compose bring-up) WITHOUT its hardcoded
+# secrets. The actual engine-install tasks are idempotent and are also reused
+# by the ng-siem host (see playbook.yml).
+# =============================================================================
+
+# ----------------------------------------------------------------------------
+# Docker Engine installation (community apt repo) - reference parity
+# ----------------------------------------------------------------------------
+- name: Install Docker prerequisites
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - gnupg
+      - cifs-utils          # required for the optional SMB artifact share
+    state: present
+    update_cache: true
+
+- name: Create keyring directory
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: "0755"
+
+- name: Add Docker GPG key
+  ansible.builtin.get_url:
+    url: https://download.docker.com/linux/ubuntu/gpg
+    dest: /etc/apt/keyrings/docker.asc
+    mode: "0644"
+
+- name: Add Docker apt repository
+  ansible.builtin.apt_repository:
+    repo: >-
+      deb [arch={{ ansible_architecture | replace('x86_64','amd64') }}
+      signed-by=/etc/apt/keyrings/docker.asc]
+      https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable
+    state: present
+    filename: docker
+
+- name: Install Docker Engine and Compose plugin
+  ansible.builtin.apt:
+    name:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-buildx-plugin
+      - docker-compose-plugin
+    state: present
+    update_cache: true
+
+- name: Ensure Docker service is running
+  ansible.builtin.service:
+    name: docker
+    state: started
+    enabled: true
+
+- name: Install Docker SDK for Python (community.docker modules)
+  ansible.builtin.pip:
+    name:
+      - docker
+      - requests
+    state: present
+
+# Set the SOC service-account password ONLY if a hash was provided (no clear
+# text, no default credential - reference role hardcoded a hash here).
+- name: Set SOC service account password (vault-provided hash)
+  ansible.builtin.user:
+    name: "{{ soc_service_user }}"
+    password: "{{ soc_service_user_password_hash }}"
+  when: soc_service_user_password_hash | length > 0
+  no_log: true
+
+# Optional private registry login (reference role used a hardcoded PAT).
+- name: Log in to Docker Hub (optional, vault-provided PAT)
+  community.docker.docker_login:
+    username: "{{ docker_hub_username }}"
+    password: "{{ docker_hub_pat }}"
+  when: docker_hub_login | bool
+  no_log: true
+
+# ----------------------------------------------------------------------------
+# Optional CIFS/SMB artifact share (reference parity, guest mount)
+# ----------------------------------------------------------------------------
+- name: Mount SMB artifact share
+  ansible.posix.mount:
+    src: "//{{ soc_smb_host }}/{{ soc_smb_share }}"
+    path: "{{ soc_smb_mountpoint }}"
+    fstype: cifs
+    opts: "{{ soc_smb_options }}"
+    state: mounted
+  when: soc_artifacts_source == "smb"
+
+# ----------------------------------------------------------------------------
+# Stack bring-up - only on the SOC services host, not on the SIEM host.
+# (The SIEM play includes docker_server purely for the engine install above.)
+# ----------------------------------------------------------------------------
+- name: Deploy SOC service stack
+  when: "'soc_services' in group_names"
+  block:
+    - name: Create compose directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - "{{ ngsoar_compose_dir }}"
+        - "{{ iris_compose_dir }}"
+
+    # ---- NG-SOAR: reference role copied its compose off the SMB share. -------
+    - name: Render NG-SOAR docker-compose.yml
+      ansible.builtin.template:
+        src: ng-soar-compose.yml.j2
+        dest: "{{ ngsoar_compose_dir }}/docker-compose.yml"
+        mode: "0644"
+
+    - name: Bring up NG-SOAR stack
+      community.docker.docker_compose_v2:
+        project_src: "{{ ngsoar_compose_dir }}"
+        state: present
+
+    # ---- MISP (CTI-SS): reference role git-cloned MISP-docker. ---------------
+    - name: Clone MISP-docker repository
+      ansible.builtin.git:
+        repo: "{{ misp_repo_url }}"
+        dest: "{{ misp_compose_dir }}"
+        version: "{{ misp_repo_version }}"
+        depth: 1
+
+    - name: Render MISP environment file
+      ansible.builtin.template:
+        src: misp.env.j2
+        dest: "{{ misp_compose_dir }}/.env"
+        mode: "0600"
+      no_log: true
+
+    - name: Bring up MISP stack
+      community.docker.docker_compose_v2:
+        project_src: "{{ misp_compose_dir }}"
+        state: present
+
+    # ---- DFIR-IRIS (CICMS): reference role unarchived a custom build. --------
+    - name: Clone DFIR-IRIS repository
+      ansible.builtin.git:
+        repo: "{{ iris_repo_url }}"
+        dest: "{{ iris_compose_dir }}"
+        version: "{{ iris_repo_version }}"
+        depth: 1
+
+    - name: Render DFIR-IRIS environment file
+      ansible.builtin.template:
+        src: iris.env.j2
+        dest: "{{ iris_compose_dir }}/.env"
+        mode: "0600"
+      no_log: true
+
+    - name: Bring up DFIR-IRIS stack
+      community.docker.docker_compose_v2:
+        project_src: "{{ iris_compose_dir }}"
+        state: present
+
+    # ---- Portainer (container ops) ------------------------------------------
+    - name: Run Portainer
+      community.docker.docker_container:
+        name: portainer
+        image: portainer/portainer-ce:latest
+        state: started
+        restart_policy: always
+        ports:
+          - "{{ portainer_port }}:9443"
+        volumes:
+          - /var/run/docker.sock:/var/run/docker.sock
+          - portainer_data:/data
+      when: portainer_enabled | bool
+
+- name: Unmount SMB artifact share
+  ansible.posix.mount:
+    path: "{{ soc_smb_mountpoint }}"
+    state: unmounted
+  when: soc_artifacts_source == "smb"

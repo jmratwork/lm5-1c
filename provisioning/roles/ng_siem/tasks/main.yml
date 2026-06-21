@@ -1,0 +1,66 @@
+---
+# =============================================================================
+# role: ng_siem  (Wazuh single-node)
+# Covers UML steps:
+#   3  - ingests endpoint telemetry (file hash, process, network) via agents
+#   4  - enriches observed hashes against CTI-SS (MISP) integration
+#   5  - raises "malware detected" alert for the SOC Analyst
+#   6  - correlation rules / dashboard for confirming the attack pattern
+# =============================================================================
+
+- name: Create NG-SIEM deployment directory
+  ansible.builtin.file:
+    path: "{{ siem_deploy_dir }}"
+    state: directory
+    mode: "0755"
+
+# Wazuh indexer requires an elevated mmap count.
+- name: Raise vm.max_map_count for the indexer
+  ansible.posix.sysctl:
+    name: vm.max_map_count
+    value: "262144"
+    state: present
+    reload: true
+
+- name: Render Wazuh docker-compose.yml
+  ansible.builtin.template:
+    src: wazuh-compose.yml.j2
+    dest: "{{ siem_deploy_dir }}/docker-compose.yml"
+    mode: "0644"
+
+- name: Render Wazuh environment file
+  ansible.builtin.template:
+    src: wazuh.env.j2
+    dest: "{{ siem_deploy_dir }}/.env"
+    mode: "0600"
+  no_log: true
+
+# Custom correlation rules implementing the malware/phishing detection logic
+# described in the scenario (UML steps 5 & 6).
+- name: Deploy custom NG-SIEM correlation rules
+  ansible.builtin.copy:
+    src: local_rules.xml
+    dest: "{{ siem_deploy_dir }}/local_rules.xml"
+    mode: "0644"
+
+- name: Bring up Wazuh (NG-SIEM) stack
+  community.docker.docker_compose_v2:
+    project_src: "{{ siem_deploy_dir }}"
+    state: present
+
+# Host-resolution / readiness steps mirrored from the reference ng-siem role.
+- name: Wait for the Wazuh indexer API to become available
+  ansible.builtin.wait_for:
+    port: "{{ wazuh_indexer_port }}"
+    host: 127.0.0.1
+    timeout: 300
+
+- name: Record CTI-SS (MISP) enrichment endpoint for SIEM integration
+  ansible.builtin.copy:
+    dest: "{{ siem_deploy_dir }}/cti_integration.conf"
+    mode: "0600"
+    content: |
+      # NG-SIEM -> CTI-SS (MISP) enrichment endpoint (UML step 4)
+      MISP_URL={{ siem_misp_url }}
+      MISP_API_KEY={{ siem_misp_api_key }}
+  no_log: true

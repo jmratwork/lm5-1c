@@ -1,0 +1,38 @@
+---
+# =============================================================================
+# role: cti_ss  (CTI-SS = MISP)
+# Covers UML steps:
+#   4  - provides the hash-enrichment endpoint NG-SIEM queries
+#   8  - IOC/TTP enrichment consumed by CICMS (DFIR-IRIS)
+#   12 - sharing group/event the SOC Analyst publishes malware intel into
+# =============================================================================
+
+- name: Create CTI-SS seed directory
+  ansible.builtin.file:
+    path: "{{ misp_seed_dir }}"
+    state: directory
+    mode: "0755"
+
+# Pre-seed the malware IOC set used by the scenario so that NG-SIEM enrichment
+# (step 4) and CICMS enrichment (step 8) return meaningful data.
+- name: Deploy malware IOC seed event (MISP JSON)
+  ansible.builtin.copy:
+    src: misp_event_puc2_malware.json
+    dest: "{{ misp_seed_dir }}/misp_event_puc2_malware.json"
+    mode: "0644"
+
+- name: Deploy CTI-SS loader script
+  ansible.builtin.template:
+    src: load_cti.sh.j2
+    dest: "{{ misp_seed_dir }}/load_cti.sh"
+    mode: "0750"
+  no_log: true
+
+# Live API seeding only when an API key is supplied (post first-boot of MISP).
+- name: Seed MISP with the PUC2 malware event via API
+  ansible.builtin.command:
+    cmd: "{{ misp_seed_dir }}/load_cti.sh"
+  register: cti_seed
+  changed_when: "'created' in cti_seed.stdout"
+  failed_when: false
+  when: misp_api_key | length > 0

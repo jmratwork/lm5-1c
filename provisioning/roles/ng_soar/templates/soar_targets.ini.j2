@@ -1,0 +1,11 @@
+# NG-SOAR target inventory - endpoints subject to containment (UML step 10).
+# Rendered by role ng_soar.
+[endpoints]
+{% for ip in ngsoar_endpoint_targets %}
+{{ ip }}
+{% endfor %}
+
+[endpoints:vars]
+ansible_user=ubuntu
+# SSH key path is provisioned by the platform; no credential stored here.
+ansible_ssh_private_key_file=/opt/NG-SOAR/.ssh/soar_id_ed25519

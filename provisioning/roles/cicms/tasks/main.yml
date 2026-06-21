@@ -1,0 +1,41 @@
+---
+# =============================================================================
+# role: cicms  (CICMS = DFIR-IRIS)
+# Covers UML steps:
+#   7  - incident case opened by the NG-SOC Operator (+ attached SIEM context)
+#   8  - case enriched with CTI-SS (MISP) IOCs/TTPs
+#   (post-incident analysis feeding step 13 evaluation)
+# =============================================================================
+
+- name: Create CICMS assets directory
+  ansible.builtin.file:
+    path: "{{ iris_assets_dir }}"
+    state: directory
+    mode: "0755"
+
+# Case template the NG-SOC Operator clones when opening the incident (step 7).
+- name: Deploy CICMS incident case template
+  ansible.builtin.copy:
+    src: case_template_puc2.json
+    dest: "{{ iris_assets_dir }}/case_template_puc2.json"
+    mode: "0644"
+
+# Configure the MISP module so IRIS analysts can enrich case IOCs (step 8).
+# Reference role wired BASE_URL/IRIS_MISP_URL into the IRIS config; we do the
+# same through a vault-driven config file (no hardcoded IP/key).
+- name: Write IRIS<->MISP integration config
+  ansible.builtin.copy:
+    dest: "{{ iris_assets_dir }}/misp_integration.conf"
+    mode: "0600"
+    content: |
+      # CICMS (DFIR-IRIS) -> CTI-SS (MISP) enrichment (UML step 8)
+      MISP_URL={{ cicms_misp_url }}
+      MISP_API_KEY={{ cicms_misp_api_key }}
+  no_log: true
+
+- name: Deploy CICMS case-bootstrap helper
+  ansible.builtin.template:
+    src: open_case.sh.j2
+    dest: "{{ iris_assets_dir }}/open_case.sh"
+    mode: "0750"
+  no_log: true

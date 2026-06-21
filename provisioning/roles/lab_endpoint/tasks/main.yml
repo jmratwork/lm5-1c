@@ -1,0 +1,59 @@
+---
+# =============================================================================
+# role: lab_endpoint
+# Covers UML step 3: endpoints ship telemetry (file hash, process, network) to
+# NG-SIEM. Installs the Wazuh agent, enables file-integrity + command
+# monitoring, and creates the victim user that receives the phishing payload.
+# =============================================================================
+
+- name: Create the victim user account
+  ansible.builtin.user:
+    name: "{{ endpoint_victim_user }}"
+    shell: /bin/bash
+    create_home: true
+
+- name: Import Wazuh GPG key
+  ansible.builtin.apt_key:
+    url: https://packages.wazuh.com/key/GPG-KEY-WAZUH
+    state: present
+
+- name: Add Wazuh apt repository
+  ansible.builtin.apt_repository:
+    repo: "deb https://packages.wazuh.com/4.x/apt/ stable main"
+    state: present
+    filename: wazuh
+
+- name: Install Wazuh agent
+  ansible.builtin.apt:
+    name: "wazuh-agent={{ wazuh_agent_version }}-1"
+    state: present
+    update_cache: true
+  environment:
+    WAZUH_MANAGER: "{{ ng_siem_manager_ip }}"
+
+- name: Configure Wazuh manager address
+  ansible.builtin.lineinfile:
+    path: /var/ossec/etc/ossec.conf
+    regexp: "<address>.*</address>"
+    line: "      <address>{{ ng_siem_manager_ip }}</address>"
+  notify: restart wazuh-agent
+
+# File-integrity monitoring on the download dir so payload drops generate the
+# file-hash telemetry NG-SIEM correlates (UML step 3 -> rule 100100/100101).
+- name: Enable FIM on the victim download directory
+  ansible.builtin.blockinfile:
+    path: /var/ossec/etc/ossec.conf
+    marker: "<!-- {mark} PUC2 FIM -->"
+    insertbefore: "</ossec_config>"
+    block: |
+      <syscheck>
+        <directories check_all="yes" realtime="yes" report_changes="yes">/home/{{ endpoint_victim_user }}/Downloads</directories>
+        <directories check_all="yes" realtime="yes">/tmp</directories>
+      </syscheck>
+  notify: restart wazuh-agent
+
+- name: Enable and start Wazuh agent
+  ansible.builtin.service:
+    name: wazuh-agent
+    state: started
+    enabled: true

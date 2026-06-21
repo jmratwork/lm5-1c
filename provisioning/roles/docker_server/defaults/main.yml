@@ -1,0 +1,60 @@
+---
+# =============================================================================
+# role: docker_server  -  defaults
+# -----------------------------------------------------------------------------
+# Replicates the NG-SOC `docker_server` deployment pattern, but with ALL
+# hardcoded secrets from the reference role replaced by overridable variables.
+#
+# >>> SECURITY: every value below tagged "CHANGE ME" is a placeholder. Override
+#     it through Ansible Vault, group_vars, or the CyberRangeCZ APG variables.
+#     This repository intentionally contains NO real credentials in clear text.
+# =============================================================================
+
+# ---- Where the docker-compose bundles come from -----------------------------
+# "local"  -> compose files are rendered from this repo's templates (default,
+#             self-contained, secret-free).
+# "smb"    -> reproduce the reference role's CIFS artifact share.
+soc_artifacts_source: "local"
+
+# SMB / CIFS artifact share (only used when soc_artifacts_source == "smb").
+# Reference role hardcoded //10.250.232.198/shared (guest, vers=3.0).
+soc_smb_host: "CHANGE_ME_SMB_HOST"            # e.g. 10.250.232.198
+soc_smb_share: "shared"
+soc_smb_mountpoint: "/mnt/smb_shared"
+soc_smb_options: "guest,vers=3.0,ro"
+
+# ---- Optional Docker Hub authentication (reference role logged in with a PAT)-
+# Leave docker_hub_login disabled unless you need private images. Never commit
+# a real PAT here - inject via vault.
+docker_hub_login: false
+docker_hub_username: "CHANGE_ME_DOCKERHUB_USER"
+docker_hub_pat: "CHANGE_ME_DOCKERHUB_PAT"     # vault-encrypted in real runs
+
+# ---- Service account on the SOC host ----------------------------------------
+soc_service_user: "ubuntu"
+# Provide a hashed password via vault (mkpasswd --method=sha-512). Empty = skip.
+soc_service_user_password_hash: ""
+
+# ---- Deployment root --------------------------------------------------------
+soc_opt_root: "/opt"
+
+# ---- Component versions / images (override as needed) -----------------------
+ngsoar_compose_dir: "{{ soc_opt_root }}/NG-SOAR"
+misp_compose_dir: "{{ soc_opt_root }}/misp-docker"
+iris_compose_dir: "{{ soc_opt_root }}/dfir-iris"
+portainer_enabled: true
+portainer_port: 9443
+
+# MISP repo (reference role git-cloned MISP-docker on master).
+misp_repo_url: "https://github.com/MISP/misp-docker.git"
+misp_repo_version: "master"
+misp_http_port: 8082
+misp_https_port: 8443
+
+# DFIR-IRIS repo.
+iris_repo_url: "https://github.com/dfir-iris/iris-web.git"
+iris_repo_version: "v2.4.7"
+iris_https_port: 443
+
+# NG-SOAR exposed port (UI/API).
+ngsoar_port: 5000

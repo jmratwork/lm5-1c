@@ -1,0 +1,14 @@
+---
+# =============================================================================
+# Global non-secret variables shared by all plays.
+# SECRETS DO NOT BELONG HERE - put them in an Ansible Vault file and reference
+# them (see group_vars/vault.yml.example). This repo ships NO real credentials.
+# =============================================================================
+
+# CTI-SS (MISP) and NG-SIEM coordinates used across roles.
+misp_https_port: 8443
+ng_siem_manager_ip: "10.10.10.20"
+
+# Point the integration variables at the co-located SOC services host.
+siem_misp_url: "https://10.10.10.10:8443"
+cicms_misp_url: "https://10.10.10.10:8443"

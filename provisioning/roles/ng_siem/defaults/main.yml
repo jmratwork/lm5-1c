@@ -1,0 +1,30 @@
+---
+# =============================================================================
+# role: ng_siem  -  defaults
+# -----------------------------------------------------------------------------
+# GAP-FILL decision: the NG-SOC `docker_server` role on branch `central` does
+# NOT deploy a SIEM. A `ng-siem` role exists on branches `siemng2`/`ng-siem`,
+# but it only manages the lifecycle/networking of PRE-EXISTING Wazuh containers
+# (no engine install, no compose bring-up). This role therefore performs the
+# FULL Wazuh deployment via docker compose (reusing the docker_server engine
+# install) and adds the host-resolution / init steps from the reference role.
+# Product: Wazuh (single-node) = indexer + manager + dashboard.
+# =============================================================================
+
+siem_deploy_dir: "/opt/ng-siem"
+wazuh_version: "4.9.0"
+
+# Ports exposed by the SIEM host.
+wazuh_dashboard_port: 443      # NG-SIEM analyst UI
+wazuh_indexer_port: 9200       # indexer REST API
+wazuh_manager_registration_port: 1515
+wazuh_manager_events_port: 1514
+
+# Bootstrap credentials - supply via vault (group_vars). Placeholders only.
+wazuh_indexer_password: "CHANGE_ME"
+wazuh_api_password: "CHANGE_ME"
+wazuh_dashboard_password: "CHANGE_ME"
+
+# CTI-SS (MISP) endpoint used by the SIEM enrichment integration (UML step 4).
+siem_misp_url: "https://10.10.10.10:8443"
+siem_misp_api_key: ""          # vault-provided

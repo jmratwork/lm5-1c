@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# CTI-SS loader - publishes the PUC2 malware event into MISP via the REST API.
+# Rendered by role cti_ss. The API key is injected from Ansible vault; this
+# script contains NO hardcoded secret.
+set -euo pipefail
+
+MISP_URL="{{ misp_url }}"
+MISP_API_KEY="{{ misp_api_key }}"
+EVENT_JSON="{{ misp_seed_dir }}/misp_event_puc2_malware.json"
+
+curl -sk -X POST "${MISP_URL}/events/add" \
+  -H "Authorization: ${MISP_API_KEY}" \
+  -H "Accept: application/json" \
+  -H "Content-Type: application/json" \
+  --data @"${EVENT_JSON}"
+
+echo "CTI-SS event created"

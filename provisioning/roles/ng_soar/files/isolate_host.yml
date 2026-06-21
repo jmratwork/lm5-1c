@@ -1,0 +1,43 @@
+---
+# NG-SOAR containment playbook: network isolation of an affected endpoint.
+# UML step 10. Drops all traffic except the SOC management subnet so the SIEM
+# agent and SOAR control channel keep working while the host is quarantined.
+- name: Isolate affected endpoint
+  hosts: "{{ target | default('all') }}"
+  become: true
+  vars:
+    soc_mgmt_cidr: "10.10.10.0/24"
+  tasks:
+    - name: Allow established/related connections
+      ansible.builtin.iptables:
+        chain: INPUT
+        ctstate: ["ESTABLISHED", "RELATED"]
+        jump: ACCEPT
+
+    - name: Allow SOC management subnet (SIEM + SOAR control)
+      ansible.builtin.iptables:
+        chain: INPUT
+        source: "{{ soc_mgmt_cidr }}"
+        jump: ACCEPT
+
+    - name: Drop all other inbound traffic
+      ansible.builtin.iptables:
+        chain: INPUT
+        policy: DROP
+
+    - name: Drop all outbound traffic except SOC subnet
+      ansible.builtin.iptables:
+        chain: OUTPUT
+        destination: "{{ soc_mgmt_cidr }}"
+        jump: ACCEPT
+
+    - name: Set default OUTPUT policy to DROP
+      ansible.builtin.iptables:
+        chain: OUTPUT
+        policy: DROP
+
+    - name: Mark host as isolated
+      ansible.builtin.copy:
+        dest: /var/run/ngsoar_isolated
+        content: "isolated_by_ng_soar\n"
+        mode: "0644"

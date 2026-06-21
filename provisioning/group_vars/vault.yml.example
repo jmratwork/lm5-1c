@@ -1,0 +1,38 @@
+---
+# =============================================================================
+# EXAMPLE Ansible Vault file. Copy to `vault.yml`, fill in real values, then
+# encrypt:  ansible-vault encrypt provisioning/group_vars/vault.yml
+# NEVER commit the decrypted vault. `vault.yml` is git-ignored.
+# These keys override the "CHANGE_ME" placeholders in the role defaults.
+# =============================================================================
+
+# --- SOC service host ---
+soc_service_user_password_hash: ""          # mkpasswd --method=sha-512
+docker_hub_login: false
+docker_hub_username: ""
+docker_hub_pat: ""
+
+# --- MISP (CTI-SS) ---
+misp_admin_email: "admin@admin.test"
+misp_admin_password: "REPLACE_ME"
+misp_admin_api_key: "REPLACE_ME"
+misp_mysql_password: "REPLACE_ME"
+misp_mysql_root_password: "REPLACE_ME"
+misp_api_key: "REPLACE_ME"
+
+# --- DFIR-IRIS (CICMS) ---
+iris_admin_password: "REPLACE_ME"
+iris_admin_api_key: "REPLACE_ME"
+iris_postgres_password: "REPLACE_ME"
+iris_postgres_admin_password: "REPLACE_ME"
+iris_api_key: "REPLACE_ME"
+cicms_misp_api_key: "REPLACE_ME"
+
+# --- NG-SIEM (Wazuh) ---
+wazuh_indexer_password: "REPLACE_ME"
+wazuh_api_password: "REPLACE_ME"
+wazuh_dashboard_password: "REPLACE_ME"
+siem_misp_api_key: "REPLACE_ME"
+
+# --- SMB artifact share (only if soc_artifacts_source == "smb") ---
+soc_smb_host: ""

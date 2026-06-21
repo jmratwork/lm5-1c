@@ -1,0 +1,9 @@
+---
+# role: cicms (DFIR-IRIS / CICMS specific configuration)
+iris_url: "https://127.0.0.1:443"
+iris_api_key: ""                 # vault-provided
+iris_assets_dir: "/opt/cicms-assets"
+# MISP endpoint IRIS pulls IOC/TTP enrichment from (UML step 8). Mirrors the
+# reference role's MISP<->IRIS integration but with no hardcoded IP/key.
+cicms_misp_url: "https://10.10.10.10:8443"
+cicms_misp_api_key: ""           # vault-provided

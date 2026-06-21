@@ -1,0 +1,52 @@
+# NG-SOAR - Automated response / containment playbook engine.
+# Rendered by role docker_server. The image reference is overridable; this
+# self-contained compose uses Shuffle (open-source SOAR) as a stand-in that
+# provides the same workflow/playbook execution capability described in the
+# UML (isolate hosts, block IPs, reset credentials, quarantine endpoints).
+services:
+  ng-soar-frontend:
+    image: ghcr.io/shuffle/shuffle-frontend:latest
+    container_name: ng-soar-frontend
+    restart: unless-stopped
+    ports:
+      - "{{ ngsoar_port }}:80"
+      - "3443:443"
+    environment:
+      - BACKEND_HOSTNAME=ng-soar-backend
+    depends_on:
+      - ng-soar-backend
+
+  ng-soar-backend:
+    image: ghcr.io/shuffle/shuffle-backend:latest
+    container_name: ng-soar-backend
+    restart: unless-stopped
+    environment:
+      - SHUFFLE_APP_HOTLOAD_FOLDER=/shuffle-apps
+      - ORG_ID=Shuffle
+      - SHUFFLE_DEFAULT_USERNAME=admin
+      # Bootstrap password is injected at runtime via vault, never committed.
+      - SHUFFLE_DEFAULT_PASSWORD=${NGSOAR_BOOTSTRAP_PASSWORD:-changeme-at-first-login}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ngsoar_apps:/shuffle-apps
+      - ngsoar_files:/shuffle-files
+    depends_on:
+      - ng-soar-db
+
+  ng-soar-db:
+    image: opensearchproject/opensearch:2.14.0
+    container_name: ng-soar-db
+    restart: unless-stopped
+    environment:
+      - discovery.type=single-node
+      - bootstrap.memory_lock=true
+      - DISABLE_INSTALL_DEMO_CONFIG=true
+      - DISABLE_SECURITY_PLUGIN=true
+      - "OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m"
+    volumes:
+      - ngsoar_db:/usr/share/opensearch/data
+
+volumes:
+  ngsoar_apps:
+  ngsoar_files:
+  ngsoar_db:

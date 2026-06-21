@@ -1,0 +1,13 @@
+---
+# Baseline packages installed on every sandbox host.
+common_base_packages:
+  - ca-certificates
+  - curl
+  - vim
+  - jq
+  - tcpdump
+  - python3
+  - python3-pip
+
+# Timezone applied to all nodes (keeps SIEM event correlation consistent).
+common_timezone: "UTC"
