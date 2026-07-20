@@ -124,6 +124,42 @@ action library that workflow references.
 | 12 | Share malware intel (+ playbooks) | docker-server | `roles/cti_ss_2c` sharing group `PUC2-CYNET-Training` + `templates/share_intel.sh.j2` (CTI Specialist action) + the playbook library |
 | 13 | Training summary + feedback | ng-siem | `roles/evaluation_reporting` (`collect_evaluation.sh`, `lessons_learned_template.md`) |
 
+### Component scope rule (read this before proposing an addition)
+
+**The Sub Case 2c scenario employs only the software components that appear in
+the UML diagram**, configured as they are configured in the `integrations`
+substrate. That set is exactly:
+
+> Cyber Range · Lab Hosts/Endpoints · NG-SIEM · CTI-SS · CICMS · NG-SOAR
+
+The substrate installs a good deal more than that — RITA, SACTI, Caldera,
+Metasploit, OpenVAS, the MISP/DFIR-IRIS MCP servers, AnythingLLM, Portainer,
+neo4j. All of it is deployed, because the substrate roles are vendored verbatim
+and are never edited. **None of it is referenced by the scenario, and that is
+deliberate, not an oversight.** Wiring any of it in would make the sandbox
+diverge from the sequence it is meant to train.
+
+So: an idea of the form *"RITA is already there, we could use it for the
+network-traffic analysis the description mentions"* is out of scope by
+construction. The correct response to a capability the UML components cannot
+provide is to catalogue it as a stand-in in `VALIDATION.md` §2 — not to reach
+for a non-UML component that happens to be installed.
+
+Two consequences worth stating plainly:
+
+- **BIPS and UEBA do not exist in the `integrations` substrate.** Searching it
+  for `bips`, `ueba`, `behaviour`, `anomaly`, `machine learning` returns
+  nothing; the only `ML` matches are `ML-DSA-44` / `ML-KEM-512`, which are
+  post-quantum *Module-Lattice* algorithms in SACTI and have no connection to
+  machine learning. There is therefore no configuration to reuse for them, and
+  the corresponding rows in `VALIDATION.md` §2 stay marked as simulated.
+- **The one legitimate avenue not yet exploited is inside NG-SIEM itself.** The
+  `siemng` image runs `alerts-correlator`, `backend`, `navigator` (MITRE
+  ATT&CK) and `fluentd` alongside Wazuh. Those are NG-SIEM internals, so they
+  are in scope — but the substrate role only starts the containers, and what
+  they expose is not described anywhere in the repository. Determining that
+  requires inspecting a running sandbox.
+
 ### Declared deviations from the UML
 
 Two steps are implemented with a different actor than the diagram shows, and
