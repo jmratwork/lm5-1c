@@ -21,7 +21,7 @@ puc2_ng_siem_ip: "{{ hostvars['ng-siem']['ng_siem_internal_ip'] | default('10.0.
 # CTI-SS (MISP) / CICMS (DFIR-IRIS) / NG-SOAR -> docker-server
 puc2_docker_server_ip: "{{ hostvars['docker-server']['docker_server_internal_ip'] | default('10.0.16.60') }}"
 # Phishing / payload delivery origin -> kali
-puc2_attacker_ip: "{{ hostvars['kali']['ansible_all_ipv4_addresses'] | default([]) | select('match', '^10\\.0\\.16\\.') | first | default('10.0.16.50') }}"
+puc2_c2_ip: "{{ hostvars['kali']['ansible_all_ipv4_addresses'] | default([]) | select('match', '^10\\.0\\.16\\.') | first | default('10.0.16.50') }}"
 # Lab Hosts / Endpoints -> victim
 puc2_victim_ip: "{{ hostvars['victim']['ansible_all_ipv4_addresses'] | default([]) | select('match', '^10\\.0\\.16\\.') | first | default('10.0.16.100') }}"
 
@@ -33,7 +33,6 @@ puc2_sandbox_cidr: "10.0.16.0/24"
 puc2_misp_port: 8443           # docker_server: CORE_HTTPS_PORT
 puc2_iris_port: 8083           # docker_server: iris_nginx 8083:443
 puc2_soar_webhook_port: 8080   # docker_server: IRIS webhook -> /trigger/playbook
-puc2_payload_http_port: 8000   # malware_injection_2c payload server on kali
 
 puc2_misp_url: "https://{{ puc2_docker_server_ip }}:{{ puc2_misp_port }}"
 puc2_iris_url: "https://{{ puc2_docker_server_ip }}:{{ puc2_iris_port }}"
@@ -47,7 +46,9 @@ puc2_iris_api_key: "{{ hostvars['docker-server']['iris_api_key'] | default(vault
 # ---- Scenario identity ------------------------------------------------------
 puc2_victim_user: "victim"
 puc2_payload_name: "invoice.exe"
-puc2_payload_url: "http://{{ puc2_attacker_ip }}:{{ puc2_payload_http_port }}/{{ puc2_payload_name }}"
+# Narrative only: no web server is deployed (not a UML component). The Cyber
+# Range performs the delivery directly on the endpoint.
+puc2_payload_url: "http://{{ puc2_c2_domain }}/{{ puc2_payload_name }}"
 puc2_quarantine_dir: "/var/quarantine"
 
 # ---- IOCs seeded into CTI-SS and matched by NG-SIEM -------------------------
@@ -58,7 +59,7 @@ puc2_payload_md5: "44d88612fea8a8f36de82e1278abb02f"
 puc2_payload_sha256: "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f"
 puc2_c2_domain: "c2.puc2-training.lab"
 puc2_block_ips:
-  - "{{ puc2_attacker_ip }}"
+  - "{{ puc2_c2_ip }}"
 
 # ---- Detection rule IDs (provisioning/roles/ng_siem_rules_2c/files) ---------
 puc2_rule_payload_dropped: 100100   # UML step 3
@@ -76,15 +77,13 @@ puc2_eradication_marker: "/var/run/ngsoar_eradication_status"
 puc2_eval_root: "/opt/evaluation"
 
 # ---- On-host paths used by the overlay roles --------------------------------
-puc2_injection_root: "/opt/malware-injection"
+puc2_injection_root: "/opt/scenario-injection"
 puc2_misp_seed_dir: "/opt/cti-ss-seed"
 puc2_iris_assets_dir: "/opt/cicms-assets"
 puc2_soar_playbook_dir: "/opt/NG-SOAR/playbooks"
 
-# ---- Injection targeting (UML step 2) ---------------------------------------
+# ---- Endpoint access (used by the step-13 evidence collector) ---------------
 puc2_victim_mgmt_user: "ubuntu"     # topology base_box mgmt_user of `victim`
-puc2_injection_targets:
-  - "{{ puc2_victim_ip }}"
 
 # ---- CTI-SS sharing (UML step 12) -------------------------------------------
 puc2_misp_sharing_group_name: "PUC2-CYNET-Training"

@@ -27,12 +27,12 @@ finally share intel and debrief.
 | CICMS | DFIR-IRIS | `docker-server` | https://10.0.16.60:8083 |
 | NG-SOAR | containment webhook | `docker-server` | http://10.0.16.60:8080/trigger/playbook |
 | Lab Host/Endpoint | victim workstation | `victim` | 10.0.16.100 |
-| Attacker | phishing + payload origin | `kali` | 10.0.16.50 |
+| Simulated C2 | IOC address only — no component runs there | — | 10.0.16.50 |
 
 ### Known IOCs (provided to CTI Specialist mid-exercise)
 - MD5 `44d88612fea8a8f36de82e1278abb02f`
 - Domain `c2.puc2-training.lab`
-- C2/host `10.0.16.50` (payload served on :8000)
+- C2/host `10.0.16.50` (beacon target, tcp/4444)
 - Phishing sender `billing@puc2-training.lab`
 
 ### Safety note

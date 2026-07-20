@@ -57,8 +57,9 @@ Flat, single-subnet testnet — the layout the substrate is tested on:
         ───────── testnet 10.0.16.0/24 ─────────
          │            │            │           │
       kali .50   docker-server .60  ng-siem .70  victim .100
-   (phishing +   (MISP/IRIS/       (siemng:      (Wazuh agent,
-    payload)      NG-SOAR)          Wazuh+SPHYNX) FIM + AR)
+   (deployed by  (MISP/IRIS/       (siemng:      (Wazuh agent,
+    substrate,    NG-SOAR)          Wazuh+SPHYNX) FIM + AR,
+    UNUSED)                                       injection target)
 ```
 
 ### UML actor → host mapping
@@ -70,8 +71,11 @@ Flat, single-subnet testnet — the layout the substrate is tested on:
 | CTI-SS | `docker-server` | 10.0.16.60 | MISP `:8443` |
 | CICMS | `docker-server` | 10.0.16.60 | DFIR-IRIS `:8083` |
 | NG-SOAR | `docker-server` | 10.0.16.60 | webhook `:8080/trigger/playbook` |
-| Phishing / payload origin | `kali` | 10.0.16.50 | Caldera + payload server `:8000` |
-| Cyber Range (hands-on platform) | CyberRangeCZ | — | sandbox lifecycle, evaluation |
+| Cyber Range (hands-on platform) | CyberRangeCZ (the provisioning layer) | — | sandbox lifecycle, scenario injection (steps 1-2), evaluation |
+
+`kali` is part of the substrate topology and is provisioned by the substrate
+role, but **the scenario does not employ it**: the UML has no attacker host.
+Its address is reused as the simulated C2 IOC, and nothing runs there.
 
 Addresses are resolved from the facts the substrate publishes
 (`hostvars['ng-siem'].ng_siem_internal_ip`,
@@ -110,8 +114,8 @@ action library that workflow references.
 
 | # | Step | Host | Covered by |
 |---|---|---|---|
-| 1 | Initiate malware scenario | kali | `roles/malware_injection_2c/templates/inject_scenario.sh.j2` (run by the instructor, not at provision time) |
-| 2 | Inject phishing + payload delivery | kali → victim | `roles/malware_injection_2c/tasks/main.yml` (EICAR payload server `:8000`) + `templates/phishing_email.eml.j2` |
+| 1 | Initiate malware scenario | Cyber Range → victim | `roles/scenario_injection_2c` — fired by `--tags puc2-inject`, never by ordinary provisioning |
+| 2 | Inject phishing + payload delivery | Cyber Range → victim | `roles/scenario_injection_2c/templates/inject_scenario.sh.j2` (4-stage EICAR delivery) + `templates/phishing_email.eml.j2` |
 | 3 | Telemetry (file hash) | victim → ng-siem | `roles/lab_endpoint_2c/tasks/main.yml` (FIM on `~victim/Downloads`) → rule `100100` |
 | 4 | Enrich hash with CTI | ng-siem ↔ docker-server | `roles/ng_siem_rules_2c` (CDB list `etc/lists/cti-malware-hashes`) + `roles/cti_ss_2c` (same IOCs seeded into MISP) + the substrate's MISP integration |
 | 5 | Alert: malware detected | ng-siem | `roles/ng_siem_rules_2c/files/local_rules.xml` rule `100101` (level 12) |
@@ -134,10 +138,17 @@ substrate. That set is exactly:
 
 The substrate installs a good deal more than that — RITA, SACTI, Caldera,
 Metasploit, OpenVAS, the MISP/DFIR-IRIS MCP servers, AnythingLLM, Portainer,
-neo4j. All of it is deployed, because the substrate roles are vendored verbatim
+neo4j — and it provisions the whole `kali` host, which the UML does not
+contain at all. All of it is deployed, because the substrate roles are vendored verbatim
 and are never edited. **None of it is referenced by the scenario, and that is
 deliberate, not an oversight.** Wiring any of it in would make the sandbox
 diverge from the sequence it is meant to train.
+
+The rule cuts both ways: it forbids reaching for a non-UML component that
+happens to be installed, **and** it forbids inventing one. An earlier revision
+served the payload from a Python `http.server` on `kali`; that was a software
+component present in neither the UML nor the substrate, so it was removed and
+step 2 was moved to the Cyber Range, which is where the diagram puts it.
 
 So: an idea of the form *"RITA is already there, we could use it for the
 network-traffic analysis the description mentions"* is out of scope by
@@ -185,8 +196,8 @@ docker-server (facts: misp_api_key, iris_api_key, docker_server_internal_ip)
   → ng-siem (substrate integrations)
     → ng_siem_rules_2c      (rules, CDB list, active-response wiring)
       → lab_endpoint_2c     (FIM + puc2-isolate on the endpoint)
-        → cti_ss_2c / cicms_2c / soar_actions_2c
-          → malware_injection_2c
+        → scenario_injection_2c  (stages the attack; does NOT fire it)
+          → cti_ss_2c / cicms_2c / soar_actions_2c
             → evaluation_reporting
 ```
 
@@ -201,8 +212,10 @@ be auto-loaded.
 
 ```bash
 # 1. Provision the sandbox (the platform does this from topology.yml)
-# 2. Kick off the scenario — UML steps 1-2, on kali:
-sudo /opt/malware-injection/inject_scenario.sh
+# 2. Kick off the scenario — UML steps 1-2. The Cyber Range injects into the
+#    endpoint; provisioning never fires this by itself:
+ansible-playbook provisioning/playbook.yml --tags puc2-inject --limit victim
+#    (equivalently, on the endpoint: sudo /opt/scenario-injection/inject_scenario.sh)
 
 # 3. Watch the detection chain on ng-siem:
 tail -f /var/ossec/logs/alerts/alerts.json | grep -E '1001(00|01|02|03)'

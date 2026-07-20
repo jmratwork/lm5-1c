@@ -1,0 +1,12 @@
+---
+# role: scenario_injection_2c (Cyber Range injects into the endpoint — steps 1-2)
+# SAFE BY DESIGN: the "payload" is an EICAR-equivalent benign test artefact.
+# No real malware is ever deployed and the payload is NEVER committed.
+# Fallbacks only. The authoritative values live in group_vars/puc2_2c.yml.
+puc2_injection_root: "/opt/scenario-injection"
+puc2_payload_name: "invoice.exe"
+puc2_payload_md5: "44d88612fea8a8f36de82e1278abb02f"
+puc2_payload_url: "http://c2.puc2-training.lab/invoice.exe"
+puc2_victim_user: "victim"
+puc2_c2_ip: "10.0.16.50"
+puc2_c2_port: 4444

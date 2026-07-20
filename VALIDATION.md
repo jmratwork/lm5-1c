@@ -15,6 +15,7 @@ scenario is now an additive overlay on the tested substrate of
 | `roles/ng_soar` ran playbooks over SSH from a compose'd Shuffle | substrate NG-SOAR (`NG-SOAR.yml` from the SMB share) + Wazuh active response | containment is now **live** through the SIEM, and orchestration uses the webhook IRIS already calls |
 | `roles/lab_endpoint` installed the Wazuh agent | substrate `roles/victim` | the agent is enrolled once, by the substrate; `lab_endpoint_2c` only adds FIM + the AR script |
 | `roles/common` | substrate `roles/all` | superseded |
+| `roles/malware_injection` served the payload from a Python `http.server` on an attacker host | overlay `scenario_injection_2c` on `victim` | **the UML has no attacker host**: step 2 originates at the Cyber Range. The HTTP server was a component present in neither the UML nor the substrate, so it was removed; `kali` is provisioned by the substrate but no longer employed by the scenario |
 | 3 routed networks, 5 hosts | flat `testnet` 10.0.16.0/24, 4 hosts + router | matches the topology the substrate is tested on |
 
 ### Isolation is still verifiable on a flat network
@@ -26,7 +27,8 @@ policies to DROP and allow-lists only `10.0.16.0/24`, then inserts an explicit
 DROP for the attacker host *ahead* of that allow rule. So after containment the
 endpoint can still reach NG-SIEM (the agent keeps reporting, which is what makes
 the containment observable at all) but can no longer reach the payload/C2 host
-— demonstrable with `iptables -L -n` and a failing `curl` to `10.0.16.50:8000`.
+— demonstrable with `iptables -L -n`, a failing `ping` to the C2 address
+`10.0.16.50`, and a successful one to NG-SIEM at `10.0.16.70`.
 
 ## 1. UML resource availability (13/13 steps covered)
 
@@ -38,7 +40,7 @@ the containment observable at all) but can no longer reach the payload/C2 host
 | CTI-SS | MISP `:8443` on `docker-server` | substrate `docker_server` + overlay `cti_ss_2c` | **reused** + IOC seeding |
 | CICMS | DFIR-IRIS `:8083` on `docker-server` | substrate `docker_server` + overlay `cicms_2c` | **reused** + case template |
 | NG-SOAR | webhook `:8080` on `docker-server` | substrate `docker_server`; overlay `soar_actions_2c` supplies the action library only | **reused, not reimplemented** |
-| Phishing/payload injection | `kali` 10.0.16.50 | substrate `kali` + overlay `malware_injection_2c` | **reused** + payload channel |
+| Cyber Range (injection, steps 1-2) | the provisioning layer acting on `victim` | overlay `scenario_injection_2c` | **no new component** |
 
 Per-step file traceability: see the 13-row table in
 [README.md](README.md#the-13-uml-steps--file-map). Every step maps to a
@@ -73,7 +75,7 @@ what is real and what is a training stand-in.
 | Anomaly detection in IT systems | rules 100100–100103 | implemented (signature/correlation) |
 | APT detection | multi-stage correlation rule 100103 | partial / simulated |
 | Data exfiltration prevention | rule 100102 + the C2 DROP in `puc2-isolate` | implemented |
-| Phishing detection | `malware_injection_2c` email + FIM rule 100100 | implemented (scenario) |
+| Phishing detection | scenario email + FIM rule 100100 | **simulated** — no mail gateway is deployed (not a UML component); the `.eml` is trainee context |
 | NG-SOAR file/behaviour/code analysis | NG-SOAR workflow (substrate) + containment library | orchestration implemented; deep file analysis **out of scope** |
 
 Anything marked *simulated / out of scope* is explicitly NOT claimed as a
@@ -90,7 +92,7 @@ native AI/ML product.
 | Role completeness | every role in `playbook.yml` has `tasks/main.yml` | **PASS** (13 roles + `sandbox-logging` from Galaxy) |
 | `src:` / `lookup('template')` references | custom script | **PASS** — 10/10 resolve |
 | Topology cross-reference | custom script | **PASS** — unique node names, all network refs resolve |
-| Payload-hash consistency | runtime assertion in `malware_injection_2c` | **enforced at provision time** — the run fails if the generated EICAR MD5 diverges from the IOC seeded into MISP and the NG-SIEM CDB list |
+| Payload-hash consistency | runtime assertion in `scenario_injection_2c` | **enforced at provision time** — the run fails if the generated EICAR MD5 diverges from the IOC seeded into MISP and the NG-SIEM CDB list |
 | Ansible syntax-check | `ansible-playbook --syntax-check` | **NOT RUN** — Ansible has no Windows control node (`check_blocking_io` → `WinError 87`) |
 | `ansible-lint` | `ansible-lint` | **NOT RUN** — same limitation (`No module named 'grp'`) |
 
@@ -111,14 +113,14 @@ ansible-lint provisioning/
 | 4 | CDB list compiled | `ls -l /var/ossec/etc/lists/cti-malware-hashes*` | `.cdb` present |
 | 5 | AR deployed | `ls -l /var/ossec/active-response/bin/puc2-isolate` on `victim` | `root:wazuh 0750` |
 | 6 | CTI seeded | MISP UI → search md5 `44d88612…` | event *PUC2 … Sub Case 2c* present |
-| 7 | Steps 1–2 | `sudo /opt/malware-injection/inject_scenario.sh` on `kali` | payload lands in `~victim/Downloads` |
+| 7 | Steps 1–2 | `ansible-playbook provisioning/playbook.yml --tags puc2-inject --limit victim` | 4-stage delivery; payload lands in `~victim/Downloads` |
 | 8 | Steps 3–5 | `grep -c '"id":"100101"' /var/ossec/logs/alerts/alerts.json` on `ng-siem` | **3** hits after a full injection run |
 | 8b | Step 6 — firewall branch | `grep '"id":"100102"' /var/ossec/logs/alerts/alerts.json` | present (decoded from the endpoint's blocked C2 beacon) |
 | 8c | Step 6 — correlation | `grep '"id":"100103"' /var/ossec/logs/alerts/alerts.json` | present (repeated IOC inside 600 s) |
 | 9 | Step 7 | DFIR-IRIS UI `:8083`; then `/opt/cicms-assets/open_case.sh` | auto-created case present and deduped; the operator script opens a second, operator-owned case |
 | 9b | Step 9 — operator path | `/opt/NG-SOAR/playbooks/ngsoar_trigger.sh isolate_host` | webhook returns 2xx |
 | 10 | Steps 9–11 | `cat /var/run/ngsoar_isolated /var/run/ngsoar_eradication_status` on `victim` | markers present; `status=eradicated`; `security_updates=triggered_background` |
-| 11 | Isolation effective | `curl -m5 http://10.0.16.50:8000/invoice.exe` on `victim` | fails; `ping 10.0.16.70` still succeeds |
+| 11 | Isolation effective | `ping -c2 -W2 10.0.16.50` then `ping -c2 -W2 10.0.16.70` on `victim` | C2 unreachable, NG-SIEM still reachable — the discriminator that proves containment is selective |
 | 12 | Step 13 | `/opt/evaluation/collect_evaluation.sh` on `ng-siem` | report lists per-rule alert counts and both markers |
 
 ## 5. Secrets hygiene

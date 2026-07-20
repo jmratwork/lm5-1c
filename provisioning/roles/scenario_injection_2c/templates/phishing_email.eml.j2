@@ -1,0 +1,22 @@
+From: Billing Department <billing@puc2-training.lab>
+To: {{ puc2_victim_user }}@endpoint.lab
+Subject: Overdue invoice #INV-2026-0421 - immediate action required
+Content-Type: text/plain; charset=utf-8
+
+Dear customer,
+
+Our records show an OVERDUE balance on your account. Please review and pay the
+attached invoice immediately to avoid service suspension.
+
+Download your invoice here:
+  {{ puc2_payload_url }}
+
+Regards,
+Billing Department
+
+-- TRAINING ARTIFACT (PUC2 CYNET Sub Case 2c).
+-- This message is scenario context for the trainees, not a live lure: no mail
+-- server or web server is deployed, because neither is a component of the UML.
+-- The payload delivery it describes is performed by the Cyber Range directly
+-- on this endpoint (UML step 2). The linked file is an EICAR benign test
+-- artefact. No real malware is involved.

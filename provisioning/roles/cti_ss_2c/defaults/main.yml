@@ -11,6 +11,5 @@ puc2_c2_domain: "c2.puc2-training.lab"
 puc2_payload_name: "invoice.exe"
 puc2_soar_playbook_dir: "/opt/NG-SOAR/playbooks"
 puc2_victim_ip: "10.0.16.100"
-puc2_attacker_ip: "10.0.16.50"
-puc2_payload_http_port: 8000
+puc2_c2_ip: "10.0.16.50"
 puc2_payload_url: "http://10.0.16.50:8000/invoice.exe"

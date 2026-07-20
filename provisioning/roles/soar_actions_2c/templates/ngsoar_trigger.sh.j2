@@ -41,7 +41,7 @@ PAYLOAD=$(cat <<JSON
   "target": "${TARGET}",
   "context": {
     "case": "PUC2-2C",
-    "c2_ip": "{{ puc2_attacker_ip }}",
+    "c2_ip": "{{ puc2_c2_ip }}",
     "c2_domain": "{{ puc2_c2_domain }}",
     "payload_md5": "{{ puc2_payload_md5 }}",
     "sandbox_cidr": "{{ puc2_sandbox_cidr }}"

@@ -69,7 +69,7 @@
       | Playbook | UML step | Effect |
       |---|---|---|
       | `isolate_host.yml` | 10 | iptables isolation, `{{ puc2_sandbox_cidr }}` stays reachable |
-      | `block_malicious_ip.yml` | 10 | drop traffic to `{{ puc2_attacker_ip }}`, blackhole `{{ puc2_c2_domain }}` |
+      | `block_malicious_ip.yml` | 10 | drop traffic to `{{ puc2_c2_ip }}`, blackhole `{{ puc2_c2_domain }}` |
       | `quarantine_and_patch.yml` | 10 | move the payload to `{{ puc2_quarantine_dir }}`, apply updates |
       | `reset_credentials.yml` | 10 | expire the `{{ puc2_victim_user }}` password, kill sessions |
 

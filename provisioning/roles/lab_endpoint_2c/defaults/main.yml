@@ -4,7 +4,7 @@
 puc2_victim_user: "victim"
 puc2_payload_name: "invoice.exe"
 puc2_sandbox_cidr: "10.0.16.0/24"
-puc2_attacker_ip: "10.0.16.50"
+puc2_c2_ip: "10.0.16.50"
 puc2_c2_domain: "c2.puc2-training.lab"
 puc2_quarantine_dir: "/var/quarantine"
 puc2_isolation_marker: "/var/run/ngsoar_isolated"

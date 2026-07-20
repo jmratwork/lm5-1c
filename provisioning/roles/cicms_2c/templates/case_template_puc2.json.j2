@@ -32,7 +32,7 @@
     },
     {
       "title": "Trigger NG-SOAR containment",
-      "description": "Fire the containment playbooks through {{ puc2_soar_webhook_url }}: isolate the host, block the C2 IP {{ puc2_attacker_ip }}, reset credentials, quarantine the endpoint (UML steps 9-10).",
+      "description": "Fire the containment playbooks through {{ puc2_soar_webhook_url }}: isolate the host, block the C2 IP {{ puc2_c2_ip }}, reset credentials, quarantine the endpoint (UML steps 9-10).",
       "tags": "step-9,step-10"
     },
     {
@@ -57,7 +57,7 @@
       "notes": [
         {
           "title": "Scenario briefing",
-          "content": "Phishing payload {{ puc2_payload_name }} delivered from {{ puc2_attacker_ip }}:{{ puc2_payload_http_port }}. Known IOCs: md5 {{ puc2_payload_md5 }}, C2 domain {{ puc2_c2_domain }}."
+          "content": "Phishing payload {{ puc2_payload_name }} delivered by the Cyber Range to this endpoint; simulated C2 at {{ puc2_c2_ip }}:{{ puc2_c2_port }}. Known IOCs: md5 {{ puc2_payload_md5 }}, C2 domain {{ puc2_c2_domain }}."
         }
       ]
     }

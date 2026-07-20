@@ -74,7 +74,7 @@
   roles:
     - ng_siem_rules_2c
 
-- name: PUC2 2c — endpoint FIM and containment action (steps 3, 10, 11)
+- name: PUC2 2c — endpoint FIM, containment action and scenario staging (steps 1-3, 10, 11)
   hosts: victim
   become: true
   gather_facts: true
@@ -83,6 +83,11 @@
     - "{{ lookup('first_found', ['group_vars/vault.yml', 'group_vars/vault.yml.example']) }}"
   roles:
     - lab_endpoint_2c
+    # The Cyber Range injects into the endpoint (UML steps 1-2). Provisioning
+    # only STAGES it; the attack itself is tagged `never` and fires only with
+    # --tags puc2-inject. Ordered after lab_endpoint_2c so FIM and the active
+    # response already exist when the payload lands.
+    - scenario_injection_2c
 
 - name: PUC2 2c — CTI-SS seeding, CICMS template, NG-SOAR action library (steps 4, 7, 8, 12)
   hosts: docker-server
@@ -95,16 +100,6 @@
     - cti_ss_2c
     - cicms_2c
     - soar_actions_2c
-
-- name: PUC2 2c — phishing and payload delivery channel (steps 1-2)
-  hosts: kali
-  become: true
-  gather_facts: true
-  vars_files:
-    - group_vars/puc2_2c.yml
-    - "{{ lookup('first_found', ['group_vars/vault.yml', 'group_vars/vault.yml.example']) }}"
-  roles:
-    - malware_injection_2c
 
 - name: PUC2 2c — evaluation and reporting collateral (step 13)
   hosts: ng-siem

@@ -5,8 +5,8 @@ host it happens on, and the resource that supports it.
 
 | # | UML step | Trainee action | Host | Resource / file |
 |---|----------|----------------|------|-----------------|
-| 1 | Initiate malware scenario | NG-SOC Operator runs the kickoff | `kali` 10.0.16.50 | `/opt/malware-injection/inject_scenario.sh` |
-| 2 | Inject phishing + payload | Script delivers the payload to the endpoint | `kali` → `victim` | role `malware_injection_2c` (payload server `:8000` + `phishing_email.eml`) |
+| 1 | Initiate malware scenario | NG-SOC Operator runs the kickoff | Cyber Range → `victim` | `--tags puc2-inject` or `/opt/scenario-injection/inject_scenario.sh` |
+| 2 | Inject phishing + payload | Cyber Range injects directly on the endpoint | Cyber Range → `victim` | role `scenario_injection_2c` (4-stage EICAR delivery + `phishing_email.eml`) |
 | 3 | Telemetry (file hash) | Wazuh agent ships FIM events | `victim` 10.0.16.100 | role `lab_endpoint_2c` (FIM on `~victim/Downloads`) → NG-SIEM |
 | 4 | Enrich hash with CTI | SIEM matches the CDB IOC list; MISP holds the same IOCs | `ng-siem` ↔ `docker-server` | `ng_siem_rules_2c` (`etc/lists/cti-malware-hashes`) + `cti_ss_2c` + the substrate MISP integration |
 | 5 | Alert: malware detected | NG-SIEM rule 100101 alerts the analyst | `ng-siem` 10.0.16.70 | `ng_siem_rules_2c/files/local_rules.xml` |
@@ -22,8 +22,10 @@ host it happens on, and the resource that supports it.
 ## Quick run order
 
 ```bash
-# Steps 1-2 — on kali (10.0.16.50)
-sudo /opt/malware-injection/inject_scenario.sh
+# Steps 1-2 — the Cyber Range injects into the endpoint.
+# Provisioning stages the scenario but never fires it:
+ansible-playbook provisioning/playbook.yml --tags puc2-inject --limit victim
+# (or, on the endpoint itself: sudo /opt/scenario-injection/inject_scenario.sh)
 
 # Steps 3-6 — on ng-siem: work the dashboard, watch the chain fire
 tail -f /var/ossec/logs/alerts/alerts.json | grep -E '1001(00|01|02|03)'
@@ -43,8 +45,8 @@ sudo /opt/NG-SOAR/playbooks/ngsoar_trigger.sh isolate_host 10.0.16.100
 # Steps 10-11 — verify on victim (10.0.16.100):
 cat /var/run/ngsoar_isolated /var/run/ngsoar_eradication_status
 sudo iptables -L -n
-curl -m5 http://10.0.16.50:8000/invoice.exe   # must FAIL (C2 blocked)
-ping -c2 10.0.16.70                            # must SUCCEED (SIEM reachable)
+ping -c2 -W2 10.0.16.50   # must FAIL    (C2 blocked by containment)
+ping -c2 -W2 10.0.16.70   # must SUCCEED (NG-SIEM stays reachable)
 tail /var/log/puc2-security-updates.log        # detached patch run
 
 # Step 12 — on docker-server: the CTI Specialist publishes the event into the

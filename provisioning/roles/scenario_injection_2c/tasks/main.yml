@@ -1,0 +1,103 @@
+---
+# =============================================================================
+# role: scenario_injection_2c    (host: victim — runs AFTER lab_endpoint_2c)
+#
+# UML steps 1-2: "Cyber Range -> Lab Hosts/Endpoints: inject simulated malware
+# activity (phishing email + payload delivery)".
+#
+# WHY THIS RUNS ON THE ENDPOINT AND NOT ON AN ATTACKER HOST: the UML has no
+# attacker box. Step 2 originates at the Cyber Range (Hands-on Platform) and
+# lands on the Lab Hosts/Endpoints. In CyberRangeCZ the Cyber Range's mechanism
+# IS the provisioning layer, so the injection is performed by Ansible acting on
+# the endpoint. An earlier revision stood up a Python http.server on `kali` to
+# serve the payload; that introduced a software component present in neither
+# the UML nor the integrations substrate, so it was removed.
+#
+# COMPONENT SCOPE: this role adds no software component. It uses coreutils on a
+# host that is already a UML component. See README "Component scope rule".
+#
+# EXECUTION MODEL: provisioning only STAGES the scenario (payload + email +
+# script). The injection itself is tagged `never`, so a normal provisioning run
+# never fires the attack. The instructor triggers it either way:
+#
+#   Cyber Range drives it:   ansible-playbook provisioning/playbook.yml \
+#                              --tags puc2-inject --limit victim
+#   or on the endpoint:      sudo {{ puc2_injection_root }}/inject_scenario.sh
+# =============================================================================
+
+- name: Create the scenario staging directory
+  ansible.builtin.file:
+    path: "{{ puc2_injection_root }}"
+    state: directory
+    mode: '0755'
+
+# The payload is the standard EICAR anti-virus test string. It is NEVER stored
+# in this repository (it would trip scanners on the repo itself); it is
+# assembled here from harmless fragments so the endpoint treats it exactly like
+# real malware — which is the point of the drill.
+#
+# Staged OUTSIDE the FIM-monitored paths (~victim/Downloads and /tmp) so that
+# provisioning does not itself trigger the detection chain.
+- name: Generate the benign EICAR-equivalent payload
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s%s%s'
+      'X5O!P%@AP[4\PZX54(P^)7CC)7}$EICAR'
+      '-STANDARD-ANTIVIRUS-TEST-FILE'
+      '!$H+H*' > "{{ puc2_injection_root }}/{{ puc2_payload_name }}"
+    creates: "{{ puc2_injection_root }}/{{ puc2_payload_name }}"
+
+- name: Read back the generated payload hash
+  ansible.builtin.stat:
+    path: "{{ puc2_injection_root }}/{{ puc2_payload_name }}"
+    checksum_algorithm: md5
+  register: puc2_generated_payload
+
+- name: FAIL if the payload hash does not match the CTI-SS / NG-SIEM IOC
+  ansible.builtin.fail:
+    msg: >-
+      Generated payload MD5 is {{ puc2_generated_payload.stat.checksum }} but the
+      IOC seeded into MISP and the NG-SIEM CDB list is {{ puc2_payload_md5 }}.
+      Detection rule 100101 would never fire — fix puc2_payload_md5 in
+      group_vars/puc2_2c.yml or the generation task above.
+  when: puc2_generated_payload.stat.checksum != puc2_payload_md5
+
+- name: Deliver the phishing email to the victim's mailbox
+  ansible.builtin.template:
+    src: phishing_email.eml.j2
+    dest: "/home/{{ puc2_victim_user }}/phishing_email.eml"
+    owner: "{{ puc2_victim_user }}"
+    group: "{{ puc2_victim_user }}"
+    mode: '0644'
+
+- name: Render the scenario-kickoff script
+  ansible.builtin.template:
+    src: inject_scenario.sh.j2
+    dest: "{{ puc2_injection_root }}/inject_scenario.sh"
+    mode: '0750'
+
+- name: Report that the scenario is staged but not fired
+  ansible.builtin.debug:
+    msg: >-
+      Scenario staged on this endpoint. UML steps 1-2 are NOT executed by
+      provisioning. Trigger with:
+      ansible-playbook provisioning/playbook.yml --tags puc2-inject --limit victim
+      (or run {{ puc2_injection_root }}/inject_scenario.sh on the host).
+
+# ── The injection itself (UML steps 1-2) ─────────────────────────────────────
+# `never` keeps this out of ordinary provisioning runs; it fires only when
+# puc2-inject is requested explicitly.
+- name: Inject the simulated malware activity
+  ansible.builtin.command: "{{ puc2_injection_root }}/inject_scenario.sh"
+  register: puc2_injection_run
+  changed_when: true
+  tags:
+    - never
+    - puc2-inject
+
+- name: Show the injection output
+  ansible.builtin.debug:
+    var: puc2_injection_run.stdout_lines
+  tags:
+    - never
+    - puc2-inject
