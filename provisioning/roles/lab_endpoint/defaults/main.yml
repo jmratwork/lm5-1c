@@ -1,7 +1,0 @@
----
-# role: lab_endpoint (victim endpoint + telemetry agent)
-# NG-SIEM (Wazuh manager) the agent reports telemetry to (UML step 3).
-ng_siem_manager_ip: "10.10.10.20"
-wazuh_agent_version: "4.9.0"
-# Local user that "receives" the phishing email / executes the payload.
-endpoint_victim_user: "victim"

@@ -1,0 +1,383 @@
+---
+# 2. FILE SYSTEM & DIRECTORY FIXES (The "Wazuh-Indexer" fix)
+- name: Create missing Wazuh Indexer log directory
+  file:
+    path: /var/log/wazuh-indexer
+    state: directory
+    owner: wazuh-indexer
+    group: wazuh-indexer
+    mode: '0755'
+
+# 3. NETWORKING & HOST RESOLUTION (The "Loopback" fix)
+- name: Configure internal routing in /etc/hosts
+  block:
+    - name: Restore standard localhost entry
+      lineinfile:
+        path: /etc/hosts
+        regexp: '^127.0.0.1'
+        line: "127.0.0.1 localhost"
+
+- name: Map SIEM FQDNs to Internal Pentest IP (ens4)
+  lineinfile:
+    path: /etc/hosts
+    # This regex ensures we replace ANY existing entry for the domain
+    regexp: '.*{{ item }}$'
+    # Use ens4 specifically to avoid the 192.168.x.x management IP
+    line: "{{ ansible_ens4.ipv4.address }} {{ item }}"
+    state: present
+  loop:
+    - wazuh-indexer.mini.ngsiem.sph.gr
+    - wazuh-manager.mini.ngsiem.sph.gr
+    - wazuh-dashboard.mini.ngsiem.sph.gr
+    - fluentd.mini.ngsiem.sph.gr
+    - keycloak.mini.ngsiem.sph.gr
+    - postgres.keycloak.mini.ngsiem.sph.gr
+    - misp.mini.ngsiem.sph.gr
+    - mariadb.misp.mini.ngsiem.sph.gr
+    - redis.misp.mini.ngsiem.sph.gr
+    - modules.misp.mini.ngsiem.sph.gr
+    - zookeeper.mini.ngsiem.sph.gr
+    - kafka.mini.ngsiem.sph.gr
+    - ui.kafka.mini.ngsiem.sph.gr
+    - navigator.mini.ngsiem.sph.gr
+    - db.backend.mini.ngsiem.sph.gr
+    - cache.backend.mini.ngsiem.sph.gr
+    - backend.mini.ngsiem.sph.gr
+    - guacamole.mini.ngsiem.sph.gr
+    - iframe.mini.ngsiem.sph.gr
+    - app.mini.ngsiem.sph.gr
+
+- name: Restart Docker to apply new networking
+  systemd:
+    name: docker
+    state: restarted
+
+# 4. SERVICE RECOVERY
+- name: Ensure Wazuh Indexer and Docker are restarted
+  systemd:
+    name: "{{ item }}"
+    state: restarted
+    enabled: yes
+  loop:
+    - wazuh-indexer
+    - wazuh-manager
+    - docker
+  ignore_errors: true
+
+- name: Wait for Wazuh Indexer API to be ready (Port 9200)
+  wait_for:
+    port: 9200
+    delay: 10
+    timeout: 300
+
+- name: Run Wazuh Dashboard Init (Imports Patterns)
+  shell: "docker start wazuh-dashboard-init"
+  register: init_result
+  failed_when: false # It's okay if this is already finished
+  changed_when: "init_result.rc == 0"
+
+- name: Start Pandora UI Container
+  docker_container:
+    name: ui
+    state: started
+  register: ui_status
+
+- name: Start SIEM Backend Engine
+  docker_container:
+    name: backend
+    state: started
+  register: backend_status
+
+- name: Start Alerts Correlator
+  docker_container:
+    name: alerts-correlator
+    state: started
+  register: correlator_status
+
+- name: Ensure Native Wazuh Dashboard Service is Running
+  systemd:
+    name: wazuh-dashboard
+    state: started
+    enabled: yes
+  register: native_dash_status
+
+
+## API Key Integrations ───────────────────────────────────────────────────────────────────
+# ── Verify facts arrived from docker-server role ──────────────────────────────
+- name: Assert MISP API key was passed from docker-server role
+  ansible.builtin.assert:
+    that:
+      - hostvars['docker-server']['misp_api_key'] is defined
+      - hostvars['docker-server']['misp_api_key'] | trim != ''
+    fail_msg: >
+      misp_api_key is not set in hostvars['docker-server'].
+      Ensure the docker-server role ran first AND set cacheable: yes on the fact.
+      Also confirm your inventory hostname for that host is exactly 'docker-server'.
+
+- name: Assert DFIR-IRIS API key was passed from docker-server role
+  ansible.builtin.assert:
+    that:
+      - hostvars['docker-server']['iris_api_key'] is defined
+      - hostvars['docker-server']['iris_api_key'] | trim != ''
+    fail_msg: >
+      iris_api_key is not set in hostvars['docker-server'].
+      Same checklist as above.
+
+# ── Step 1: show surrounding context for debugging ────────────────────────────
+- name: Show lines 330-345 of ossec.conf (around the XML junk)
+  ansible.builtin.command:
+    cmd: sed -n '330,345p' /var/ossec/etc/ossec.conf
+  register: ossec_junk_lines
+  changed_when: false
+
+- name: Display junk area
+  ansible.builtin.debug:
+    var: ossec_junk_lines.stdout_lines
+
+# ── Step 2: fix quoted values in pre-existing integration blocks ──────────────
+- name: Fix quoted XML values in pre-existing integrations
+  ansible.builtin.shell: |
+    sed -i 's|>"\(.*\)"<|>\1<|g' /var/ossec/etc/ossec.conf
+    echo "done"
+  changed_when: true
+
+# ── Step 3: remove any previous ANSIBLE MANAGED integration block ─────────────
+- name: Remove any previous ANSIBLE MANAGED integration block
+  ansible.builtin.blockinfile:
+    path: /var/ossec/etc/ossec.conf
+    marker: "<!-- {mark} ANSIBLE MANAGED CYBERRANGE INTEGRATIONS -->"
+    state: absent
+
+# ── Step 4: strip stray content after last </ossec_config> ───────────────────
+- name: Strip any stray content after last closing tag
+  ansible.builtin.shell: |
+    python3 << 'EOF'
+    with open('/var/ossec/etc/ossec.conf', 'r') as f:
+        content = f.read()
+    tag = '</ossec_config>'
+    last_idx = content.rfind(tag)
+    if last_idx == -1:
+        print("ERROR: no closing tag found!")
+    else:
+        trimmed = content[:last_idx + len(tag)].rstrip() + '\n'
+        with open('/var/ossec/etc/ossec.conf', 'w') as f:
+            f.write(trimmed)
+        print(f"Trimmed OK. Closing tags in result: {trimmed.count(tag)}")
+    EOF
+  register: fix_structure
+  changed_when: true
+
+- name: Show structure fix result
+  ansible.builtin.debug:
+    var: fix_structure.stdout_lines
+
+# ── Step 5: diagnose and validate ossec.conf ──────────────────────────────────
+- name: Diagnose ossec.conf accessibility and verify-agent-conf usage
+  ansible.builtin.shell: |
+    echo "=== File exists and perms ==="
+    ls -la /var/ossec/etc/ossec.conf
+    echo "=== File size ==="
+    wc -l /var/ossec/etc/ossec.conf
+    echo "=== Last 5 lines ==="
+    tail -5 /var/ossec/etc/ossec.conf
+    echo "=== verify-agent-conf help ==="
+    /var/ossec/bin/verify-agent-conf --help 2>&1 || true
+    echo "=== try with no -f flag (default path) ==="
+    /var/ossec/bin/verify-agent-conf 2>&1 || true
+    echo "=== try with full absolute path ==="
+    /var/ossec/bin/verify-agent-conf -f /var/ossec/etc/ossec.conf 2>&1 || true
+    echo "=== current user ==="
+    whoami
+  args:
+    chdir: /var/ossec
+  register: ossec_diag
+  changed_when: false
+  failed_when: false
+
+- name: Show diagnosis
+  ansible.builtin.debug:
+    var: ossec_diag.stdout_lines
+
+# ── Step 6: deploy custom-iris integration script ─────────────────────────────
+- name: Ensure Wazuh integrations directory exists
+  ansible.builtin.file:
+    path: /var/ossec/integrations
+    state: directory
+    owner: root
+    group: wazuh
+    mode: '0750'
+
+- name: Deploy custom-iris integration script
+  ansible.builtin.copy:
+    dest: /var/ossec/integrations/custom-iris
+    owner: root
+    group: wazuh
+    mode: '0750'
+    content: |
+      #!/usr/bin/env python3
+      import sys, json, requests, urllib3
+      urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+      alert_file = sys.argv[1]
+      api_key    = sys.argv[2]
+      hook_url   = sys.argv[3]
+      with open(alert_file) as f:
+          alert = json.load(f)
+      rule  = alert.get("rule", {})
+      agent = alert.get("agent", {})
+      payload = {
+          "alert_title":       rule.get("description", "Wazuh Alert"),
+          "alert_description": json.dumps(alert, indent=2),
+          "alert_source":      "Wazuh",
+          "alert_source_ref":  alert.get("id", ""),
+          "alert_source_link": "",
+          "alert_severity_id": 2,
+          "alert_status_id":   2,
+          "alert_source_content": alert,
+          "alert_context": {
+              "agent_name":  agent.get("name", ""),
+              "agent_id":    agent.get("id", ""),
+              "rule_id":     rule.get("id", ""),
+              "rule_level":  rule.get("level", 0),
+              "rule_groups": rule.get("groups", []),
+          }
+      }
+      headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+      try:
+          r = requests.post(hook_url, json=payload, headers=headers, verify=False, timeout=10)
+          r.raise_for_status()
+      except requests.exceptions.RequestException as e:
+          print(f"ERROR: {e}", file=sys.stderr)
+          sys.exit(1)
+      sys.exit(0)
+
+- name: Remove any pre-existing custom-iris.py file (replaced by symlink)
+  ansible.builtin.file:
+    path: /var/ossec/integrations/custom-iris.py
+    state: absent
+
+- name: Create custom-iris.py symlink for Wazuh integratord
+  ansible.builtin.file:
+    src: /var/ossec/integrations/custom-iris
+    dest: /var/ossec/integrations/custom-iris.py
+    state: link
+
+# ── Step 7: inject our integration block ──────────────────────────────────────
+- name: Inject MISP and DFIR-IRIS integrations into ossec.conf
+  ansible.builtin.blockinfile:
+    path: /var/ossec/etc/ossec.conf
+    insertbefore: "</ossec_config>"
+    marker: "<!-- {mark} ANSIBLE MANAGED CYBERRANGE INTEGRATIONS -->"
+    block: |
+      <!-- Integration with CTI-SS (MISP) -->
+      <integration>
+        <name>misp</name>
+        <api_key>{{ hostvars['docker-server']['misp_api_key'] }}</api_key>
+        <url>https://10.0.12.60:8443</url>
+        <alert_format>json</alert_format>
+      </integration>
+
+      <!-- Integration with CICMS (DFIR-IRIS) -->
+      <integration>
+        <name>custom-iris</name>
+        <hook_url>http://10.0.12.60:8083/api/v1/alerts/add</hook_url>
+        <api_key>{{ hostvars['docker-server']['iris_api_key'] }}</api_key>
+        <level>7</level>
+        <alert_format>json</alert_format>
+      </integration>
+
+# ── Step 8: final validation ──────────────────────────────────────────────────
+- name: Validate ossec.conf after integration injection
+  ansible.builtin.shell: |
+    result=$(/var/ossec/bin/verify-agent-conf 2>&1)
+    if echo "$result" | grep -qi "error\|critical"; then
+      echo "CONF_ERROR: $result"
+    else
+      echo "CONF_OK"
+    fi
+  args:
+    chdir: /var/ossec
+  register: ossec_xml_final
+  changed_when: false
+
+- name: Show final validation
+  ansible.builtin.debug:
+    var: ossec_xml_final.stdout
+
+- name: FAIL if ossec.conf has errors after injection
+  ansible.builtin.fail:
+    msg: "ossec.conf failed after injection: {{ ossec_xml_final.stdout }}"
+  when: "'CONF_ERROR' in ossec_xml_final.stdout"
+
+# ── Step 9: restart and verify ────────────────────────────────────────────────
+- name: Fix ossec.conf permissions after Python write
+  ansible.builtin.file:
+    path: /var/ossec/etc/ossec.conf
+    owner: root
+    group: wazuh
+    mode: '0660'
+
+- name: Check if syslog integration is enabled in ossec.conf
+  ansible.builtin.command:
+    cmd: grep -n "csyslog\|syslog" /var/ossec/etc/ossec.conf
+  register: syslog_check
+  changed_when: false
+  failed_when: false
+
+- name: Show syslog config
+  ansible.builtin.debug:
+    var: syslog_check.stdout_lines
+
+- name: Check wazuh-manager status before restart
+  ansible.builtin.command:
+    cmd: systemctl status wazuh-manager
+  register: wazuh_status_pre
+  changed_when: false
+  failed_when: false
+
+- name: Show pre-restart status
+  ansible.builtin.debug:
+    var: wazuh_status_pre.stdout_lines
+
+- name: Check ossec.conf for integration block (confirm injection)
+  ansible.builtin.command:
+    cmd: grep -n "integration\|hook_url\|api_key\|custom-iris\|misp" /var/ossec/etc/ossec.conf
+  register: ossec_grep
+  changed_when: false
+  failed_when: false
+
+- name: Show integration lines in ossec.conf
+  ansible.builtin.debug:
+    var: ossec_grep.stdout_lines
+
+- name: Check wazuh-manager logs for startup error
+  ansible.builtin.command:
+    cmd: journalctl -u wazuh-manager -n 30 --no-pager
+  register: wazuh_journal_pre
+  changed_when: false
+  failed_when: false
+
+- name: Show journal
+  ansible.builtin.debug:
+    var: wazuh_journal_pre.stdout_lines
+
+- name: Check ossec.log for errors
+  ansible.builtin.command:
+    cmd: tail -30 /var/ossec/logs/ossec.log
+  register: ossec_log
+  changed_when: false
+  failed_when: false
+
+- name: Show ossec.log tail
+  ansible.builtin.debug:
+    var: ossec_log.stdout_lines
+
+- name: Try starting wazuh-manager and capture output
+  ansible.builtin.command:
+    cmd: /var/ossec/bin/wazuh-control start
+  register: wazuh_start_attempt
+  changed_when: false
+  failed_when: false
+
+- name: Show start attempt output
+  ansible.builtin.debug:
+    var: wazuh_start_attempt.stdout_lines

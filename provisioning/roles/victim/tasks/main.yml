@@ -1,0 +1,55 @@
+---
+- name: Set password on User ubuntu
+  ansible.builtin.user:
+    name: ubuntu
+    password: "$y$j9T$r1LaddN0V6MPqFmZl5U7C/$4xbYJL5zi/YFU85SL/gXz5UXs3JAXV5dU5CUvTN/WN9"
+    update_password: always
+
+- name: Set sequential hostname
+  hostname:
+#    name: "victim{{ '%02d' | format(11 | random) }}"
+    name: "victim{{ global_sandbox_allocation_unit_id }}"
+#    name: "victim{{ '%02d' | format(((global_sandbox_allocation_unit_id | int - 100) % 10)) }}"
+
+- name: Get current HostName
+  command: hostname
+  register: current_hostname
+
+- name: Add Wazuh GPG key
+  apt_key:
+    url: https://packages.wazuh.com/key/GPG-KEY-WAZUH
+    state: present
+
+- name: Add Wazuh Repository
+  apt_repository:
+    repo: "deb https://packages.wazuh.com/4.x/apt stable main"
+    state: present
+    filename: wazuh
+
+- name: Install latest Wazuh agent
+  environment:
+    WAZUH_MANAGER: "{{ hostvars['ng-siem'].ng_siem_internal_ip }}"
+    WAZUH_REGISTRATION_SERVER: "{{ hostvars['ng-siem'].ng_siem_internal_ip }}"
+    #WAZUH_REGISTRATION_PASSWORD: "admin"
+    WAZUH_AGENT_NAME: "{{ current_hostname.stdout }}"
+    WAZUH_AGENT_GROUP: "default"
+  apt:
+    name: wazuh-agent
+    state: present
+    update_cache: yes
+
+- name: Start and Enable Wazuh-agent service
+  service:
+    name: wazuh-agent
+    state: started
+    enabled: yes
+
+#- name: Add entries to /etc/hosts
+#  lineinfile:
+#    path: /etc/hosts
+#    line: "{{ item }}"
+#    state: present
+#  loop:
+#    - "10.0.19.147 app.ngsoc.gr"
+#    - "10.0.19.147 iframe.ngsoc.gr"
+#    - "10.0.19.147 app.pandorasph.gr"

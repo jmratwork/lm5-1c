@@ -1,6 +1,18 @@
 ---
-# Ansible Galaxy collections required by the provisioning roles.
-# Pulled automatically by the platform before running playbook.yml.
+# =============================================================================
+# Ansible dependencies pulled by the CyberRangeCZ platform before playbook.yml.
+#
+# roles:       taken verbatim from ng-soc-ansible@integrations (the proven
+#              substrate) - playbook.yml applies sandbox-logging to every node.
+# collections: required by the substrate roles (community.docker is used
+#              heavily by docker_server / kali) and by the PUC2 2c overlay.
+# =============================================================================
+roles:
+  - name: sandbox-logging
+    src: https://github.com/cyberrangecz/ansible-role-sandbox-logging.git
+    scm: git
+    version: v1.0.0
+
 collections:
   - name: community.docker
     version: ">=3.4.0"

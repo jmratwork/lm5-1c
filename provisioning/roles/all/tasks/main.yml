@@ -1,0 +1,70 @@
+---
+#- name: Add entries to /etc/hosts
+#  lineinfile:
+#    path: /etc/hosts
+#    line: "{{ item }}"
+#    state: present
+#  loop:
+#    - "10.0.19.147 app.ngsoc.gr"
+#    - "10.0.19.147 iframe.ngsoc.gr"
+#    - "10.0.19.147 app.pandorasph.gr"
+#
+- name: Cache ng-siem internal IP for use by other hosts
+  ansible.builtin.set_fact:
+    ng_siem_internal_ip: "{{ ansible_all_ipv4_addresses | select('match', '^10\\.') | first }}"
+    cacheable: yes
+  when: inventory_hostname == 'ng-siem'
+
+- name: Add Wazuh FQDNs to /etc/hosts
+  lineinfile:
+    path: /etc/hosts
+    # This looks up the IP of 'ng-siem' from the inventory
+    #line: "{{ hostvars['ng-siem']['ansible_ens4']['ipv4']['address'] }} {{ item }}"
+    #line: "10.0.16.60 {{ item }}"
+    line: "{{ hostvars['ng-siem']['ng_siem_internal_ip'] }} {{ item }}"
+    regexp: ".*{{ item }}$"
+    state: present
+  loop:
+    - keycloak.kafka.mini.ngsiem.sph.gr
+    - misp.kafka.mini.ngsiem.sph.gr
+    - backend.mini.ngsiem.sph.gr
+    - navigator.mini.ngsiem.sph.gr
+    - iframe.mini.ngsiem.sph.gr
+    - wazuh-dashboard.kafka.mini.ngsiem.sph.gr
+    - app.mini.ngsiem.sph.gr
+  when:
+    - inventory_hostname != 'ng-siem'
+
+# libfastjson4 on Kali was compiled without -lm. The dynamic linker's IFUNC resolver
+# for modf() requires libm to be present in DT_NEEDED at load time — without it,
+# rsyslogd segfaults before reading any config. patchelf adds libm.so.6 to the
+# library's DT_NEEDED entries, which is exactly what the linker warning asks for.
+- name: Install patchelf on Kali
+  ansible.builtin.apt:
+    name: patchelf
+    state: present
+    update_cache: false
+  when:
+    - ansible_distribution == "Kali"
+
+- name: Patch libfastjson4 to add libm.so.6 dependency (fixes rsyslog IFUNC segfault)
+  ansible.builtin.shell: |
+    if ! patchelf --print-needed /usr/lib/x86_64-linux-gnu/libfastjson.so.4 | grep -q libm.so.6; then
+      patchelf --add-needed libm.so.6 /usr/lib/x86_64-linux-gnu/libfastjson.so.4
+      echo "patched"
+    else
+      echo "already patched"
+    fi
+  register: fastjson_patch
+  changed_when: "'patched' in fastjson_patch.stdout"
+  when:
+    - ansible_distribution == "Kali"
+
+- name: Set up command logging
+  ansible.builtin.include_role:
+    name: sandbox-logging
+  vars:
+    slf_destination_port: '{% if hostvars["man"] is defined -%} 514 {%- else -%} 515 {%- endif %}'
+  when: 
+    - ansible_system == "Linux"
+    - inventory_hostname not in ['proxy-jump', 'man']

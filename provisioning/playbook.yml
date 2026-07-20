@@ -1,65 +1,46 @@
-# =============================================================================
-# Sandbox Provisioning entrypoint
-# PUC2 (CYNET) - Sub Case 2c: Malware Attack Detection & Response Training
-# -----------------------------------------------------------------------------
-# Reference:
-#   https://docs.platform.cyberrange.cz/user-guide-advanced/sandboxes/sandbox-provisioning/
-#
-# Plays target the custom inventory groups declared in /topology.yml
-# (soc_services, siem, endpoints, attacker) plus the built-in `hosts` group.
-# Roles are applied in dependency order.
-# =============================================================================
-
-# 1) Baseline hardening / packages on every node.
-- name: Baseline configuration on all sandbox hosts
-  hosts: hosts
-  become: true
-  gather_facts: true
+---
+- name: Configuring Docker-Server
+  hosts: docker-server
+  become: yes
   roles:
-    - common
+    - docker_server
 
-# 2) SOC service stack host: Docker engine + NG-SOAR + MISP (CTI-SS) +
-#    DFIR-IRIS (CICMS). Replicates the NG-SOC `docker_server` pattern.
-- name: Deploy SOC service stack (NG-SOAR / MISP / DFIR-IRIS)
-  hosts: soc_services
-  become: true
-  gather_facts: true
+- name: Configuring NG-SIEM
+  hosts: ng-siem
+  become: yes
   roles:
-    - docker_server          # Docker engine + compose bring-up of the stack
-    - cti_ss                 # MISP-specific sharing/enrichment configuration
-    - cicms                  # DFIR-IRIS case mgmt + MISP integration
-    - ng_soar                # containment playbooks + inventory of targets
+    - ng-siem
 
-# 3) NG-SIEM host: gap-fill SIEM (Wazuh) for ingestion/correlation/alerting.
-- name: Deploy NG-SIEM (Wazuh) - ingestion, correlation, alerting
-  hosts: siem
-  become: true
-  gather_facts: true
+- name: Configure Kali
+  hosts: kali
+  become: yes
   roles:
-    - docker_server          # reuse the Docker engine install tasks only
-    - ng_siem
+    - kali
 
-# 4) Lab endpoints: telemetry agent shipping to NG-SIEM + SOAR control hook.
-- name: Configure Lab Hosts / Endpoints
-  hosts: endpoints
-  become: true
-  gather_facts: true
+- name: Configuring victim PC
+  hosts: victim
+  become: yes
   roles:
-    - lab_endpoint
+    - victim
 
-# 5) Attacker host: phishing email + payload delivery simulation (UML step 2).
-- name: Configure phishing / payload delivery origin
-  hosts: attacker
+- name: Configure to all systems (logging, hosts, etc)
+  hosts: all
   become: true
-  gather_facts: true
   roles:
-    - malware_injection
+    - all
 
-# 6) Evaluation/reporting collateral for the post-incident feedback (step 13).
-#    Deployed onto the SIEM host which already aggregates the evidence.
-- name: Install evaluation & reporting collateral
-  hosts: siem
-  become: true
-  gather_facts: true
+- name: Changing syslog-ng on man
+  hosts: man
+  become: yes
   roles:
-    - evaluation_reporting
+    - man
+
+- name: set up command logging
+  hosts: 
+    - routers
+    - hosts
+  become: yes
+  roles:
+    - role: sandbox-logging
+      slf_destination_port: '{% if hostvars["man"] is defined -%} 514 {%- else -%} 515 {%- endif %}'
+      when: ansible_system == "Linux"

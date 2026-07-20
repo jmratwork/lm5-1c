@@ -562,7 +562,7 @@
     name: python3-pip
     state: present
 
-- name: Install misp-mcp Python package from GitHub
+- name: Install misp-mcp Python package
   ansible.builtin.pip:
     name: "git+https://github.com/misp/misp-mcp.git"
     executable: pip3
@@ -576,57 +576,6 @@
       MISP_URL=https://{{ docker_server_internal_ip }}:8443
       MISP_API_KEY={{ misp_api_key }}
       MISP_VERIFYCERT=false
-
-- name: Deploy MISP MCP HTTP wrapper (streamable-HTTP, port 9001)
-  ansible.builtin.copy:
-    dest: /opt/misp-mcp-http.py
-    mode: '0644'
-    content: |
-      #!/usr/bin/env python3
-      """Run the misp-mcp FastMCP server over streamable-HTTP on port 9001 so
-      remote clients (mcpo / Open WebUI / AnythingLLM / LibreChat) can reach it.
-      Credentials come from /etc/misp-mcp.env (MISP_URL, MISP_API_KEY, MISP_VERIFYCERT)."""
-      from misp_mcp.server import mcp
-      from mcp.server.transport_security import TransportSecuritySettings
-
-      if __name__ == "__main__":
-          mcp.settings.host = "0.0.0.0"
-          mcp.settings.port = 9001
-          # Accept non-localhost Host headers (LAN IP / host.docker.internal / other
-          # containers). Without this the SDK's DNS-rebinding protection returns HTTP
-          # 421 to remote MCP clients. Safe on this trusted internal network.
-          mcp.settings.transport_security = TransportSecuritySettings(
-              enable_dns_rebinding_protection=False,
-          )
-          mcp.run(transport="streamable-http")
-
-- name: Create misp-mcp systemd service
-  ansible.builtin.copy:
-    dest: /etc/systemd/system/misp-mcp.service
-    mode: '0644'
-    content: |
-      [Unit]
-      Description=MISP MCP Server (HTTP mode, port 9001)
-      After=network.target
-
-      [Service]
-      EnvironmentFile=/etc/misp-mcp.env
-      ExecStart=/usr/bin/python3 /opt/misp-mcp-http.py
-      Restart=on-failure
-      RestartSec=5
-
-      [Install]
-      WantedBy=multi-user.target
-
-- name: Reload systemd after creating misp-mcp service
-  ansible.builtin.systemd:
-    daemon_reload: yes
-
-- name: Enable and start misp-mcp service
-  ansible.builtin.service:
-    name: misp-mcp
-    enabled: yes
-    state: started
 
 ######################## DFIR-IRIS MCP Server (iris-mcp, HTTP mode) ###########
 
@@ -661,28 +610,6 @@
       IRIS_API_KEY={{ iris_api_key }}
       IRIS_VERIFY_SSL=false
 
-- name: Deploy iris-mcp HTTP wrapper (binds 0.0.0.0:9000 for remote/container MCP clients)
-  ansible.builtin.copy:
-    dest: /opt/iris-mcp-http.py
-    mode: '0644'
-    content: |
-      #!/usr/bin/env python3
-      """Run iris-mcp's FastMCP server over HTTP on 0.0.0.0:9000 so remote clients
-      / containers (AnythingLLM, LibreChat) can reach it. The stock iris_mcp.py binds
-      127.0.0.1 in --http mode; this loads it as a module (skipping its stdio __main__
-      block) and serves the FastMCP instance on all interfaces."""
-      import importlib.util, sys
-      from fastmcp import FastMCP
-
-      sys.path.insert(0, "/opt/iris-mcp")   # so iris_mcp.py's local imports (types_catalog, ...) resolve
-      spec = importlib.util.spec_from_file_location("iris_mcp", "/opt/iris-mcp/iris_mcp.py")
-      mod = importlib.util.module_from_spec(spec)
-      sys.argv = ["iris_mcp"]                # stop --http/args being re-parsed
-      spec.loader.exec_module(mod)           # __name__ != "__main__" -> its run() is skipped
-
-      server = next(v for v in vars(mod).values() if isinstance(v, FastMCP))
-      server.run(transport="http", host="0.0.0.0", port=9000)
-
 - name: Create iris-mcp systemd service
   ansible.builtin.copy:
     dest: /etc/systemd/system/iris-mcp.service
@@ -695,7 +622,7 @@
       [Service]
       WorkingDirectory=/opt/iris-mcp
       EnvironmentFile=/etc/iris-mcp.env
-      ExecStart=/opt/iris-mcp/venv/bin/python3 /opt/iris-mcp-http.py
+      ExecStart=/opt/iris-mcp/venv/bin/python3 iris_mcp.py --http
       Restart=on-failure
       RestartSec=5
 
@@ -712,54 +639,27 @@
     enabled: yes
     state: started
 
-######################## AnythingLLM (chat UI + native MCP client) ###########
-# Talks to the MCP servers DIRECTLY over streamable-HTTP (misp :9001, iris :9000)
-# via host.docker.internal, so it does NOT use mcpo. Replaces Open WebUI on :4000.
-
-- name: Create AnythingLLM storage + plugins directory
-  ansible.builtin.file:
-    path: /opt/anythingllm/plugins
-    state: directory
-    mode: '0755'
-
-- name: Write AnythingLLM MCP servers config (MISP + DFIR-IRIS)
+- name: Write MCP client configuration to /opt/mcp-config.json
   ansible.builtin.copy:
-    dest: /opt/anythingllm/plugins/anythingllm_mcp_servers.json
+    dest: /opt/mcp-config.json
     mode: '0644'
     content: |
       {
         "mcpServers": {
-          "misp":      { "type": "streamable", "url": "http://host.docker.internal:9001/mcp" },
-          "dfir-iris": { "type": "streamable", "url": "http://host.docker.internal:9000/mcp" }
+          "misp": {
+            "command": "misp-mcp",
+            "env": {
+              "MISP_URL": "https://{{ docker_server_internal_ip }}:8443",
+              "MISP_API_KEY": "{{ misp_api_key }}",
+              "MISP_VERIFYCERT": "false"
+            }
+          },
+          "dfir-iris": {
+            "type": "http",
+            "url": "http://{{ docker_server_internal_ip }}:9000/mcp"
+          }
         }
       }
-
-- name: Ensure AnythingLLM storage is owned by the container user (uid 1000)
-  ansible.builtin.file:
-    path: /opt/anythingllm
-    state: directory
-    owner: "1000"
-    group: "1000"
-    recurse: yes
-
-- name: Run AnythingLLM container (host port 4000)
-  community.docker.docker_container:
-    name: anythingllm
-    image: mintplexlabs/anythingllm:latest
-    state: started
-    restart_policy: always
-    published_ports:
-      - "4000:3001"
-    capabilities:
-      - SYS_ADMIN
-    etc_hosts:
-      host.docker.internal: host-gateway
-    memory: "4g"
-    memory_swap: "8g"
-    env:
-      STORAGE_DIR: "/app/server/storage"
-    volumes:
-      - "/opt/anythingllm:/app/server/storage"
 
 ######################## SACTI (Secure Aggregated CTI) ########################
 

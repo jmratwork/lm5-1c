@@ -1,0 +1,573 @@
+---
+- name: Set password on User ubuntu
+  ansible.builtin.user:
+    name: ubuntu
+    password: "$y$j9T$r1LaddN0V6MPqFmZl5U7C/$4xbYJL5zi/YFU85SL/gXz5UXs3JAXV5dU5CUvTN/WN9"
+    update_password: always
+
+- name: Install Docker prerequisites
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - smbclient
+      - cifs-utils
+      - unzip
+    state: present
+    update_cache: yes
+
+- name: Create /etc/apt/keyrings directory
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: '0755'
+
+- name: Download Docker GPG key
+  ansible.builtin.get_url:
+    url: https://download.docker.com/linux/ubuntu/gpg
+    dest: /etc/apt/keyrings/docker.asc
+    mode: '0644'
+
+- name: Add Docker APT repository
+  ansible.builtin.shell: |
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}") stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+  args:
+    creates: /etc/apt/sources.list.d/docker.list
+  register: repo_add
+  changed_when: repo_add.rc == 0
+
+- name: Update APT cache after adding repository
+  ansible.builtin.apt:
+    update_cache: yes
+
+- name: Install Docker packages
+  ansible.builtin.apt:
+    name:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-buildx-plugin
+      - docker-compose-plugin
+    state: present
+    update_cache: yes
+
+- name: Ensure Docker service is started and enabled
+  ansible.builtin.service:
+    name: docker
+    state: started
+    enabled: yes
+
+- name: Create mount point
+  ansible.builtin.file:
+    path: "/mnt/smb_shared"
+    state: directory
+    mode: "0775"
+    
+- name: Mount SMB Share (guest)
+  ansible.builtin.mount:
+    src: "//10.250.232.198/shared"
+    path: "/mnt/smb_shared"
+    fstype: cifs
+    opts: "guest,vers=3.0"
+    state: mounted
+
+- name: Copy RITA zip from SMB to destination
+  ansible.builtin.copy:
+    src: "/mnt/smb_shared/rita-docker.zip"
+    dest: "/opt/rita-docker.zip"
+    remote_src: true
+    mode: "0644"
+
+- name: Copy DFIR-IRIS zip from SMB to destination
+  copy:
+    src: "/mnt/smb_shared/dfir-iris-custom.zip"
+    dest: "/opt/dfir-iris-custom.zip"
+    remote_src: true
+    mode: "0644"
+
+- name: Create NG-SOAR directory for the yml
+  file:
+    path: "/opt/NG-SOAR"
+    state: directory
+    mode: "0755"
+
+- name: Create MISP directory for the git repo
+  file:
+    path: "/opt/misp-docker"
+    state: directory
+    mode: "0755"
+
+- name: Copy NG-SOAR yml from SMB to destination
+  copy:
+    src: "/mnt/smb_shared/NG-SOAR.yml"
+    dest: "/opt/NG-SOAR/docker-compose.yml"
+    remote_src: true
+    mode: "0644"
+
+- name: Unarchive RITA Docker bundle
+  ansible.builtin.unarchive:
+    src: "/opt/rita-docker.zip"
+    dest: "/opt/"
+    remote_src: true
+    extra_opts: ["-o"]
+
+- name: Unzip rita frontend dist.zip
+  ansible.builtin.unarchive:
+    src: "/opt/rita-docker/frontend-container/rita-frontend/dist.zip"
+    dest: "/opt/rita-docker/frontend-container/rita-frontend"
+    remote_src: true
+    extra_opts: ["-o"]
+
+- name: Unzip DFIR-IRIS Docker
+  unarchive:
+    src: "/opt/dfir-iris-custom.zip"
+    dest: "/opt/"
+    remote_src: true
+    extra_opts: ["-o"]
+
+- name: Ensure RITA Docker network exists
+  community.docker.docker_network:
+    name: rita-network
+    state: present
+
+#- name: Ensure NG-SOAR network exists
+#  community.docker.docker_network:
+#    name: db-net
+#    state: present
+
+- name: Login to Docker Hub
+  community.docker.docker_login:
+    username: demongsoc
+    password: "dckr_pat_OzOR3rfLKW3QcFAFUfAi_Je_5_Q"
+
+- name: Download MISP docker
+  git:
+    repo: "https://github.com/MISP/misp-docker.git"
+    dest: "/opt/misp-docker"
+    version: "master"
+  
+- name: Copy MISP env
+  copy:
+    src: /opt/misp-docker/template.env
+    dest: /opt/misp-docker/.env
+    remote_src: yes
+
+- name: Change env http port for MISP
+  lineinfile:
+    path: /opt/misp-docker/.env
+    regexp: '^#?\s*CORE_HTTP_PORT='
+    line: CORE_HTTP_PORT=8082
+    state: present
+
+- name: Change env https port for MISP
+  lineinfile:
+    path: /opt/misp-docker/.env
+    regexp: '^#?\s*CORE_HTTPS_PORT='
+    line: CORE_HTTPS_PORT=8443
+    state: present
+
+- name: Change BASE_URL in env for MISP
+  lineinfile:
+    path: /opt/misp-docker/.env
+    regexp: '^#?\s*BASE_URL='
+    line: 'BASE_URL=https://10.0.12.60:8443'
+    state: present
+    insertafter: EOF
+    backup: yes
+
+- name: Deployment of MISP Docker
+  community.docker.docker_compose_v2:
+    project_src: "/opt/misp-docker"
+    state: present
+#    build: always
+  register: misp_output
+
+- name: Deploy Portainer
+  community.docker.docker_container:
+    name: portainer
+    image: portainer/portainer-ce:latest
+    state: started
+    restart_policy: always
+    ports: 
+      - "9443:9443"
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock"
+      - "portainer_data:/data"
+  register: portainer_output
+
+- name: Build and run RITA backend services
+  community.docker.docker_compose_v2:
+    project_src: "/opt/rita-docker/backend-container"
+    state: present
+    build: always
+  register: backend_compose_output
+
+- name: Build and run RITA frontend services
+  community.docker.docker_compose_v2:
+    project_src: "/opt/rita-docker/frontend-container"
+    state: present
+    build: always
+  register: frontend_compose_output
+    
+- name: Build and run RITA tools services
+  community.docker.docker_compose_v2:
+    project_src: "/opt/rita-docker/tools-containers"
+    state: present
+    build: always
+  register: tools_compose_output
+
+# Add it later
+#- name: Build and run DFIR-IRIS
+#  community.docker.docker_compose_v2:
+#    project_src: "/opt/dfir-iris-custom"
+#    state: present
+#    build: always
+#  register: dfir_iris_output
+
+- name: Build and run NG-SOAR
+  community.docker.docker_compose_v2:
+    project_src: "/opt/NG-SOAR"
+    state: present
+    build: always
+  register: NG_SOAR_output
+
+- name: Get or generate MISP API key for admin user
+  community.docker.docker_container_exec:
+    container: misp-docker-misp-core-1
+    command: "/var/www/MISP/app/Console/cake user change_authkey admin@admin.test"
+  register: misp_user_info
+
+- name: Save MISP API key fact
+  set_fact:
+    misp_api_key: "{{ misp_user_info.stdout.split('Old authentication keys disabled and new key created: ')[1] | trim }}"
+    cacheable: yes
+
+- name: Inject MISP integration settings into DFIR-IRIS .env
+  lineinfile:
+    path: /opt/dfir-iris-custom/.env
+    regexp: '^IRIS_MISP_URL='
+    line: "IRIS_MISP_URL=https://10.0.12.60:8443"
+    state: present
+
+- name: Disable SSL verification for MISP connection
+  lineinfile:
+    path: /opt/dfir-iris-custom/.env
+    regexp: '^IRIS_MISP_VERIFY_CERT='
+    line: "IRIS_MISP_VERIFY_CERT=false"
+
+- name: Inject MISP key into CICMS (DFIR-IRIS) .env
+  lineinfile:
+    path: /opt/dfir-iris-custom/.env
+    regexp: '^IRIS_MISP_KEY='
+    line: "IRIS_MISP_KEY={{ misp_api_key }}"
+    state: present
+
+# ── Fix the upstream server name in .env BEFORE building ─────────────────────
+ 
+- name: Fix IRIS_UPSTREAM_SERVER to match actual container/service name
+  ansible.builtin.lineinfile:
+    path: /opt/dfir-iris-custom/.env
+    regexp: '^IRIS_UPSTREAM_SERVER='
+    line: "IRIS_UPSTREAM_SERVER=iris_app"
+    state: present
+ 
+- name: Verify IRIS_UPSTREAM_PORT is set to 8000
+  ansible.builtin.lineinfile:
+    path: /opt/dfir-iris-custom/.env
+    regexp: '^IRIS_UPSTREAM_PORT='
+    line: "IRIS_UPSTREAM_PORT=8000"
+    state: present
+
+# ── Build and run ─────────────────────────────────────────────────────────────
+
+- name: Build and run DFIR-IRIS
+  community.docker.docker_compose_v2:
+    project_src: "/opt/dfir-iris-custom"
+    state: present
+    build: always
+  register: dfir_iris_output
+
+# ── Wait for iris_app healthy ─────────────────────────────────────────────────
+ 
+- name: Wait for iris_app container to become healthy
+  community.docker.docker_container_info:
+    name: iris_app
+  register: iris_app_info
+  until: iris_app_info.container.State.Health.Status == "healthy"
+  retries: 36
+  delay: 5
+ 
+- name: Show iris_app health status
+  ansible.builtin.debug:
+    msg: "iris_app health: {{ iris_app_info.container.State.Health.Status }}"
+
+# ── Check what certs iris_app has generated ───────────────────────────────────
+ 
+- name: List certificates directory inside iris_app
+  community.docker.docker_container_exec:
+    container: iris_app
+    command: find /home/iris/certificates -type f
+  register: iris_app_certs
+  ignore_errors: true
+ 
+- name: Show iris_app certificates
+  ansible.builtin.debug:
+    var: iris_app_certs.stdout_lines
+
+# ── Ensure /www/certs exists in nginx container ───────────────────────────────
+ 
+- name: Create /www/certs directory in iris_nginx
+  ansible.builtin.command:
+    cmd: docker exec iris_nginx mkdir -p /www/certs
+  ignore_errors: true
+  changed_when: true
+ 
+# ── Copy the cert and key from iris_app into iris_nginx ───────────────────────
+# iris_app generates them at /home/iris/certificates/web_certificates/
+# nginx expects them at /www/certs/ with names from CERT_FILENAME / KEY_FILENAME
+ 
+- name: Copy SSL cert from iris_app to iris_nginx
+  ansible.builtin.shell: |
+    # Find the cert file — try the expected path first, then search
+    CERT=$(docker exec iris_app find /home/iris/certificates -name "iris_dev_cert.pem" 2>/dev/null | head -1)
+    if [ -z "$CERT" ]; then
+      CERT=$(docker exec iris_app find /home/iris/certificates -name "*.pem" ! -name "*key*" ! -name "*CA*" ! -name "*ca*" | head -1)
+    fi
+    if [ -z "$CERT" ]; then
+      echo "NO_CERT_FOUND"
+      exit 1
+    fi
+    echo "Found cert: $CERT"
+    docker cp iris_app:$CERT /tmp/iris_dev_cert.pem
+    docker cp /tmp/iris_dev_cert.pem iris_nginx:/www/certs/iris_dev_cert.pem
+    echo "Cert copied OK"
+  register: cert_copy
+  changed_when: true
+  ignore_errors: true
+ 
+- name: Show cert copy result
+  ansible.builtin.debug:
+    var: cert_copy.stdout_lines
+ 
+- name: Copy SSL key from iris_app to iris_nginx
+  ansible.builtin.shell: |
+    KEY=$(docker exec iris_app find /home/iris/certificates -name "iris_dev_key.pem" 2>/dev/null | head -1)
+    if [ -z "$KEY" ]; then
+      KEY=$(docker exec iris_app find /home/iris/certificates -name "*key*.pem" | head -1)
+    fi
+    if [ -z "$KEY" ]; then
+      echo "NO_KEY_FOUND"
+      exit 1
+    fi
+    echo "Found key: $KEY"
+    docker cp iris_app:$KEY /tmp/iris_dev_key.pem
+    docker cp /tmp/iris_dev_key.pem iris_nginx:/www/certs/iris_dev_key.pem
+    echo "Key copied OK"
+  register: key_copy
+  changed_when: true
+  ignore_errors: true
+ 
+- name: Show key copy result
+  ansible.builtin.debug:
+    var: key_copy.stdout_lines
+ 
+# ── If certs are genuinely missing, generate self-signed ones ─────────────────
+# This handles the case where iris_app hasn't generated them yet or they
+# are stored at a different path. A self-signed cert is fine for internal use.
+ 
+- name: Generate self-signed cert directly in iris_nginx if copy failed
+  ansible.builtin.shell: |
+    docker exec iris_nginx sh -c "
+      apk add --no-cache openssl 2>/dev/null || apt-get install -y openssl -qq 2>/dev/null || true
+      openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+        -keyout /www/certs/iris_dev_key.pem \
+        -out /www/certs/iris_dev_cert.pem \
+        -subj '/C=CZ/ST=CyberRange/L=Lab/O=IRIS/CN=iris.app.dev' 2>&1
+      echo 'Self-signed cert generated'
+    "
+  register: selfsigned_result
+  when: >
+    cert_copy.rc | default(1) != 0 or
+    'NO_CERT_FOUND' in (cert_copy.stdout | default(''))
+  changed_when: true
+  ignore_errors: true
+ 
+- name: Show self-signed cert generation result
+  ansible.builtin.debug:
+    var: selfsigned_result.stdout_lines
+  when: selfsigned_result is not skipped
+ 
+# ── Verify certs are now in place ─────────────────────────────────────────────
+ 
+- name: List /www/certs in iris_nginx
+  ansible.builtin.command:
+    cmd: docker exec iris_nginx ls -la /www/certs/
+  register: nginx_certs_check
+  changed_when: false
+  ignore_errors: true
+ 
+- name: Show nginx certs directory
+  ansible.builtin.debug:
+    var: nginx_certs_check.stdout_lines
+
+ 
+# ── Check nginx state and restart if needed ───────────────────────────────────
+ 
+- name: Restart iris_nginx
+  ansible.builtin.command:
+    cmd: docker restart iris_nginx
+  changed_when: true
+ 
+- name: Wait for iris_nginx to stabilise
+  ansible.builtin.pause:
+    seconds: 8
+ 
+- name: Get iris_nginx logs after cert fix
+  ansible.builtin.command:
+    cmd: docker logs --tail 15 iris_nginx
+  register: iris_nginx_logs_final
+  changed_when: false
+  ignore_errors: true
+ 
+- name: Show iris_nginx logs after cert fix
+  ansible.builtin.debug:
+    msg: "{{ iris_nginx_logs_final.stderr_lines + iris_nginx_logs_final.stdout_lines }}"
+
+# ── Wait for port 8083 ────────────────────────────────────────────────────────
+ 
+- name: Wait for DFIR-IRIS nginx port 8083
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: 8083
+    state: started
+    delay: 2
+    timeout: 60
+ 
+# ── Test hardcoded API key ────────────────────────────────────────────────────
+ 
+- name: Test known DFIR-IRIS API key against live instance
+  ansible.builtin.uri:
+    url: "http://localhost:8083/api/v1/users/me"
+    method: GET
+    headers:
+      Authorization: "Bearer c-8vTC8nDC6iggE9f0jfVS1r6BEWUpAvHiMpT16bDJN1YqEIYPAI6ldxiwEMKx3w7n4cxTml4_X-RKol-_xUuQ"
+      Content-Type: "application/json"
+    validate_certs: false
+    status_code: [200, 401, 403]
+    timeout: 15
+  register: iris_key_test
+  ignore_errors: true
+ 
+- name: Debug key test result
+  ansible.builtin.debug:
+    msg: >
+      DFIR-IRIS key test HTTP status: {{ iris_key_test.status | default('UNREACHABLE') }}.
+      {% if iris_key_test.status | default(0) == 200 %}
+        ✅ Hardcoded key is VALID — will use it.
+      {% elif iris_key_test.status | default(0) in [401, 403] %}
+        ❌ Hardcoded key rejected ({{ iris_key_test.status }}) — will extract from DB.
+      {% else %}
+        ❌ Still unreachable — check nginx logs above.
+      {% endif %}
+ 
+# ── Extract key from DB if hardcoded key was rejected ────────────────────────
+ 
+- name: Inspect columns of the user table
+  community.docker.docker_container_exec:
+    container: iris_db
+    command: psql -U postgres -d iris_db -t -A -c "\d \"user\""
+  register: iris_user_table_cols
+  when: iris_key_test.status | default(0) != 200
+  ignore_errors: true
+ 
+- name: Show user table columns
+  ansible.builtin.debug:
+    var: iris_user_table_cols.stdout_lines
+  when:
+    - iris_key_test.status | default(0) != 200
+    - iris_user_table_cols is defined
+    - not (iris_user_table_cols.skipped | default(false))
+ 
+- name: Extract DFIR-IRIS API key from DB (column api_key)
+  community.docker.docker_container_exec:
+    container: iris_db
+    command: >
+      psql -U postgres -d iris_db -t -A -c
+      "SELECT api_key FROM \"user\" WHERE name = 'administrator' LIMIT 1;"
+  register: iris_db_key_api_key
+  when: iris_key_test.status | default(0) != 200
+  ignore_errors: true
+ 
+- name: Extract DFIR-IRIS API key from DB (column auth_key fallback)
+  community.docker.docker_container_exec:
+    container: iris_db
+    command: >
+      psql -U postgres -d iris_db -t -A -c
+      "SELECT auth_key FROM \"user\" WHERE name = 'administrator' LIMIT 1;"
+  register: iris_db_key_auth_key
+  when:
+    - iris_key_test.status | default(0) != 200
+    - iris_db_key_api_key.stdout is not defined or iris_db_key_api_key.stdout | trim == ''
+  ignore_errors: true
+ 
+# ── Resolve and save key ──────────────────────────────────────────────────────
+ 
+- name: Set iris_api_key — from hardcoded key (verified working)
+  ansible.builtin.set_fact:
+    iris_api_key: "c-8vTC8nDC6iggE9f0jfVS1r6BEWUpAvHiMpT16bDJN1YqEIYPAI6ldxiwEMKx3w7n4cxTml4_X-RKol-_xUuQ"
+    cacheable: yes
+  when: iris_key_test.status | default(0) == 200
+ 
+- name: Set iris_api_key — from DB column api_key
+  ansible.builtin.set_fact:
+    iris_api_key: "{{ iris_db_key_api_key.stdout | trim }}"
+    cacheable: yes
+  when:
+    - iris_key_test.status | default(0) != 200
+    - iris_db_key_api_key is defined
+    - iris_db_key_api_key.stdout is defined
+    - iris_db_key_api_key.stdout | trim != ''
+ 
+- name: Set iris_api_key — from DB column auth_key (fallback)
+  ansible.builtin.set_fact:
+    iris_api_key: "{{ iris_db_key_auth_key.stdout | trim }}"
+    cacheable: yes
+  when:
+    - iris_key_test.status | default(0) != 200
+    - iris_api_key is not defined
+    - iris_db_key_auth_key is defined
+    - iris_db_key_auth_key.stdout is defined
+    - iris_db_key_auth_key.stdout | trim != ''
+ 
+- name: FAIL — could not obtain a valid DFIR-IRIS API key
+  ansible.builtin.fail:
+    msg: >
+      Could not obtain a working DFIR-IRIS API key.
+      Hardcoded key test: {{ iris_key_test.status | default('UNREACHABLE') }}.
+      DB api_key col:  "{{ iris_db_key_api_key.stdout | default('(skipped)') }}".
+      DB auth_key col: "{{ iris_db_key_auth_key.stdout | default('(skipped)') }}".
+      Check iris_user_table_cols debug output and pick the right column name.
+  when: iris_api_key is not defined or iris_api_key | trim == ''
+ 
+- name: Confirm final IRIS API key (first 10 chars only)
+  ansible.builtin.debug:
+    msg: "✅ iris_api_key resolved: {{ iris_api_key[:10] }}... ({{ iris_api_key | length }} chars)"
+
+
+
+- name: Show Docker Compose output
+  ansible.builtin.debug:
+    msg: |
+      Backend: {{ backend_compose_output | default('No output captured') }}
+      Frontend: {{ frontend_compose_output | default('No output captured') }}
+      Tools: {{ tools_compose_output | default('No output captured') }}
+      DFIR_IRIS: {{ dfir_iris_output | default('No output captured') }}
+      NG-SOAR: {{ NG_SOAR_output | default('No output captured') }}
+      MISP: {{ misp_output | default('No output captured') }}
+      Portainer: {{portainer_output | default('No output caprured') }}
+
+- name: Unmount SMB share
+  ansible.builtin.mount:
+    path: "/mnt/smb_shared"
+    state: unmounted
+  when: true

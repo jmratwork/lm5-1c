@@ -1,0 +1,501 @@
+- name: Set password on User debian
+  ansible.builtin.user:
+    name: debian
+    password: "{{ 'qwerty!23' | password_hash('sha512') }}"
+    update_password: always
+    
+- name: Update apt repo cache
+  apt:
+    update_cache: yes
+    cache_valid_time: 3600
+  become: yes
+
+- name: Fix broken dpkg state (Pre-check)
+  ansible.builtin.shell: |
+    dpkg --configure -a
+    apt-get install -f -y
+  register: dpkg_fix
+  changed_when: false
+
+- name: Force resolve pyinstaller package conflict
+  ansible.builtin.shell: |
+    apt-get -o Dpkg::Options::="--force-overwrite" install -y pyinstaller-hooks-contrib
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+  changed_when: true
+
+- name: Stop and Purge ALL old PostgreSQL versions
+  ansible.builtin.apt:
+    name:
+      - postgresql-17
+      - postgresql-client-17
+      - postgresql-common
+    state: absent
+    purge: yes
+
+#- name: Update all packages
+#  apt:
+#    upgrade: dist
+#    upgrade: yes
+#    autoremove: yes
+#    update_cache: yes
+#    dpkg_options: 'force-confold,force-confdef'
+#  environment:
+#    DEBIAN_FRONTEND: noninteractive
+#  register: upgrade_output
+#  retries: 3
+#  delay: 10
+#  until: upgrade_output is success
+
+- name: Install needed packages
+  apt:
+    name: 
+      - zaproxy
+      - nmap
+      - "gvm*"
+      - git
+      - python3-full
+      - python3-pip
+      - python3-venv
+      - build-essential
+      - libssl-dev
+      - libffi-dev
+      - python3-dev
+      - golang
+      - nodejs
+      - npm
+      - nano
+      - smbclient
+      - cifs-utils
+      - unzip
+      - rsync
+      - redis
+      - postgresql-18
+      - postgresql-client-18
+      - postgresql-common
+      - python3-psycopg2
+      - metasploit-framework
+    state: present
+    install_recommends: yes
+  
+- name: Create mount point
+  file:
+    path: "/mnt/smb_shared"
+    state: directory
+    mode: "0775"
+          
+- name: Mount SMB Share (guest)
+  mount:
+    src: "//10.250.232.198/shared"
+    path: "/mnt/smb_shared"
+    fstype: cifs
+    opts: "guest,vers=3.0"
+    state: mounted
+
+- name: Copy Scripts
+  copy:
+    src: "/mnt/smb_shared/scripts.zip"
+    dest: "/opt/scripts.zip"
+    remote_src: true
+    mode: "0644"
+
+- name: Unarchive scripts
+  ansible.builtin.unarchive:
+    src: "/opt/scripts.zip"
+    dest: "/opt/"
+    remote_src: true
+    extra_opts: ["-o"]
+
+- name: Copy all scripts to "/usr/local/bin"
+  copy:
+    src: "/opt/Scripts/{{ item }}"
+    dest: "/usr/local/bin/{{ item | regex_replace('\\.py$', '') }}"
+    remote_src: true
+    mode: "0755"
+  loop:
+    - nmap_auto.py
+#    - OpnMetaTest3.py
+#    - OpnMetaTest5-new.py
+#    - PenTest43.py
+#    - PenTestCombined6.py
+    - XML2JSON.py
+#    - FinalScript6.py
+    - Automation_Pipeline.py
+    - AI_Pipeline.py
+
+
+####################### Installing MITRE CALDERA ##################################
+- name: Git Clone Caldera
+  git:
+    repo: "https://github.com/mitre/caldera.git"
+    dest: /opt/caldera
+    recursive: yes
+    force: yes
+
+- name: Replace Caldera requirements.txt file
+  copy:
+    dest: /opt/caldera/requirements.txt
+    content: |
+      argon2-cffi==25.1.0
+      aiohttp-jinja2==1.5.1
+      aiohttp==3.10.8
+      aiohttp_session==2.12.0
+      aiohttp-security==0.4.0
+      aiohttp-apispec==3.0.0b2
+      jinja2==3.1.6
+      pyyaml==6.0.1
+      cryptography==44.0.1
+      websockets==15.0
+      Sphinx==7.1.2
+      sphinx_rtd_theme==1.3.0
+      myst-parser==2.0.0
+      marshmallow==3.20.1
+      dirhash==0.2.1
+      marshmallow-enum==1.5.1
+      ldap3==2.9.1
+      lxml~=5.3.1  # debrief
+      reportlab==4.0.4  # debrief
+      rich==13.7.0
+      svglib==1.5.1  # debrief
+      Markdown==3.4.4  # training
+      dnspython==2.4.2
+      asyncssh==2.14.1
+      aioftp~=0.20.0
+      packaging==26.1
+      croniter~=3.0.3
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Create Python virtual environment
+  command: python3 -m venv /opt/caldera/venv
+  args:
+    creates: /opt/caldera/venv
+
+- name: Install python Requiremnts
+  pip:
+    requirements: /opt/caldera/requirements.txt
+    virtualenv: /opt/caldera/venv
+    virtualenv_python: python3
+    
+- name: Install Python dev requiremnts
+  pip:
+    requirements: /opt/caldera/requirements-dev.txt
+    virtualenv: /opt/caldera/venv
+    virtualenv_python: python3
+    
+- name: Create startup script
+  copy:
+    dest: /start-caldera.sh
+    content: |
+      #!/bin/bash
+      echo "Activating Virtual Environment..."
+      cd /opt/caldera/
+      source /opt/caldera/venv/bin/activate
+      echo "Starting CALDERA"
+      python3 /opt/caldera/server.py --insecure --build
+    mode: "0755"
+    owner: root
+    group: root
+    force: no
+
+- name: Create caldera service 
+  copy:
+    dest: /etc/systemd/system/caldera.service
+    content: |
+      [Unit]
+      Description=Caldera Service
+      After=network.target
+
+      [Service]
+      ExecStart=/start-caldera.sh
+      Restart=always
+      User=root
+
+      [Install]
+      WantedBy=multi-user.target
+    mode: "0644"
+
+- name: Reload systemd
+  command: systemctl daemon-reload
+
+- name: Enable Caldera service
+  service:
+    name: caldera
+    enabled: yes
+    state: started
+
+
+##################### MITRE Caldera MCP Plugin ############################
+
+- name: Clone MITRE Caldera MCP plugin
+  git:
+    repo: "https://github.com/mitre/MCP.git"
+    dest: /opt/caldera/plugins/mcp
+    force: yes
+
+- name: Install Caldera MCP plugin Python requirements in venv
+  pip:
+    requirements: /opt/caldera/plugins/mcp/requirements.txt
+    virtualenv: /opt/caldera/venv
+    virtualenv_python: python3
+
+- name: Create MCP plugin conf directory
+  file:
+    path: /opt/caldera/plugins/mcp/conf
+    state: directory
+    mode: '0755'
+
+- name: Configure Caldera MCP plugin LLM settings
+  copy:
+    dest: /opt/caldera/plugins/mcp/conf/default.yml
+    mode: '0644'
+    content: |
+      llm:
+        model: foundation-sec
+        api_key: ""
+        offline: false
+        use_mock: false
+      factory:
+        model: foundation-sec
+        api_key: ""
+        temperature: 0.4
+
+- name: Inject LLM base URL into Caldera startup script
+  ansible.builtin.blockinfile:
+    path: /start-caldera.sh
+    insertafter: '#!/bin/bash'
+    marker: "# {mark} ANSIBLE MANAGED - LLM ENV VARS"
+    block: |
+      export OPENAI_BASE_URL=http://ng-soc-ai-server.eurodyn.com:9080/v1
+      export OPENAI_API_KEY=none
+
+- name: Add MCP plugin to Caldera plugin list in conf/default.yml
+  ansible.builtin.shell: |
+    python3 <<'PYEOF'
+    import yaml
+    path = '/opt/caldera/conf/default.yml'
+    with open(path) as f:
+        conf = yaml.safe_load(f)
+    plugins = conf.get('plugins', [])
+    if 'mcp' not in plugins:
+        plugins.append('mcp')
+        conf['plugins'] = plugins
+        with open(path, 'w') as f:
+            yaml.dump(conf, f, default_flow_style=False)
+        print('added')
+    else:
+        print('already_present')
+    PYEOF
+  register: caldera_mcp_plugin
+  changed_when: "'added' in caldera_mcp_plugin.stdout"
+
+- name: Restart Caldera to load MCP plugin
+  service:
+    name: caldera
+    state: restarted
+  when: caldera_mcp_plugin.changed
+
+
+########## Postgres #############################
+- name: Ensure PostgreSQL 18 is running on port 5432
+  become: yes
+  ansible.builtin.service:
+    name: postgresql
+    state: started
+    enabled: yes
+    
+
+- name: Ensure PostgreSQL service is running and enabled
+  service:
+    name: postgresql
+    state: started
+    enabled: yes
+
+- name: Verify PostgreSQL version and port
+  become: yes
+  ansible.builtin.shell: pg_lsclusters
+  register: pg_check
+  changed_when: false
+
+- name: Debug PG Status
+  ansible.builtin.debug:
+    msg: "Postgres is running: {{ pg_check.stdout }}"
+
+
+################# Install OpenVAS #################################
+- name: Install OpenVAS (gvm-setup)
+  command: gvm-setup --not-interactive
+  become: yes
+  register: gvm_setup_output
+  failed_when: gvm_setup_output.rc != 0 and "already" not in gvm_setup_output.stderr  # Allow if already set up
+  changed_when: gvm_setup_output.rc == 0
+
+- name: Debug GVM setup output
+  debug:
+    var: gvm_setup_output.stdout_lines
+  when: gvm_setup_output is changed
+
+#################### If we already have OpenVAS in the Image, we need this task to update and DB to the latest version (Sometimes best to reinstall OpenVAS) ###########
+#- name: Migrate OpenVAS database to current version
+#  ansible.builtin.command: gvmd --migrate
+#  become: yes
+#  become_user: _gvm
+#  async: 300
+#  poll: 5
+#  register: gvm_migrate_result
+#  failed_when: 
+#    - gvm_migrate_result.rc != 0 
+#    - "'already up to date' not in gvm_migrate_result.stderr"
+#
+#- name: Wait for gvmd to stabilize after migration
+#  ansible.builtin.pause:
+#    seconds: 10
+
+- name: Change OpenVAS admin password
+  command: sudo -u _gvm gvmd --user=admin --new-password=admin
+
+#- name: Update OpenVAS Feed (greenbone-feed-sync)
+#  command: greenbone-feed-sync
+#  register: gvm_feed_sync_output
+- name: Update OpenVAS Feeds (NVTs, SCAP, CERT)
+  ansible.builtin.command: greenbone-feed-sync
+  become: yes
+  async: 1800 # We give it 30 minutes to succeed
+  poll: 0     # we do not wait for it to complete to continue with the playbook
+  register: gvm_feed_sync_output
+
+- name: Start OpenVAS service
+  command: gvm-start
+
+#- name: Ensure gvmd service is running
+#  ansible.builtin.service:
+#    name: gvmd
+#    state: started
+#    enabled: yes
+
+
+######################## Install Metasploit #################################
+- name: Metasploit Install Python packages for automation
+  pip:
+    name: 
+      - pymetasploit3
+      - python-gvm
+    executable: /opt/caldera/venv/bin/pip3
+
+- name: Ensure Python DB driver is installed (Debian/Ubuntu)
+  apt:
+    name: python3-psycopg2
+    state: present
+  become: yes
+    
+- name: Initialize Metasploit Database
+  command: msfdb init --non-interactive
+  become: yes
+  register: msf_init
+  # This makes sure the task is idempotent
+  changed_when: "'already' not in msf_init.stdout"
+
+- name: Set specific password for MSF user (for msfrpcd scripts)
+  become: yes
+  become_user: postgres
+  postgresql_user:
+    name: msf
+    password: "msfpassword" # Set your required password here
+    state: present
+
+- name: Run Metasploit DB status check (forces migration if needed)
+  command: msfconsole -q -x "db_status; exit"
+  register: msf_migrate
+  changed_when: "'connected to' in msf_migrate.stdout"
+
+- name: Start msfrpcd for Metasploit RPC
+#  command: msfrpcd -P "msfpassword" -n -a 127.0.0.1 -p 55553
+  shell: "msfrpcd -P msfpassword -n -a 127.0.0.1 -p 55553 -S -f &"
+  async: 10
+  poll: 0
+
+
+##################### Install Docker Compose #########################################
+- name: Install Docker prerequisites
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - smbclient
+      - cifs-utils
+      - unzip
+    state: present
+    update_cache: yes
+
+- name: Create /etc/apt/keyrings directory
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: '0755'
+
+- name: Install Docker and Dependencies from Kali Repos
+  ansible.builtin.apt:
+    name:
+      - docker.io
+      - python3-docker
+      - docker-compose
+    state: present
+    update_cache: yes
+
+- name: Ensure Docker service is started and enabled
+  ansible.builtin.service:
+    name: docker
+    state: started
+    enabled: yes
+
+- name: Add user to docker group
+  ansible.builtin.user:
+    name: debian
+    groups: docker
+    append: yes
+
+- name: Login to Docker Hub
+  community.docker.docker_login:
+    username: demongsoc
+    password: "dckr_pat_OzOR3rfLKW3QcFAFUfAi_Je_5_Q"
+
+- name: Deploy neo4j docker
+  community.docker.docker_container:
+    name: neo4j_instance
+    image: neo4j:latest
+    state: started
+    restart_policy: always
+    ports: 
+      - "7474:7474"
+      - "7687:7687"
+    env:
+      NEO4J_AUTH: neo4j/admin
+      NEO4J_dbms_security_auth__minimum__password__length: "2"
+    volumes:
+      - "neo4j_data:/data"
+  register: neo4j_output
+
+- name: Wait for Neo4j to be ready (Bolt port)
+  ansible.builtin.wait_for:
+    host: "{{ ansible_host | default('localhost') }}"
+    port: 7687
+    delay: 5
+    timeout: 120
+    state: started
+    msg: "Neo4j Bolt port is not listening after 2 minutes"
+
+- name: Create second user named 'admin'
+  ansible.builtin.shell: |
+    docker exec -i neo4j_instance bin/cypher-shell -u neo4j -p admin "
+      CREATE USER admin IF NOT EXISTS 
+      SET PASSWORD 'admin' 
+      CHANGE NOT REQUIRED;"
+  changed_when: true
+  register: create_user
+  failed_when: "'already exists' not in create_user.stdout and create_user.rc != 0"
+
+- name: Show Docker Compose output
+  ansible.builtin.debug:
+    msg: |
+      Neo4j: {{neo4j_output | default('No output caprured') }}
