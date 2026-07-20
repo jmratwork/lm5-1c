@@ -1,7 +1,11 @@
 ---
-# role: cti_ss (MISP / CTI-SS specific configuration)
-misp_url: "https://127.0.0.1:8443"
-misp_api_key: ""                 # vault-provided; empty = skip live API seeding
-misp_seed_dir: "/opt/cti-ss-seed"
-# Sharing group used when the SOC Analyst shares malware intel (UML step 12).
-misp_sharing_group_name: "PUC2-CYNET-Training"
+# role: cti_ss_2c (CTI-SS = MISP, deployed by the substrate docker_server role)
+# Fallbacks only. The authoritative values live in group_vars/puc2_2c.yml.
+puc2_misp_seed_dir: "/opt/cti-ss-seed"
+puc2_misp_sharing_group_name: "PUC2-CYNET-Training"
+puc2_misp_url: "https://127.0.0.1:8443"
+puc2_misp_api_key: "CHANGE_ME"
+puc2_payload_md5: "44d88612fea8a8f36de82e1278abb02f"
+puc2_payload_sha256: "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f"
+puc2_c2_domain: "c2.puc2-training.lab"
+puc2_payload_name: "invoice.exe"

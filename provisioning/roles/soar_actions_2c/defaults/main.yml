@@ -1,0 +1,13 @@
+---
+# role: soar_actions_2c (containment action library consumed by NG-SOAR)
+# Fallbacks only. The authoritative values live in group_vars/puc2_2c.yml.
+puc2_soar_playbook_dir: "/opt/NG-SOAR/playbooks"
+puc2_soar_webhook_url: "http://127.0.0.1:8080/trigger/playbook"
+puc2_sandbox_cidr: "10.0.16.0/24"
+puc2_attacker_ip: "10.0.16.50"
+puc2_c2_domain: "c2.puc2-training.lab"
+puc2_quarantine_dir: "/var/quarantine"
+puc2_victim_user: "victim"
+puc2_isolation_marker: "/var/run/ngsoar_isolated"
+puc2_eradication_marker: "/var/run/ngsoar_eradication_status"
+puc2_active_response_rules: "100101,100103"

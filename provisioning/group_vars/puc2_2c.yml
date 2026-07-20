@@ -74,3 +74,17 @@ puc2_eradication_marker: "/var/run/ngsoar_eradication_status"
 
 # ---- Evaluation (UML step 13) ----------------------------------------------
 puc2_eval_root: "/opt/evaluation"
+
+# ---- On-host paths used by the overlay roles --------------------------------
+puc2_injection_root: "/opt/malware-injection"
+puc2_misp_seed_dir: "/opt/cti-ss-seed"
+puc2_iris_assets_dir: "/opt/cicms-assets"
+puc2_soar_playbook_dir: "/opt/NG-SOAR/playbooks"
+
+# ---- Injection targeting (UML step 2) ---------------------------------------
+puc2_victim_mgmt_user: "ubuntu"     # topology base_box mgmt_user of `victim`
+puc2_injection_targets:
+  - "{{ puc2_victim_ip }}"
+
+# ---- CTI-SS sharing (UML step 12) -------------------------------------------
+puc2_misp_sharing_group_name: "PUC2-CYNET-Training"

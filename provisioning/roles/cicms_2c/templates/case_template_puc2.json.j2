@@ -1,0 +1,65 @@
+{
+  "name": "PUC2-2C-Malware",
+  "display_name": "PUC2 Sub Case 2c - Malware Attack Detection & Response",
+  "description": "Targeted malware campaign initiated in the cyber range. A phishing email delivered a payload to a Lab Host/Endpoint (victim, {{ puc2_victim_ip }}); NG-SIEM ({{ puc2_ng_siem_ip }}) raised rule 100101/100103; the case is opened by the NG-SOC Operator with the SIEM context attached.",
+  "author": "CyberRangeCZ provisioning (role cicms_2c)",
+  "classification": "malware",
+  "title_prefix": "[PUC2-2C]",
+  "summary": "Sub Case 2c incident case. NG-SIEM alert context is attached automatically by the custom-iris integration; enrichment comes from CTI-SS (MISP) at {{ puc2_misp_url }}; containment is executed by the puc2-isolate active response and orchestrated through NG-SOAR at {{ puc2_soar_webhook_url }}.",
+  "tags": [
+    "puc2-2c",
+    "malware",
+    "T1566",
+    "T1204",
+    "T1021",
+    "T1048"
+  ],
+  "tasks": [
+    {
+      "title": "Attach NG-SIEM alert + correlated logs",
+      "description": "Import the NG-SIEM alert (rule 100101/100103) plus firewall, AV and host logs from {{ puc2_ng_siem_ip }} (UML step 7).",
+      "tags": "step-7"
+    },
+    {
+      "title": "Enrich IOCs from CTI-SS (MISP)",
+      "description": "Pull malware family, TTPs and related IOCs from MISP at {{ puc2_misp_url }} via the IRIS MISP module (UML step 8).",
+      "tags": "step-8"
+    },
+    {
+      "title": "Map attack path / confirm targeted attack",
+      "description": "UEBA plus log correlation across firewall, antivirus and endpoint sources; confirm the incident as a targeted attack (UML step 6).",
+      "tags": "step-6"
+    },
+    {
+      "title": "Trigger NG-SOAR containment",
+      "description": "Fire the containment playbooks through {{ puc2_soar_webhook_url }}: isolate the host, block the C2 IP {{ puc2_attacker_ip }}, reset credentials, quarantine the endpoint (UML steps 9-10).",
+      "tags": "step-9,step-10"
+    },
+    {
+      "title": "Record containment & eradication status",
+      "description": "Read back {{ puc2_isolation_marker }} and {{ puc2_eradication_marker }} on the affected endpoint and capture the NG-SOAR feedback (UML step 11).",
+      "tags": "step-11"
+    },
+    {
+      "title": "Share malware intel via CTI-SS",
+      "description": "Publish the IOCs and the relevant playbooks into the '{{ puc2_misp_sharing_group_name }}' sharing group (UML step 12).",
+      "tags": "step-12"
+    },
+    {
+      "title": "Post-incident analysis",
+      "description": "Identify the entry point and improvement areas; feed the cyber-range evaluation and the lessons-learned debrief (UML step 13).",
+      "tags": "step-13"
+    }
+  ],
+  "note_directories": [
+    {
+      "title": "Investigation notes",
+      "notes": [
+        {
+          "title": "Scenario briefing",
+          "content": "Phishing payload {{ puc2_payload_name }} delivered from {{ puc2_attacker_ip }}:{{ puc2_payload_http_port }}. Known IOCs: md5 {{ puc2_payload_md5 }}, C2 domain {{ puc2_c2_domain }}."
+        }
+      ]
+    }
+  ]
+}

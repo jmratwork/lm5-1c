@@ -1,0 +1,75 @@
+---
+# =============================================================================
+# role: soar_actions_2c        (host: docker-server)
+#
+# THIS ROLE DOES NOT IMPLEMENT NG-SOAR.
+#
+# NG-SOAR is deployed by the substrate's docker_server role from the NG-SOAR.yml
+# compose file copied off the SMB share at build time, and DFIR-IRIS is already
+# wired to trigger it at http://<docker-server>:8080/trigger/playbook (the
+# "SOARCA" webhook configured in iris_webhooks_module). Its internal workflow
+# is owned by that image and is deliberately NOT reinvented here.
+#
+# What this role does: drop the four Sub Case 2c containment playbooks on the
+# NG-SOAR host as the ACTION LIBRARY the workflow references, retargeted to the
+# flat 10.0.16.0/24 testnet.
+#
+# TWO PATHS EXIST FOR UML STEPS 9-11 — keep them straight:
+#
+#   LIVE / VERIFIABLE  -> Wazuh active response. Rules 100101/100103 on the
+#                         ng-siem manager execute puc2-isolate on the victim
+#                         endpoint. This path is provisioned end to end by
+#                         ng_siem_rules_2c + lab_endpoint_2c and is what the
+#                         acceptance checks in VALIDATION.md exercise.
+#
+#   ORCHESTRATION      -> DFIR-IRIS posts the case to the NG-SOAR webhook and
+#                         the NG-SOAR workflow drives these playbooks. The
+#                         webhook wiring belongs to the substrate; the library
+#                         below is what that workflow consumes.
+#
+# The playbooks are byte-equivalent in intent to the logic ported into
+# lab_endpoint_2c/templates/puc2-isolate.j2 — keep the two in sync.
+# =============================================================================
+
+- name: Create the NG-SOAR playbook library directory
+  ansible.builtin.file:
+    path: "{{ puc2_soar_playbook_dir }}"
+    state: directory
+    mode: '0755'
+
+- name: Deploy the Sub Case 2c containment playbook library
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "{{ puc2_soar_playbook_dir }}/{{ item }}"
+    mode: '0644'
+  loop:
+    - isolate_host.yml
+    - block_malicious_ip.yml
+    - quarantine_and_patch.yml
+    - reset_credentials.yml
+
+- name: Document the containment contract next to the library
+  ansible.builtin.copy:
+    dest: "{{ puc2_soar_playbook_dir }}/README.md"
+    mode: '0644'
+    content: |
+      # NG-SOAR containment action library — PUC2 (CYNET) Sub Case 2c
+
+      These playbooks are the ACTION LIBRARY referenced by the NG-SOAR workflow
+      that DFIR-IRIS triggers at `{{ puc2_soar_webhook_url }}`.
+      They are NOT executed by the sandbox provisioning.
+
+      | Playbook | UML step | Effect |
+      |---|---|---|
+      | `isolate_host.yml` | 10 | iptables isolation, `{{ puc2_sandbox_cidr }}` stays reachable |
+      | `block_malicious_ip.yml` | 10 | drop traffic to `{{ puc2_attacker_ip }}`, blackhole `{{ puc2_c2_domain }}` |
+      | `quarantine_and_patch.yml` | 10 | move the payload to `{{ puc2_quarantine_dir }}`, apply updates |
+      | `reset_credentials.yml` | 10 | expire the `{{ puc2_victim_user }}` password, kill sessions |
+
+      Status for UML step 11 is read back from `{{ puc2_isolation_marker }}`
+      and `{{ puc2_eradication_marker }}` on the affected endpoint.
+
+      The live, verifiable path in this sandbox is the Wazuh active response
+      `puc2-isolate` (deployed by role `lab_endpoint_2c`, triggered by rules
+      {{ puc2_active_response_rules }} from role `ng_siem_rules_2c`), which
+      ports exactly the logic above. Keep the two in sync.

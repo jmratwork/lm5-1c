@@ -6,7 +6,7 @@
   hosts: "{{ target | default('all') }}"
   become: true
   vars:
-    soc_mgmt_cidr: "10.10.10.0/24"
+    sandbox_cidr: "10.0.16.0/24"
   tasks:
     - name: Allow established/related connections
       ansible.builtin.iptables:
@@ -17,7 +17,7 @@
     - name: Allow SOC management subnet (SIEM + SOAR control)
       ansible.builtin.iptables:
         chain: INPUT
-        source: "{{ soc_mgmt_cidr }}"
+        source: "{{ sandbox_cidr }}"
         jump: ACCEPT
 
     - name: Drop all other inbound traffic
@@ -28,7 +28,7 @@
     - name: Drop all outbound traffic except SOC subnet
       ansible.builtin.iptables:
         chain: OUTPUT
-        destination: "{{ soc_mgmt_cidr }}"
+        destination: "{{ sandbox_cidr }}"
         jump: ACCEPT
 
     - name: Set default OUTPUT policy to DROP

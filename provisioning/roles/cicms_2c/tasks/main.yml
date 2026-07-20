@@ -1,41 +1,98 @@
 ---
 # =============================================================================
-# role: cicms  (CICMS = DFIR-IRIS)
-# Covers UML steps:
-#   7  - incident case opened by the NG-SOC Operator (+ attached SIEM context)
-#   8  - case enriched with CTI-SS (MISP) IOCs/TTPs
-#   (post-incident analysis feeding step 13 evaluation)
+# role: cicms_2c        (host: docker-server — runs AFTER the docker_server role)
+#
+# ADDITIVE OVERLAY. DFIR-IRIS itself, its MISP module and its NG-SOAR webhook
+# (http://<docker-server>:8080/trigger/playbook) are all deployed and wired by
+# the substrate's docker_server role — none of that is recreated here.
+#
+# The incident CASE is created automatically at alert time by the substrate's
+# custom-iris integration on ng-siem (with dedup by case_soc_id). This role
+# only registers the Sub Case 2c CASE TEMPLATE, so the analyst gets the right
+# task list and briefing notes on that case.
+#
+# UML coverage:
+#   step 7 - incident case opened with the SIEM context attached
+#   step 8 - the case's enrichment task pointing at CTI-SS (MISP)
 # =============================================================================
 
-- name: Create CICMS assets directory
+- name: Assert a DFIR-IRIS API key is available
+  ansible.builtin.assert:
+    that:
+      - puc2_iris_api_key is defined
+      - puc2_iris_api_key | trim not in ['', 'CHANGE_ME']
+    fail_msg: >
+      No DFIR-IRIS API key available. It normally arrives as
+      hostvars['docker-server'].iris_api_key from the substrate docker_server
+      role; set vault_iris_api_key in group_vars/vault.yml to override.
+
+- name: Create the CICMS assets directory
   ansible.builtin.file:
-    path: "{{ iris_assets_dir }}"
+    path: "{{ puc2_iris_assets_dir }}"
     state: directory
-    mode: "0755"
+    mode: '0755'
 
-# Case template the NG-SOC Operator clones when opening the incident (step 7).
-- name: Deploy CICMS incident case template
-  ansible.builtin.copy:
-    src: case_template_puc2.json
-    dest: "{{ iris_assets_dir }}/case_template_puc2.json"
-    mode: "0644"
-
-# Configure the MISP module so IRIS analysts can enrich case IOCs (step 8).
-# Reference role wired BASE_URL/IRIS_MISP_URL into the IRIS config; we do the
-# same through a vault-driven config file (no hardcoded IP/key).
-- name: Write IRIS<->MISP integration config
-  ansible.builtin.copy:
-    dest: "{{ iris_assets_dir }}/misp_integration.conf"
-    mode: "0600"
-    content: |
-      # CICMS (DFIR-IRIS) -> CTI-SS (MISP) enrichment (UML step 8)
-      MISP_URL={{ cicms_misp_url }}
-      MISP_API_KEY={{ cicms_misp_api_key }}
-  no_log: true
-
-- name: Deploy CICMS case-bootstrap helper
+# Kept on disk as the human-readable record of what was registered.
+- name: Render the PUC2 2c case template
   ansible.builtin.template:
-    src: open_case.sh.j2
-    dest: "{{ iris_assets_dir }}/open_case.sh"
-    mode: "0750"
+    src: case_template_puc2.json.j2
+    dest: "{{ puc2_iris_assets_dir }}/case_template_puc2.json"
+    mode: '0644'
+
+- name: Wait for the DFIR-IRIS API to answer
+  ansible.builtin.uri:
+    url: "{{ puc2_iris_url }}/api/ping"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ puc2_iris_api_key }}"
+    validate_certs: false
+    status_code: [200, 401, 403, 404]
+    timeout: 15
+  register: puc2_iris_ping
+  until: puc2_iris_ping.status is defined
+  retries: 12
+  delay: 5
   no_log: true
+  failed_when: false
+
+# ── Register the case template (UML steps 7-8) ───────────────────────────────
+- name: List the case templates already registered in CICMS
+  ansible.builtin.uri:
+    url: "{{ puc2_iris_url }}/manage/case-templates/list"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ puc2_iris_api_key }}"
+      Content-Type: "application/json"
+    validate_certs: false
+    status_code: [200, 401, 403]
+    timeout: 30
+  register: puc2_iris_templates
+  no_log: true
+  failed_when: false
+
+- name: Register the PUC2 2c case template in CICMS
+  ansible.builtin.uri:
+    url: "{{ puc2_iris_url }}/manage/case-templates/add"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ puc2_iris_api_key }}"
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      case_template_json: "{{ lookup('template', 'case_template_puc2.json.j2') }}"
+    validate_certs: false
+    status_code: [200, 201]
+    timeout: 30
+  register: puc2_iris_template_add
+  no_log: true
+  changed_when: puc2_iris_template_add.status in [200, 201]
+  failed_when: false
+  when: "'PUC2-2C-Malware' not in (puc2_iris_templates.content | default(''))"
+
+- name: Report the CICMS registration outcome
+  ansible.builtin.debug:
+    msg: >-
+      CICMS (DFIR-IRIS) at {{ puc2_iris_url }}: case template 'PUC2-2C-Malware'
+      {{ 'registered' if puc2_iris_template_add is changed else 'already present or skipped' }}.
+      Cases themselves are created by the substrate custom-iris integration on
+      alert; containment is orchestrated via {{ puc2_soar_webhook_url }}.

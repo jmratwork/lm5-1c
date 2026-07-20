@@ -1,38 +1,122 @@
 ---
 # =============================================================================
-# role: cti_ss  (CTI-SS = MISP)
-# Covers UML steps:
-#   4  - provides the hash-enrichment endpoint NG-SIEM queries
-#   8  - IOC/TTP enrichment consumed by CICMS (DFIR-IRIS)
-#   12 - sharing group/event the SOC Analyst publishes malware intel into
+# role: cti_ss_2c        (host: docker-server — runs AFTER the docker_server role)
+#
+# ADDITIVE OVERLAY. MISP itself is deployed by the substrate's docker_server
+# role (misp-docker, :8443) which also publishes `misp_api_key` as a cacheable
+# fact — this role only SEEDS the Sub Case 2c content into that live instance.
+#
+# UML coverage:
+#   step 4  - the hash IOCs NG-SIEM enriches against (same values as the
+#             etc/lists/cti-malware-hashes CDB list on ng-siem)
+#   step 8  - IOCs/TTPs CICMS (DFIR-IRIS) pulls through the MISP module the
+#             docker_server role already configured
+#   step 12 - the sharing group the SOC Analyst publishes malware intel into
 # =============================================================================
 
-- name: Create CTI-SS seed directory
+- name: Assert a MISP API key is available
+  ansible.builtin.assert:
+    that:
+      - puc2_misp_api_key is defined
+      - puc2_misp_api_key | trim not in ['', 'CHANGE_ME']
+    fail_msg: >
+      No MISP API key available. It normally arrives as
+      hostvars['docker-server'].misp_api_key from the substrate docker_server
+      role; set vault_misp_api_key in group_vars/vault.yml to override.
+
+- name: Create the CTI-SS seed directory
   ansible.builtin.file:
-    path: "{{ misp_seed_dir }}"
+    path: "{{ puc2_misp_seed_dir }}"
     state: directory
-    mode: "0755"
+    mode: '0755'
 
-# Pre-seed the malware IOC set used by the scenario so that NG-SIEM enrichment
-# (step 4) and CICMS enrichment (step 8) return meaningful data.
-- name: Deploy malware IOC seed event (MISP JSON)
-  ansible.builtin.copy:
-    src: misp_event_puc2_malware.json
-    dest: "{{ misp_seed_dir }}/misp_event_puc2_malware.json"
-    mode: "0644"
-
-- name: Deploy CTI-SS loader script
+# Kept on disk as the human-readable record of what was pushed (and so an
+# instructor can re-push it by hand); the API call below templates it again.
+- name: Render the PUC2 2c malware event
   ansible.builtin.template:
-    src: load_cti.sh.j2
-    dest: "{{ misp_seed_dir }}/load_cti.sh"
-    mode: "0750"
-  no_log: true
+    src: misp_event_puc2_malware.json.j2
+    dest: "{{ puc2_misp_seed_dir }}/misp_event_puc2_malware.json"
+    mode: '0644'
 
-# Live API seeding only when an API key is supplied (post first-boot of MISP).
-- name: Seed MISP with the PUC2 malware event via API
-  ansible.builtin.command:
-    cmd: "{{ misp_seed_dir }}/load_cti.sh"
-  register: cti_seed
-  changed_when: "'created' in cti_seed.stdout"
+# ── Sharing group for the intel-sharing step (UML step 12) ───────────────────
+- name: List existing MISP sharing groups
+  ansible.builtin.uri:
+    url: "{{ puc2_misp_url }}/sharing_groups/index"
+    method: GET
+    headers:
+      Authorization: "{{ puc2_misp_api_key }}"
+      Accept: "application/json"
+    validate_certs: false
+    timeout: 30
+  register: puc2_misp_sharing_groups
+  no_log: true
   failed_when: false
-  when: misp_api_key | length > 0
+
+- name: Create the PUC2 2c sharing group
+  ansible.builtin.uri:
+    url: "{{ puc2_misp_url }}/sharing_groups/add"
+    method: POST
+    headers:
+      Authorization: "{{ puc2_misp_api_key }}"
+      Accept: "application/json"
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      name: "{{ puc2_misp_sharing_group_name }}"
+      releasability: "PUC2 (CYNET) Sub Case 2c training participants only"
+      description: "Malware intel shared during the Sub Case 2c exercise (UML step 12)"
+      active: true
+    validate_certs: false
+    status_code: [200, 201, 403]
+    timeout: 30
+  register: puc2_sharing_group_add
+  no_log: true
+  changed_when: puc2_sharing_group_add.status in [200, 201]
+  when: puc2_misp_sharing_group_name not in (puc2_misp_sharing_groups.content | default(''))
+
+# ── Seed the malware event (UML steps 4 and 8) ───────────────────────────────
+# Idempotent: MISP is searched for an event carrying the payload MD5 first.
+- name: Check whether the PUC2 2c event is already in MISP
+  ansible.builtin.uri:
+    url: "{{ puc2_misp_url }}/attributes/restSearch"
+    method: POST
+    headers:
+      Authorization: "{{ puc2_misp_api_key }}"
+      Accept: "application/json"
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      value: "{{ puc2_payload_md5 }}"
+      type: "md5"
+    validate_certs: false
+    status_code: [200, 404]
+    timeout: 30
+  register: puc2_misp_existing
+  no_log: true
+  failed_when: false
+
+- name: Seed the PUC2 2c malware event into CTI-SS
+  ansible.builtin.uri:
+    url: "{{ puc2_misp_url }}/events/add"
+    method: POST
+    headers:
+      Authorization: "{{ puc2_misp_api_key }}"
+      Accept: "application/json"
+      Content-Type: "application/json"
+    body: "{{ lookup('template', 'misp_event_puc2_malware.json.j2') }}"
+    body_format: json
+    validate_certs: false
+    status_code: [200, 201]
+    timeout: 60
+  register: puc2_misp_seed
+  no_log: true
+  changed_when: puc2_misp_seed.status in [200, 201]
+  when: puc2_payload_md5 not in (puc2_misp_existing.content | default(''))
+
+- name: Report the CTI-SS seeding outcome
+  ansible.builtin.debug:
+    msg: >-
+      CTI-SS (MISP) at {{ puc2_misp_url }}:
+      event {{ 'seeded' if puc2_misp_seed is changed else 'already present' }},
+      sharing group '{{ puc2_misp_sharing_group_name }}'
+      {{ 'created' if puc2_sharing_group_add is changed else 'already present' }}.

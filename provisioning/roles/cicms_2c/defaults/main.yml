@@ -1,9 +1,9 @@
 ---
-# role: cicms (DFIR-IRIS / CICMS specific configuration)
-iris_url: "https://127.0.0.1:443"
-iris_api_key: ""                 # vault-provided
-iris_assets_dir: "/opt/cicms-assets"
-# MISP endpoint IRIS pulls IOC/TTP enrichment from (UML step 8). Mirrors the
-# reference role's MISP<->IRIS integration but with no hardcoded IP/key.
-cicms_misp_url: "https://10.10.10.10:8443"
-cicms_misp_api_key: ""           # vault-provided
+# role: cicms_2c (CICMS = DFIR-IRIS, deployed by the substrate docker_server role)
+# Fallbacks only. The authoritative values live in group_vars/puc2_2c.yml.
+puc2_iris_assets_dir: "/opt/cicms-assets"
+puc2_iris_url: "https://127.0.0.1:8083"
+puc2_iris_api_key: "CHANGE_ME"
+puc2_misp_url: "https://127.0.0.1:8443"
+puc2_misp_sharing_group_name: "PUC2-CYNET-Training"
+puc2_soar_webhook_url: "http://127.0.0.1:8080/trigger/playbook"
