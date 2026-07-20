@@ -114,6 +114,14 @@
   when: puc2_payload_md5 not in (puc2_misp_existing.content | default(''))
 
 # ── CTI Specialist sharing action (UML step 12) ──────────────────────────────
+# jq is declared here too rather than relying on cicms_2c running first: role
+# order in playbook.yml is not a dependency this role should silently inherit.
+- name: Ensure jq is available for the intel-sharing helper
+  ansible.builtin.apt:
+    name: jq
+    state: present
+    update_cache: false
+
 - name: Deploy the CTI Specialist intel-sharing helper
   ansible.builtin.template:
     src: share_intel.sh.j2

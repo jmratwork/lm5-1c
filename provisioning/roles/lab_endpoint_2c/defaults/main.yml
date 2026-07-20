@@ -12,3 +12,7 @@ puc2_eradication_marker: "/var/run/ngsoar_eradication_status"
 puc2_active_response_rules: "100101,100103"
 puc2_c2_port: 4444
 puc2_fw_log_prefix: "PUC2-FW-DROP"
+puc2_delivery_paths:
+  - "/home/victim/Downloads/invoice.exe"
+  - "/tmp/invoice.exe"
+  - "/home/victim/Downloads/statement.exe"
