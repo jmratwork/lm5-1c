@@ -36,7 +36,7 @@
     - man
 
 - name: set up command logging
-  hosts: 
+  hosts:
     - routers
     - hosts
   become: yes
@@ -44,3 +44,74 @@
     - role: sandbox-logging
       slf_destination_port: '{% if hostvars["man"] is defined -%} 514 {%- else -%} 515 {%- endif %}'
       when: ansible_system == "Linux"
+
+# =============================================================================
+# PUC2 (CYNET) — Sub Case 2c overlay
+# -----------------------------------------------------------------------------
+# Everything above this line is the ng-soc-ansible@integrations substrate,
+# copied verbatim. Everything below is the ADDITIVE scenario overlay: it never
+# modifies a substrate role and it always runs AFTER them, so the MISP /
+# custom-iris integrations injected into ossec.conf by the ng-siem role are
+# already in place (the overlay uses distinct blockinfile markers).
+#
+# Ordering contract:
+#   docker-server (facts: misp_api_key, iris_api_key, docker_server_internal_ip)
+#   -> ng-siem (integrations)  -> ng_siem_rules_2c  -> lab_endpoint_2c
+#   -> cti_ss_2c / cicms_2c / soar_actions_2c       -> evaluation_reporting
+#
+# group_vars/puc2_2c.yml is loaded explicitly: the topology declares
+# `groups: []`, so a group_vars file would never be auto-loaded. vault.yml is
+# git-ignored, so the example file is used when it is absent.
+# =============================================================================
+
+- name: PUC2 2c — NG-SIEM detection rules and active-response wiring (steps 3-6, 9-10)
+  hosts: ng-siem
+  become: true
+  gather_facts: true
+  vars_files:
+    - group_vars/puc2_2c.yml
+    - "{{ lookup('first_found', ['group_vars/vault.yml', 'group_vars/vault.yml.example']) }}"
+  roles:
+    - ng_siem_rules_2c
+
+- name: PUC2 2c — endpoint FIM and containment action (steps 3, 10, 11)
+  hosts: victim
+  become: true
+  gather_facts: true
+  vars_files:
+    - group_vars/puc2_2c.yml
+    - "{{ lookup('first_found', ['group_vars/vault.yml', 'group_vars/vault.yml.example']) }}"
+  roles:
+    - lab_endpoint_2c
+
+- name: PUC2 2c — CTI-SS seeding, CICMS template, NG-SOAR action library (steps 4, 7, 8, 12)
+  hosts: docker-server
+  become: true
+  gather_facts: true
+  vars_files:
+    - group_vars/puc2_2c.yml
+    - "{{ lookup('first_found', ['group_vars/vault.yml', 'group_vars/vault.yml.example']) }}"
+  roles:
+    - cti_ss_2c
+    - cicms_2c
+    - soar_actions_2c
+
+- name: PUC2 2c — phishing and payload delivery channel (steps 1-2)
+  hosts: kali
+  become: true
+  gather_facts: true
+  vars_files:
+    - group_vars/puc2_2c.yml
+    - "{{ lookup('first_found', ['group_vars/vault.yml', 'group_vars/vault.yml.example']) }}"
+  roles:
+    - malware_injection_2c
+
+- name: PUC2 2c — evaluation and reporting collateral (step 13)
+  hosts: ng-siem
+  become: true
+  gather_facts: true
+  vars_files:
+    - group_vars/puc2_2c.yml
+    - "{{ lookup('first_found', ['group_vars/vault.yml', 'group_vars/vault.yml.example']) }}"
+  roles:
+    - evaluation_reporting

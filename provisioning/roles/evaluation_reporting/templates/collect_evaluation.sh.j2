@@ -1,23 +1,65 @@
 #!/usr/bin/env bash
-# Post-incident evidence collection + feedback generation (UML step 13).
-# Aggregates NG-SIEM alerts, containment status and case data into a report
-# the cyber-range platform presents to the SOC Analyst.
-set -euo pipefail
+# =============================================================================
+# Post-incident evidence collection + feedback generation — UML step 13.
+#
+# Runs on ng-siem ({{ puc2_ng_siem_ip }}), where the siemng image runs
+# wazuh-manager NATIVELY under systemd (NOT in a container — do not reach for
+# `docker exec wazuh-manager` here). Aggregates the NG-SIEM alerts, the active
+# response log and the containment markers pulled back off the endpoint into
+# one report for the cyber-range debrief.
+# =============================================================================
+set -uo pipefail
 
-EVAL_ROOT="{{ eval_root }}"
-OUT="${EVAL_ROOT}/report_$(hostname).txt"
+EVAL_ROOT="{{ puc2_eval_root }}"
+VICTIM_IP="{{ puc2_victim_ip }}"
+VICTIM_MGMT_USER="{{ puc2_victim_mgmt_user }}"
+OUT="${EVAL_ROOT}/report_$(date +%Y%m%d-%H%M%S).txt"
+SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=10 -o BatchMode=yes"
+
+mkdir -p "${EVAL_ROOT}"
 
 {
-  echo "==== PUC2 Sub Case 2c - Training Evaluation Report ===="
-  echo "Generated on host: $(hostname)"
+  echo "==== PUC2 (CYNET) Sub Case 2c — Training Evaluation Report ===="
+  echo "Generated: $(date -Iseconds) on $(hostname)"
   echo
-  echo "---- NG-SIEM alerts (Wazuh) ----"
-  docker exec wazuh-manager sh -c 'tail -n 200 /var/ossec/logs/alerts/alerts.log' 2>/dev/null || \
-    echo "(alerts log not available - SIEM may still be initialising)"
+
+  echo "---- Detection: NG-SIEM alerts for the 2c ruleset (UML steps 3-6) ----"
+  for rid in 100100 100101 100102 100103; do
+    n=$(grep -c "\"id\":\"${rid}\"" /var/ossec/logs/alerts/alerts.json 2>/dev/null || echo 0)
+    echo "  rule ${rid}: ${n} alert(s)"
+  done
   echo
-  echo "---- Containment markers from endpoints ----"
-  echo "See /var/run/ngsoar_isolated and /var/run/ngsoar_eradication_status on each endpoint."
-} > "${OUT}"
+  echo "  last 50 matching alert lines:"
+  grep -E '"id":"1001(00|01|02|03)"' /var/ossec/logs/alerts/alerts.json 2>/dev/null \
+    | tail -n 50 || echo "  (no alerts yet — the scenario may not have been injected)"
+  echo
+
+  echo "---- Response: active-response invocations (UML steps 9-10) ----"
+  grep -i "puc2-isolate" /var/ossec/logs/active-responses.log 2>/dev/null \
+    | tail -n 50 || echo "  (no puc2-isolate invocation recorded on the manager)"
+  echo
+
+  echo "---- Containment & eradication status from the endpoint (UML step 11) ----"
+  for marker in "{{ puc2_isolation_marker }}" "{{ puc2_eradication_marker }}"; do
+    echo "  == ${marker} on ${VICTIM_IP} =="
+    # shellcheck disable=SC2086
+    ssh ${SSH_OPTS} "${VICTIM_MGMT_USER}@${VICTIM_IP}" "sudo cat ${marker}" 2>/dev/null \
+      | sed 's/^/    /' || echo "    (unreachable or not present — host may be isolated)"
+  done
+  echo
+
+  echo "---- Endpoint active-response log ----"
+  # shellcheck disable=SC2086
+  ssh ${SSH_OPTS} "${VICTIM_MGMT_USER}@${VICTIM_IP}" \
+    "sudo grep -i puc2-isolate /var/ossec/logs/active-responses.log | tail -n 30" 2>/dev/null \
+    | sed 's/^/    /' || echo "    (unreachable)"
+  echo
+
+  echo "---- Collaboration surfaces (UML steps 7-8, 12) ----"
+  echo "  CICMS  (DFIR-IRIS): {{ puc2_iris_url }}   — cases opened by the custom-iris integration"
+  echo "  CTI-SS (MISP):      {{ puc2_misp_url }}   — sharing group '{{ puc2_misp_sharing_group_name }}'"
+  echo "  NG-SOAR webhook:    {{ puc2_soar_webhook_url }}"
+} > "${OUT}" 2>&1
 
 echo "Evaluation report written to ${OUT}"
-echo "Complete ${EVAL_ROOT}/lessons_learned_template.md with the trainees."
+echo "Now complete ${EVAL_ROOT}/lessons_learned_template.md with the trainees."

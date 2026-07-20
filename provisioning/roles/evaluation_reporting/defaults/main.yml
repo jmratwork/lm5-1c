@@ -1,3 +1,13 @@
 ---
-# role: evaluation_reporting (post-incident feedback - UML step 13)
-eval_root: "/opt/evaluation"
+# role: evaluation_reporting (post-incident feedback — UML step 13)
+# Fallbacks only. The authoritative values live in group_vars/puc2_2c.yml.
+puc2_eval_root: "/opt/evaluation"
+puc2_victim_ip: "10.0.16.100"
+puc2_victim_mgmt_user: "ubuntu"
+puc2_ng_siem_ip: "10.0.16.70"
+puc2_iris_url: "https://10.0.16.60:8083"
+puc2_misp_url: "https://10.0.16.60:8443"
+puc2_soar_webhook_url: "http://10.0.16.60:8080/trigger/playbook"
+puc2_misp_sharing_group_name: "PUC2-CYNET-Training"
+puc2_isolation_marker: "/var/run/ngsoar_isolated"
+puc2_eradication_marker: "/var/run/ngsoar_eradication_status"

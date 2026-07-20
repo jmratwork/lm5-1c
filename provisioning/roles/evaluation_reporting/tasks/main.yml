@@ -1,25 +1,35 @@
 ---
 # =============================================================================
-# role: evaluation_reporting
+# role: evaluation_reporting        (host: ng-siem)
+#
 # Covers UML step 13: the Cyber Range provides a training summary + feedback on
 # response effectiveness. Installs the evidence-collection script and the
-# lessons-learned scoring template used to debrief the trainees.
+# lessons-learned scoring template used to debrief the trainees. Deployed on
+# ng-siem because that host already holds the alert and active-response
+# evidence for the whole exercise.
 # =============================================================================
 
-- name: Create evaluation directory
+- name: Create the evaluation directory
   ansible.builtin.file:
-    path: "{{ eval_root }}"
+    path: "{{ puc2_eval_root }}"
     state: directory
-    mode: "0755"
+    mode: '0755'
 
-- name: Deploy lessons-learned / scoring template
+- name: Deploy the lessons-learned / scoring template
   ansible.builtin.copy:
     src: lessons_learned_template.md
-    dest: "{{ eval_root }}/lessons_learned_template.md"
-    mode: "0644"
+    dest: "{{ puc2_eval_root }}/lessons_learned_template.md"
+    mode: '0644'
 
-- name: Deploy evidence-collection + scoring script
+- name: Deploy the evidence-collection + scoring script
   ansible.builtin.template:
     src: collect_evaluation.sh.j2
-    dest: "{{ eval_root }}/collect_evaluation.sh"
-    mode: "0750"
+    dest: "{{ puc2_eval_root }}/collect_evaluation.sh"
+    mode: '0750'
+
+- name: Report how to produce the debrief
+  ansible.builtin.debug:
+    msg: >-
+      UML step 13 ready: run {{ puc2_eval_root }}/collect_evaluation.sh on
+      ng-siem after the exercise, then score with
+      {{ puc2_eval_root }}/lessons_learned_template.md
