@@ -1,0 +1,128 @@
+---
+# =============================================================================
+# role: ng_siem_rules_2c        (host: ng-siem — runs AFTER the ng-siem role)
+#
+# ADDITIVE OVERLAY on top of the siemng image configured by the integrations
+# substrate. It does NOT redeploy Wazuh and it does NOT touch the substrate's
+# MISP / custom-iris integration block: that block owns the marker
+#   <!-- ... ANSIBLE MANAGED CYBERRANGE INTEGRATIONS -->
+# while everything here lives under a DISTINCT marker
+#   <!-- ... ANSIBLE MANAGED PUC2-2C DETECTION AND RESPONSE -->
+#
+# UML coverage:
+#   step 3  - telemetry (file hash) correlated by rule 100100
+#   step 4  - CTI hash watchlist (CDB list) feeding rule 100101
+#   step 5  - "malware detected" alert (rule 100101, level 12)
+#   step 6  - correlated targeted-attack confirmation (rule 100103, level 14)
+#   step 9/10 - rules 100101/100103 launch the puc2-isolate active response on
+#               the originating agent (location=local)
+# =============================================================================
+
+- name: Assert the substrate ng-siem role already ran on this host
+  ansible.builtin.stat:
+    path: /var/ossec/etc/ossec.conf
+  register: puc2_ossec_conf
+  failed_when: not puc2_ossec_conf.stat.exists
+
+# ── Detection rules (UML steps 3, 5, 6) ──────────────────────────────────────
+- name: Deploy PUC2 2c correlation rules
+  ansible.builtin.copy:
+    src: local_rules.xml
+    dest: /var/ossec/etc/rules/local_rules.xml
+    owner: wazuh
+    group: wazuh
+    mode: '0660'
+  notify: restart wazuh-manager
+
+# ── CTI hash watchlist (UML step 4) ──────────────────────────────────────────
+# CDB list keyed by MD5; rule 100101 does lookup="match_key" against it. The
+# cti_ss_2c role seeds the very same IOCs into MISP so the SIEM enrichment and
+# the analyst's CTI lookup agree.
+- name: Ensure the Wazuh lists directory exists
+  ansible.builtin.file:
+    path: /var/ossec/etc/lists
+    state: directory
+    owner: wazuh
+    group: wazuh
+    mode: '0750'
+
+- name: Deploy the CTI malware hash watchlist
+  ansible.builtin.copy:
+    dest: /var/ossec/etc/lists/cti-malware-hashes
+    owner: wazuh
+    group: wazuh
+    mode: '0660'
+    content: |
+      {{ puc2_payload_md5 }}:puc2-2c-training-payload
+      {{ puc2_payload_sha256 }}:puc2-2c-training-payload
+  notify: restart wazuh-manager
+
+- name: Compile the CDB lists
+  ansible.builtin.command: /var/ossec/bin/wazuh-makelists
+  register: puc2_makelists
+  changed_when: puc2_makelists.rc == 0
+  failed_when: false
+
+# ── Active response wiring (UML steps 9-10) ──────────────────────────────────
+# Distinct marker: must never collide with the substrate's integration block.
+- name: Register the PUC2 2c list, command and active response in ossec.conf
+  ansible.builtin.blockinfile:
+    path: /var/ossec/etc/ossec.conf
+    insertbefore: "</ossec_config>"
+    marker: "<!-- {mark} ANSIBLE MANAGED PUC2-2C DETECTION AND RESPONSE -->"
+    block: |
+      <!-- CTI-SS hash watchlist consumed by rule 100101 (UML step 4) -->
+      <ruleset>
+        <list>etc/lists/cti-malware-hashes</list>
+      </ruleset>
+
+      <!-- Containment action executed on the affected endpoint (UML step 10) -->
+      <command>
+        <name>puc2-isolate</name>
+        <executable>puc2-isolate</executable>
+        <timeout_allowed>no</timeout_allowed>
+      </command>
+
+      <active-response>
+        <command>puc2-isolate</command>
+        <location>local</location>
+        <rules_id>{{ puc2_active_response_rules }}</rules_id>
+      </active-response>
+  notify: restart wazuh-manager
+
+# ── Validate and apply ───────────────────────────────────────────────────────
+- name: Validate ossec.conf after the PUC2 2c injection
+  ansible.builtin.shell: |
+    result=$(/var/ossec/bin/verify-agent-conf 2>&1)
+    if echo "$result" | grep -qi "error\|critical"; then
+      echo "CONF_ERROR: $result"
+    else
+      echo "CONF_OK"
+    fi
+  args:
+    chdir: /var/ossec
+  register: puc2_ossec_check
+  changed_when: false
+
+- name: FAIL if the PUC2 2c injection broke ossec.conf
+  ansible.builtin.fail:
+    msg: "ossec.conf failed after the PUC2 2c injection: {{ puc2_ossec_check.stdout }}"
+  when: "'CONF_ERROR' in puc2_ossec_check.stdout"
+
+- name: Fix ossec.conf ownership after the injection
+  ansible.builtin.file:
+    path: /var/ossec/etc/ossec.conf
+    owner: root
+    group: wazuh
+    mode: '0660'
+
+- name: Apply the PUC2 2c ruleset now
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for wazuh-manager to be active again
+  ansible.builtin.command: systemctl is-active wazuh-manager
+  register: puc2_wazuh_status
+  until: puc2_wazuh_status.stdout == "active"
+  retries: 12
+  delay: 5
+  changed_when: false

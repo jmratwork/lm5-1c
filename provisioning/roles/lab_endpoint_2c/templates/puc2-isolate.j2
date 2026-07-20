@@ -1,0 +1,146 @@
+#!/bin/bash
+# =============================================================================
+# puc2-isolate — Wazuh 4.x active-response script (PUC2 CYNET Sub Case 2c)
+#
+# Rendered by role lab_endpoint_2c onto the victim endpoint. Launched by the
+# wazuh-manager on ng-siem when rule {{ puc2_active_response_rules }} fires
+# (location=local), i.e. UML steps 9 -> 10, and it writes the status markers
+# read back for UML step 11.
+#
+# It PORTS the logic of the four NG-SOAR containment playbooks kept as a
+# library in provisioning/roles/soar_actions_2c/files/:
+#   isolate_host.yml        -> network isolation (SOC subnet stays reachable)
+#   block_malicious_ip.yml  -> drop C2 traffic + blackhole the C2 domain
+#   quarantine_and_patch.yml-> quarantine the payload
+#   reset_credentials.yml   -> expire the compromised account's password
+#
+# Wazuh 4.x AR protocol: the alert arrives as one JSON object on stdin, with a
+# "command" field of "add" (execute) or "delete" (rollback).
+# =============================================================================
+set -uo pipefail
+
+LOG_FILE="/var/ossec/logs/active-responses.log"
+SANDBOX_CIDR="{{ puc2_sandbox_cidr }}"
+C2_DOMAIN="{{ puc2_c2_domain }}"
+ATTACKER_IP="{{ puc2_attacker_ip }}"
+VICTIM_USER="{{ puc2_victim_user }}"
+PAYLOAD_NAME="{{ puc2_payload_name }}"
+QUARANTINE_DIR="{{ puc2_quarantine_dir }}"
+ISOLATION_MARKER="{{ puc2_isolation_marker }}"
+ERADICATION_MARKER="{{ puc2_eradication_marker }}"
+
+log() {
+    echo "$(date '+%Y/%m/%d %H:%M:%S') active-response/bin/puc2-isolate: $*" >>"${LOG_FILE}"
+}
+
+# ---- Read the alert and extract the AR command ------------------------------
+read -r INPUT_JSON
+COMMAND=$(printf '%s' "${INPUT_JSON}" \
+    | python3 -c 'import sys,json; print(json.load(sys.stdin).get("command",""))' 2>/dev/null)
+if [ -z "${COMMAND}" ]; then
+    # Fallback parse when python3 is unavailable.
+    COMMAND=$(printf '%s' "${INPUT_JSON}" | sed -n 's/.*"command"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p')
+fi
+
+# =============================================================================
+# ROLLBACK (command = delete)
+# =============================================================================
+if [ "${COMMAND}" = "delete" ]; then
+    log "rollback requested — lifting containment"
+    iptables -P INPUT ACCEPT  2>/dev/null
+    iptables -P OUTPUT ACCEPT 2>/dev/null
+    iptables -D OUTPUT -d "${ATTACKER_IP}" -j DROP 2>/dev/null
+    sed -i "/[[:space:]]${C2_DOMAIN}\$/d" /etc/hosts 2>/dev/null
+    rm -f "${ISOLATION_MARKER}" "${ERADICATION_MARKER}"
+    log "containment lifted"
+    exit 0
+fi
+
+if [ "${COMMAND}" != "add" ]; then
+    log "unknown or empty command '${COMMAND}' — nothing to do"
+    exit 0
+fi
+
+log "containment triggered (UML steps 9-10)"
+
+# =============================================================================
+# 1. NETWORK ISOLATION  (ports isolate_host.yml)
+#    Everything is dropped EXCEPT the flat sandbox subnet, so the Wazuh agent
+#    keeps reporting to NG-SIEM and the SOC control channel survives.
+# =============================================================================
+iptables -I INPUT  -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+iptables -I OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+iptables -I INPUT  -i lo -j ACCEPT
+iptables -I OUTPUT -o lo -j ACCEPT
+iptables -A INPUT  -s "${SANDBOX_CIDR}" -j ACCEPT
+iptables -A OUTPUT -d "${SANDBOX_CIDR}" -j ACCEPT
+iptables -P INPUT  DROP
+iptables -P OUTPUT DROP
+log "network isolation applied (allow-list: ${SANDBOX_CIDR})"
+
+# =============================================================================
+# 2. BLOCK MALICIOUS INFRASTRUCTURE  (ports block_malicious_ip.yml)
+#    The attacker host sits inside the sandbox CIDR allowed above, so it needs
+#    an explicit DROP inserted ahead of that allow rule.
+# =============================================================================
+iptables -I OUTPUT -d "${ATTACKER_IP}" -j DROP
+if ! grep -q "[[:space:]]${C2_DOMAIN}\$" /etc/hosts 2>/dev/null; then
+    echo "0.0.0.0 ${C2_DOMAIN}" >>/etc/hosts
+fi
+log "blocked C2 infrastructure: ${ATTACKER_IP} / ${C2_DOMAIN}"
+
+# =============================================================================
+# 3. QUARANTINE THE PAYLOAD  (ports quarantine_and_patch.yml)
+# =============================================================================
+mkdir -p "${QUARANTINE_DIR}"
+chmod 0700 "${QUARANTINE_DIR}"
+QUARANTINED=0
+for candidate in \
+    "/home/${VICTIM_USER}/Downloads/${PAYLOAD_NAME}" \
+    "/home/${VICTIM_USER}/${PAYLOAD_NAME}" \
+    "/tmp/${PAYLOAD_NAME}" \
+    "/tmp/payload.sh"; do
+    if [ -e "${candidate}" ]; then
+        mv -f "${candidate}" "${QUARANTINE_DIR}/" 2>/dev/null && {
+            QUARANTINED=$((QUARANTINED + 1))
+            log "quarantined ${candidate}"
+        }
+    fi
+done
+chmod -R 0600 "${QUARANTINE_DIR}"/* 2>/dev/null
+
+# Kill anything still executing the payload.
+pkill -f "${PAYLOAD_NAME}" 2>/dev/null
+
+# =============================================================================
+# 4. RESET COMPROMISED CREDENTIALS  (ports reset_credentials.yml)
+#    Expire the password and drop live sessions. A replacement hash is NEVER
+#    baked into this script; NG-SOAR supplies one out of band when required.
+# =============================================================================
+if id "${VICTIM_USER}" >/dev/null 2>&1; then
+    chage -d 0 "${VICTIM_USER}" 2>/dev/null && log "expired password for ${VICTIM_USER}"
+    pkill -KILL -u "${VICTIM_USER}" 2>/dev/null
+fi
+
+# =============================================================================
+# 5. STATUS MARKERS  (feed UML step 11: containment & eradication status)
+# =============================================================================
+cat >"${ISOLATION_MARKER}" <<MARKER
+isolated_by=ng_soar/puc2-isolate
+isolated_at=$(date -Iseconds)
+allow_cidr=${SANDBOX_CIDR}
+blocked_ip=${ATTACKER_IP}
+blocked_domain=${C2_DOMAIN}
+MARKER
+
+cat >"${ERADICATION_MARKER}" <<MARKER
+quarantine_dir=${QUARANTINE_DIR}
+quarantined_files=${QUARANTINED}
+credentials_reset=$(id "${VICTIM_USER}" >/dev/null 2>&1 && echo yes || echo n/a)
+status=$([ "${QUARANTINED}" -gt 0 ] && echo eradicated || echo isolated_no_payload_found)
+eradicated_at=$(date -Iseconds)
+MARKER
+
+chmod 0644 "${ISOLATION_MARKER}" "${ERADICATION_MARKER}"
+log "containment complete — ${QUARANTINED} artefact(s) quarantined (UML step 11)"
+exit 0

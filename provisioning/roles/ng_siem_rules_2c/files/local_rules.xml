@@ -1,17 +1,26 @@
 <!--
-  NG-SIEM custom correlation rules - PUC2 Sub Case 2c.
-  These rules implement the detection/correlation logic from the scenario:
-    - malware payload execution on an endpoint (UML step 3 -> 5: alert)
-    - file-hash telemetry flagged against CTI (UML step 4)
-    - phishing + payload + lateral movement correlation (UML step 6)
-  Mapped loosely to MITRE ATT&CK (T1566 Phishing, T1204 User Execution,
-  T1021 Lateral Movement, T1048 Exfiltration).
+  NG-SIEM custom correlation rules - PUC2 (CYNET) Sub Case 2c.
+  Deployed by role ng_siem_rules_2c onto the wazuh-manager of the siemng image
+  (host ng-siem, 10.0.16.70) provisioned by the integrations substrate.
+
+  UML coverage:
+    100100 -> step 3 : payload lands in the monitored Downloads dir (telemetry)
+    100101 -> step 4/5: file hash matches the CTI-SS watchlist -> MALWARE ALERT
+    100102 -> step 6 : blocked outbound C2/exfil attempt
+    100103 -> step 6 : correlated targeted-attack confirmation
+
+  Rules 100101 and 100103 are the trigger set of the puc2-isolate active
+  response (UML steps 9-10) - see ng_siem_rules_2c/tasks/main.yml.
+
+  MITRE ATT&CK: T1566 Phishing, T1204 User Execution,
+                T1021 Lateral Movement, T1048 Exfiltration.
 -->
 <group name="puc2,malware,local,">
 
-  <!-- Suspicious payload written to a user-writable path -->
+  <!-- Suspicious payload written to a user-writable path.
+       550 = integrity checksum changed, 554 = file added to the system. -->
   <rule id="100100" level="8">
-    <if_sid>550</if_sid>
+    <if_sid>550,554</if_sid>
     <field name="file">\.(exe|scr|js|vbs|ps1|sh)$</field>
     <description>PUC2: suspicious payload file created (possible phishing payload)</description>
     <mitre>
@@ -19,10 +28,11 @@
     </mitre>
   </rule>
 
-  <!-- File hash present on the CTI/IOC watchlist (enrichment from MISP) -->
+  <!-- File hash present on the CTI/IOC watchlist seeded from CTI-SS (MISP).
+       syscheck exposes the post-change hash as md5_after. -->
   <rule id="100101" level="12">
     <if_sid>100100</if_sid>
-    <list field="md5" lookup="match_key">etc/lists/cti-malware-hashes</list>
+    <list field="md5_after" lookup="match_key">etc/lists/cti-malware-hashes</list>
     <description>PUC2: file hash matches CTI-SS malware IOC - MALWARE DETECTED</description>
     <mitre>
       <id>T1566</id>
@@ -40,7 +50,7 @@
     </mitre>
   </rule>
 
-  <!-- Correlated targeted-attack pattern: payload + IOC + C2 within window -->
+  <!-- Correlated targeted-attack pattern: payload + IOC repeated in-window -->
   <rule id="100103" level="14" frequency="2" timeframe="600">
     <if_matched_sid>100101</if_matched_sid>
     <description>PUC2: correlated targeted malware attack confirmed (payload + IOC + C2)</description>

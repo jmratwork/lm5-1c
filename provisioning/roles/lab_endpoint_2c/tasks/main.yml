@@ -1,0 +1,76 @@
+---
+# =============================================================================
+# role: lab_endpoint_2c        (host: victim — runs AFTER the victim role)
+#
+# ADDITIVE OVERLAY. The substrate's `victim` role already installs and enrols
+# the Wazuh agent against hostvars['ng-siem'].ng_siem_internal_ip — this role
+# NEVER reinstalls or re-enrols it. It only adds what Sub Case 2c needs:
+#
+#   UML step 3  - FIM on the victim's Downloads dir so the payload drop emits
+#                 the file-hash telemetry rules 100100/100101 correlate
+#   UML step 10 - the puc2-isolate active-response script the manager invokes
+#   UML step 11 - the status markers puc2-isolate writes for the analyst
+#
+# Distinct blockinfile marker so it can never collide with the substrate.
+# =============================================================================
+
+- name: Assert the substrate victim role already installed the Wazuh agent
+  ansible.builtin.stat:
+    path: /var/ossec/etc/ossec.conf
+  register: puc2_agent_conf
+  failed_when: not puc2_agent_conf.stat.exists
+
+# ── The account that "receives" the phishing email ───────────────────────────
+- name: Create the victim user account
+  ansible.builtin.user:
+    name: "{{ puc2_victim_user }}"
+    shell: /bin/bash
+    create_home: true
+
+- name: Ensure the monitored Downloads directory exists
+  ansible.builtin.file:
+    path: "/home/{{ puc2_victim_user }}/Downloads"
+    state: directory
+    owner: "{{ puc2_victim_user }}"
+    group: "{{ puc2_victim_user }}"
+    mode: '0755'
+
+# ── FIM on the payload landing zone (UML step 3) ─────────────────────────────
+- name: Enable FIM on the victim download directory
+  ansible.builtin.blockinfile:
+    path: /var/ossec/etc/ossec.conf
+    insertbefore: "</ossec_config>"
+    marker: "<!-- {mark} ANSIBLE MANAGED PUC2-2C FIM -->"
+    block: |
+      <syscheck>
+        <directories check_all="yes" realtime="yes" report_changes="yes">/home/{{ puc2_victim_user }}/Downloads</directories>
+        <directories check_all="yes" realtime="yes">/tmp</directories>
+      </syscheck>
+  notify: restart wazuh-agent
+
+# ── Containment action invoked by the manager (UML steps 10-11) ──────────────
+- name: Ensure the active-response bin directory exists
+  ansible.builtin.file:
+    path: /var/ossec/active-response/bin
+    state: directory
+    owner: root
+    group: wazuh
+    mode: '0750'
+
+- name: Deploy the puc2-isolate active-response script
+  ansible.builtin.template:
+    src: puc2-isolate.j2
+    dest: /var/ossec/active-response/bin/puc2-isolate
+    owner: root
+    group: wazuh
+    mode: '0750'
+  notify: restart wazuh-agent
+
+- name: Ensure iptables is available for the containment action
+  ansible.builtin.apt:
+    name: iptables
+    state: present
+    update_cache: false
+
+- name: Apply the endpoint configuration now
+  ansible.builtin.meta: flush_handlers
