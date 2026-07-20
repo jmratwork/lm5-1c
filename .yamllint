@@ -10,5 +10,21 @@ rules:
   document-start: disable
   truthy:
     allowed-values: ["true", "false", "True", "False"]
+  # Windows checkouts materialise CRLF via core.autocrlf; the repo content is LF.
+  new-lines: disable
 ignore: |
   provisioning/roles/*/templates/
+  # ---------------------------------------------------------------------------
+  # The roles below are the ng-soc-ansible@integrations substrate, vendored
+  # BYTE-IDENTICAL on purpose (see README "Reuse of the integrations substrate").
+  # They are not ours to restyle: linting them would only create pressure to
+  # edit files that must stay verbatim. Everything in the PUC2 2c overlay
+  # (*_2c roles, evaluation_reporting, group_vars) IS linted.
+  # ---------------------------------------------------------------------------
+  provisioning/roles/all/
+  provisioning/roles/docker_server/
+  provisioning/roles/ng-siem/
+  provisioning/roles/kali/
+  provisioning/roles/victim/
+  provisioning/roles/man/
+  topology.yml

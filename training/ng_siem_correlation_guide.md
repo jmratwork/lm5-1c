@@ -3,11 +3,11 @@
 Use this guide on the Wazuh (NG-SIEM) dashboard to work UML steps 3-6.
 
 ## 1. Telemetry ingestion (UML step 3)
-Endpoints run the Wazuh agent (role `lab_endpoint`). File-integrity monitoring on
-`/home/victim/Downloads` and `/tmp` emits **file-hash** events the moment the
-payload lands.
+The endpoint runs the Wazuh agent enrolled by the substrate `victim` role;
+file-integrity monitoring on `/home/victim/Downloads` and `/tmp` (added by role
+`lab_endpoint_2c`) emits **file-hash** events the moment the payload lands.
 
-- Dashboard → *Agents* → confirm `endpoint-1` / `endpoint-2` are **Active**.
+- Dashboard → *Agents* → confirm the `victim` agent (10.0.16.100) is **Active**.
 - *Security events* → filter `syscheck.path: "/home/victim/Downloads/*"`.
 
 ## 2. CTI enrichment (UML step 4)
@@ -36,6 +36,16 @@ Build the holistic view across sources:
 2. Correlate FIM (payload) + firewall drops (rule 100102) + the campaign window.
 3. When **rule 100103** fires, the attack is confirmed as **targeted** — attach this
    view to the CICMS case (step 7).
+
+## 5. Automated containment (UML steps 9-11)
+Rules **100101** and **100103** are wired to the `puc2-isolate` active response,
+which runs on the affected agent (`location=local`). After it fires:
+
+- *Security events* → the agent keeps reporting: isolation deliberately keeps
+  `10.0.16.0/24` reachable so telemetry survives containment.
+- On the endpoint, `/var/run/ngsoar_isolated` and
+  `/var/run/ngsoar_eradication_status` carry the step-11 status, and
+  `/var/ossec/logs/active-responses.log` carries the audit trail.
 
 ## UEBA / advanced detections
 UEBA, APT detection, exfiltration prevention and phishing detection described in the

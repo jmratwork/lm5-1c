@@ -20,19 +20,19 @@ finally share intel and debrief.
 | CTI Specialist | Enriches and shares threat intelligence |
 
 ### Systems
-| System | Component | Access |
-|--------|-----------|--------|
-| NG-SIEM | Wazuh dashboard | https://10.10.10.20 |
-| CTI-SS | MISP | https://10.10.10.10:8443 |
-| CICMS | DFIR-IRIS | https://10.10.10.10 |
-| NG-SOAR | Shuffle | http://10.10.10.10:5000 |
-| Endpoints | endpoint-1/2 | 10.10.20.11 / 10.10.20.12 |
-| Attacker | mail-attacker | 10.10.30.10 |
+| System | Component | Host | Access |
+|--------|-----------|------|--------|
+| NG-SIEM | Wazuh dashboard (`siemng`) | `ng-siem` | https://10.0.16.70 |
+| CTI-SS | MISP | `docker-server` | https://10.0.16.60:8443 |
+| CICMS | DFIR-IRIS | `docker-server` | https://10.0.16.60:8083 |
+| NG-SOAR | containment webhook | `docker-server` | http://10.0.16.60:8080/trigger/playbook |
+| Lab Host/Endpoint | victim workstation | `victim` | 10.0.16.100 |
+| Attacker | phishing + payload origin | `kali` | 10.0.16.50 |
 
 ### Known IOCs (provided to CTI Specialist mid-exercise)
 - MD5 `44d88612fea8a8f36de82e1278abb02f`
 - Domain `c2.puc2-training.lab`
-- C2/host `10.10.30.10`
+- C2/host `10.0.16.50` (payload served on :8000)
 - Phishing sender `billing@puc2-training.lab`
 
 ### Safety note

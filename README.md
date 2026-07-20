@@ -1,117 +1,188 @@
 # PUC2 (CYNET) – Sub Case 2c: Malware Attack Detection & Response Training
 
-A **CyberRangeCZ Sandbox Definition** implementing the full training scenario
-*Malware Attack Detection & Response*. It satisfies the 13-step UML sequence and
-the 6.3.2.3 functional description: a phishing-delivered malware attack is
-detected by NG-SIEM, triaged and case-managed in CICMS with CTI-SS enrichment,
-contained automatically by NG-SOAR, and debriefed by the cyber range.
+A **CyberRangeCZ Sandbox Definition** implementing the training scenario
+*Malware Attack Detection & Response*: a phishing-delivered payload is detected
+by NG-SIEM, enriched from CTI-SS, case-managed in CICMS, contained
+automatically, and debriefed by the cyber range. It satisfies the 13-step UML
+sequence and the 6.3.2.3 functional description.
+
+The platform clones **this single repository**: `topology.yml` at the root and
+`provisioning/playbook.yml` are the only entry points.
+
+---
+
+## Reuse of the `integrations` substrate
+
+This sandbox is **not** built from scratch. It sits on the proven substrate of
+[`NG-SOC-eu/ng-soc-ansible@integrations`](https://github.com/NG-SOC-eu/ng-soc-ansible/tree/integrations),
+which is vendored here **byte-identical**:
+
+| Vendored verbatim | What it gives us |
+|---|---|
+| `topology.yml` | the tested flat `testnet` 10.0.16.0/24 |
+| `provisioning/roles/all/` | `/etc/hosts` wiring, sandbox command logging |
+| `provisioning/roles/docker_server/` | MISP, DFIR-IRIS, NG-SOAR, RITA, MCP servers, SACTI; publishes `misp_api_key`, `iris_api_key`, `docker_server_internal_ip` |
+| `provisioning/roles/ng-siem/` | the `siemng` image (Wazuh + SPHYNX stack); injects the MISP and `custom-iris` integrations into `ossec.conf` |
+| `provisioning/roles/kali/` | Caldera, Metasploit, OpenVAS, Docker |
+| `provisioning/roles/victim/` | Wazuh agent, already enrolled against `ng-siem` |
+| `provisioning/roles/man/` | syslog-ng on the management node |
+
+**These roles are never modified.** Sub Case 2c is layered on top as an
+**additive overlay** of `*_2c` roles that run *after* them and use their own
+`blockinfile` markers, so the substrate's `ossec.conf` integrations are never
+clobbered. Verify with:
+
+```bash
+git clone --depth 1 -b integrations https://github.com/NG-SOC-eu/ng-soc-ansible.git /tmp/subs
+for r in all docker_server ng-siem kali victim man; do
+  diff -r /tmp/subs/provisioning/roles/$r provisioning/roles/$r
+done
+diff /tmp/subs/topology.yml topology.yml
+```
+
+Two documented deltas outside those roles: `provisioning/requirements.yml`
+merges the substrate's `sandbox-logging` role requirement with the collections
+its roles depend on, and one trailing space was stripped from
+`provisioning/playbook.yml` so `yamllint` passes.
+
+---
 
 ## Topology
 
-```
-                          internet-connection (WAN 100.100.100.0/24)
-        ┌───────────────┬──────────────────────────┬────────────────┐
-   soc-router       endpoint-router            attacker-router
-        │                  │                          │
-  soc-net 10.10.10.0/24   endpoint-net 10.10.20.0/24  attacker-net 10.10.30.0/24
-   ├ soc-services .10       ├ endpoint-1 .11           └ mail-attacker .10
-   │  (NG-SOAR/MISP/IRIS)    └ endpoint-2 .12              (phishing + payload)
-   └ ng-siem .20 (Wazuh)
-```
-
-Endpoints sit on a **separate network** from the SOC stack so that the NG-SOAR
-isolation action (UML step 10) is observable and verifiable.
-
-| Host | Role | Image / flavor |
-|------|------|----------------|
-| soc-services | NG-SOAR + MISP (CTI-SS) + DFIR-IRIS (CICMS) | ubuntu-noble / standard.large |
-| ng-siem | NG-SIEM = Wazuh (gap-fill) | ubuntu-noble / standard.large |
-| endpoint-1/2 | Lab Hosts/Endpoints (victims, telemetry) | ubuntu-noble / medium·small |
-| mail-attacker | Phishing + payload delivery origin | debian-12 / standard.small |
-
-## Component → resource mapping
-
-| UML component | Provided by | Status |
-|---------------|-------------|--------|
-| Lab Hosts/Endpoints | `endpoint-1`, `endpoint-2` + role `lab_endpoint` | new |
-| NG-SIEM | Wazuh via role `ng_siem` | **new (gap-fill)** |
-| CTI-SS | MISP via role `docker_server` + `cti_ss` | reused pattern |
-| CICMS | DFIR-IRIS via role `docker_server` + `cicms` | reused pattern |
-| NG-SOAR | Shuffle via role `docker_server` + `ng_soar` | reused pattern |
-| Phishing/payload injection | role `malware_injection` (mail-attacker) | new (simulated) |
-
-## The 13 UML steps → resources
-
-| # | Step | Covered by |
-|---|------|-----------|
-| 1 | Initiate malware scenario | `malware_injection/inject_scenario.sh` |
-| 2 | Inject phishing + payload | role `malware_injection` (payload server + `phishing_email.eml`) |
-| 3 | Telemetry (file hash) | role `lab_endpoint` (Wazuh agent + FIM) → NG-SIEM |
-| 4 | Enrich hash with CTI | role `ng_siem` CTI integration + role `cti_ss` (MISP) |
-| 5 | Alert: malware detected | `ng_siem/files/local_rules.xml` (rules 100101/100103) |
-| 6 | Correlate logs + confirm | `training/ng_siem_correlation_guide.md` |
-| 7 | Open case + attach SIEM context | role `cicms` (`case_template_puc2.json`, `open_case.sh`) |
-| 8 | Enrich with CTI (IOCs/TTPs) | role `cicms` ↔ role `cti_ss` (IRIS↔MISP) |
-| 9 | Execute containment playbooks | role `ng_soar` (`run_containment.sh`) |
-| 10 | Apply isolation + remediation | `isolate_host.yml`, `block_malicious_ip.yml`, `reset_credentials.yml`, `quarantine_and_patch.yml` |
-| 11 | Containment/eradication status | `run_containment.sh` output + `/var/run/ngsoar_*` markers |
-| 12 | Share malware intel | role `cti_ss` (`load_cti.sh` + sharing group) |
-| 13 | Training summary + feedback | role `evaluation_reporting` |
-
-A per-step quick-run order is in [training/scenario_runbook.md](training/scenario_runbook.md).
-
-## Repository layout
+Flat, single-subnet testnet — the layout the substrate is tested on:
 
 ```
-/topology.yml                       # REQUIRED at root - sandbox topology
-/provisioning/
-  playbook.yml                      # orchestrates all roles by group
-  requirements.yml                  # Galaxy collections
-  group_vars/all.yml                # non-secret globals
-  group_vars/vault.yml.example      # template for vault-encrypted secrets
-  roles/
-    common/                         # base packages, rsyslog
-    docker_server/                  # Docker engine + NG-SOAR/MISP/DFIR-IRIS  (NG-SOC pattern)
-    ng_siem/                        # Wazuh deployment (gap-fill)
-    cti_ss/                         # MISP sharing/enrichment config
-    cicms/                          # DFIR-IRIS case mgmt + MISP integration
-    ng_soar/                        # containment playbooks
-    lab_endpoint/                   # Wazuh agent + telemetry
-    malware_injection/              # phishing + payload simulation
-    evaluation_reporting/           # post-incident feedback (step 13)
-/training/                          # incident brief, correlation guide, runbook
-/VALIDATION.md                      # validation results + gap analysis
+                 router 10.0.16.1
+                        │
+        ───────── testnet 10.0.16.0/24 ─────────
+         │            │            │           │
+      kali .50   docker-server .60  ng-siem .70  victim .100
+   (phishing +   (MISP/IRIS/       (siemng:      (Wazuh agent,
+    payload)      NG-SOAR)          Wazuh+SPHYNX) FIM + AR)
 ```
 
-## NG-SIEM decision (gap analysis)
+### UML actor → host mapping
 
-The reference NG-SOC `docker_server` role on branch `central` deploys NG-SOAR,
-MISP, RITA, DFIR-IRIS and Portainer **but no SIEM**. A `ng-siem` role exists on
-branches `siemng2` / `ng-siem`, but it only manages the *lifecycle/networking of
-pre-existing Wazuh containers* — it contains no engine install or compose
-bring-up. **Decision:** deploy a full **Wazuh** single-node stack (indexer +
-manager + dashboard) in a dedicated `ng_siem` role, reusing the `docker_server`
-engine-install tasks and adding the host-resolution/init steps from the reference
-`ng-siem` role. Wazuh provides telemetry ingestion (step 3), CTI enrichment via
-its MISP integration (step 4), alerting (step 5) and correlation (step 6).
+| UML actor | Host | IP | Services |
+|---|---|---|---|
+| Lab Hosts/Endpoints | `victim` | 10.0.16.100 | Wazuh agent (enrolled by the substrate), FIM, `puc2-isolate` active response |
+| NG-SIEM | `ng-siem` | 10.0.16.70 | `siemng` image, Wazuh manager (native systemd), 443 / 9200 |
+| CTI-SS | `docker-server` | 10.0.16.60 | MISP `:8443` |
+| CICMS | `docker-server` | 10.0.16.60 | DFIR-IRIS `:8083` |
+| NG-SOAR | `docker-server` | 10.0.16.60 | webhook `:8080/trigger/playbook` |
+| Phishing / payload origin | `kali` | 10.0.16.50 | Caldera + payload server `:8000` |
+| Cyber Range (hands-on platform) | CyberRangeCZ | — | sandbox lifecycle, evaluation |
 
-## Deploy & run
+Addresses are resolved from the facts the substrate publishes
+(`hostvars['ng-siem'].ng_siem_internal_ip`,
+`hostvars['docker-server'].docker_server_internal_ip`); the `10.0.16.x`
+literals in `provisioning/group_vars/puc2_2c.yml` are only a standalone
+fallback.
 
-1. Push this repo as a CyberRangeCZ Sandbox Definition; the platform builds the
-   topology and runs `provisioning/playbook.yml`.
-2. Provide secrets via vault: `cp provisioning/group_vars/vault.yml.example
-   provisioning/group_vars/vault.yml`, fill it, `ansible-vault encrypt` it.
-3. Run the scenario with [training/scenario_runbook.md](training/scenario_runbook.md).
+---
 
-## Secrets management
+## Containment: what is live, and what is orchestration
 
-The reference role hardcoded a password hash, a Docker Hub PAT, SMB credentials
-and MISP IPs/keys. **None of those are copied here.** Every credential is an
-overridable Ansible variable defaulting to a documented `CHANGE_ME` placeholder,
-sourced from an Ansible Vault file that is git-ignored. The repository contains
-**no secrets in clear text**. See `provisioning/group_vars/vault.yml.example`.
+This is the single most important thing to understand about the sandbox.
 
-## Safety
+**LIVE and verifiable — Wazuh active response.**
+Rules `100101` / `100103` on the `ng-siem` manager execute
+`/var/ossec/active-response/bin/puc2-isolate` on the affected endpoint
+(`location=local`). That script ports the logic of all four containment
+playbooks: iptables isolation that keeps `10.0.16.0/24` reachable so the agent
+keeps reporting, a DROP on the C2 host plus a `/etc/hosts` blackhole of the C2
+domain, payload quarantine, and credential expiry. It writes
+`/var/run/ngsoar_isolated` and `/var/run/ngsoar_eradication_status`, which are
+what UML step 11 reports. This path is provisioned end to end by
+`ng_siem_rules_2c` + `lab_endpoint_2c`, and it is what `VALIDATION.md` exercises.
 
-The injected "payload" (`invoice.exe`) is an **EICAR-equivalent benign test
-artifact**. No real malware exists anywhere in this sandbox.
+**Orchestration — NG-SOAR.**
+DFIR-IRIS already POSTs to `http://<docker-server>:8080/trigger/playbook` (the
+`SOARCA` webhook the substrate's `docker_server` role configures in
+`iris_webhooks_module`). The NG-SOAR workflow itself lives in the `NG-SOAR.yml`
+compose file copied off the SMB share at build time — **it is deliberately not
+reimplemented here**. `soar_actions_2c` only deploys the four playbooks as the
+action library that workflow references.
+
+---
+
+## The 13 UML steps → file map
+
+| # | Step | Host | Covered by |
+|---|---|---|---|
+| 1 | Initiate malware scenario | kali | `roles/malware_injection_2c/templates/inject_scenario.sh.j2` (run by the instructor, not at provision time) |
+| 2 | Inject phishing + payload delivery | kali → victim | `roles/malware_injection_2c/tasks/main.yml` (EICAR payload server `:8000`) + `templates/phishing_email.eml.j2` |
+| 3 | Telemetry (file hash) | victim → ng-siem | `roles/lab_endpoint_2c/tasks/main.yml` (FIM on `~victim/Downloads`) → rule `100100` |
+| 4 | Enrich hash with CTI | ng-siem ↔ docker-server | `roles/ng_siem_rules_2c` (CDB list `etc/lists/cti-malware-hashes`) + `roles/cti_ss_2c` (same IOCs seeded into MISP) + the substrate's MISP integration |
+| 5 | Alert: malware detected | ng-siem | `roles/ng_siem_rules_2c/files/local_rules.xml` rule `100101` (level 12) |
+| 6 | Correlate logs + confirm attack pattern | ng-siem | rules `100102` / `100103` + `training/ng_siem_correlation_guide.md` |
+| 7 | Open incident case + attach SIEM context | ng-siem → docker-server | substrate `custom-iris` integration (creates the case, dedups by `case_soc_id`) + `roles/cicms_2c` (case template & tasks) |
+| 8 | Enrich with CTI (IOCs/TTPs) | docker-server | `roles/cicms_2c` + `roles/cti_ss_2c`; the IRIS↔MISP module is wired by the substrate |
+| 9 | Execute containment playbooks | ng-siem | `<active-response>` block injected by `roles/ng_siem_rules_2c` (rules `100101,100103`) — orchestration path: IRIS → NG-SOAR webhook |
+| 10 | Apply isolation and remediation | victim | `roles/lab_endpoint_2c/templates/puc2-isolate.j2`; library in `roles/soar_actions_2c/files/*.yml` |
+| 11 | Containment and eradication status | victim → analyst | `/var/run/ngsoar_isolated`, `/var/run/ngsoar_eradication_status`, `/var/ossec/logs/active-responses.log` |
+| 12 | Share malware intel (+ playbooks) | docker-server | `roles/cti_ss_2c` sharing group `PUC2-CYNET-Training` + `roles/soar_actions_2c` library |
+| 13 | Training summary + feedback | ng-siem | `roles/evaluation_reporting` (`collect_evaluation.sh`, `lessons_learned_template.md`) |
+
+---
+
+## Provisioning order
+
+`provisioning/playbook.yml` runs the substrate plays unchanged, then appends
+the overlay in this order:
+
+```
+docker-server (facts: misp_api_key, iris_api_key, docker_server_internal_ip)
+  → ng-siem (substrate integrations)
+    → ng_siem_rules_2c      (rules, CDB list, active-response wiring)
+      → lab_endpoint_2c     (FIM + puc2-isolate on the endpoint)
+        → cti_ss_2c / cicms_2c / soar_actions_2c
+          → malware_injection_2c
+            → evaluation_reporting
+```
+
+`provisioning/group_vars/puc2_2c.yml` is the single source of IPs, ports and
+IOCs. It is loaded through `vars_files` rather than by name: the substrate
+topology declares `groups: []`, so a `group_vars/<group>.yml` file would never
+be auto-loaded.
+
+---
+
+## Running the exercise
+
+```bash
+# 1. Provision the sandbox (the platform does this from topology.yml)
+# 2. Kick off the scenario — UML steps 1-2, on kali:
+sudo /opt/malware-injection/inject_scenario.sh
+
+# 3. Watch the detection chain on ng-siem:
+tail -f /var/ossec/logs/alerts/alerts.json | grep -E '1001(00|01|02|03)'
+
+# 4. Confirm containment on victim (UML step 11):
+cat /var/run/ngsoar_isolated /var/run/ngsoar_eradication_status
+sudo iptables -L -n
+
+# 5. Debrief — UML step 13, on ng-siem:
+/opt/evaluation/collect_evaluation.sh
+```
+
+See `VALIDATION.md` for the full acceptance procedure and `training/` for the
+trainee-facing brief, runbook and correlation guide.
+
+---
+
+## Secrets
+
+No credential is committed by this overlay. MISP and DFIR-IRIS API keys are
+taken at runtime from the cacheable facts the substrate's `docker_server` role
+publishes; `provisioning/group_vars/vault.yml` (git-ignored, see
+`vault.yml.example`) only overrides them for standalone runs.
+
+> ⚠️ **Rotation required — inherited from the upstream public repository.**
+> The vendored `integrations` roles contain hardcoded credentials that are
+> public on GitHub and must be rotated at the source:
+> a Docker Hub PAT (`dckr_pat_…`, in `roles/kali` and `roles/docker_server`),
+> a DFIR-IRIS API key (`c-8vTC8nDC…`, in `roles/docker_server`), and a password
+> hash for the `ubuntu` user. They are reproduced here **verbatim and
+> unmodified on purpose**, because the substrate roles must stay byte-identical
+> for the reuse guarantee above to hold. Fix them upstream, not here.
