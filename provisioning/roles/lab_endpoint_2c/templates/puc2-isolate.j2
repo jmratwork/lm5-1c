@@ -22,7 +22,7 @@ set -uo pipefail
 LOG_FILE="/var/ossec/logs/active-responses.log"
 SANDBOX_CIDR="{{ puc2_sandbox_cidr }}"
 C2_DOMAIN="{{ puc2_c2_domain }}"
-ATTACKER_IP="{{ puc2_c2_ip }}"
+C2_IP="{{ puc2_c2_ip }}"
 VICTIM_USER="{{ puc2_victim_user }}"
 PAYLOAD_NAME="{{ puc2_payload_name }}"
 QUARANTINE_DIR="{{ puc2_quarantine_dir }}"
@@ -49,7 +49,7 @@ if [ "${COMMAND}" = "delete" ]; then
     log "rollback requested — lifting containment"
     iptables -P INPUT ACCEPT  2>/dev/null
     iptables -P OUTPUT ACCEPT 2>/dev/null
-    iptables -D OUTPUT -d "${ATTACKER_IP}" -j DROP 2>/dev/null
+    iptables -D OUTPUT -d "${C2_IP}" -j DROP 2>/dev/null
     sed -i "/[[:space:]]${C2_DOMAIN}\$/d" /etc/hosts 2>/dev/null
     rm -f "${ISOLATION_MARKER}" "${ERADICATION_MARKER}"
     log "containment lifted"
@@ -83,11 +83,14 @@ log "network isolation applied (allow-list: ${SANDBOX_CIDR})"
 #    The attacker host sits inside the sandbox CIDR allowed above, so it needs
 #    an explicit DROP inserted ahead of that allow rule.
 # =============================================================================
-iptables -I OUTPUT -d "${ATTACKER_IP}" -j DROP
-if ! grep -q "[[:space:]]${C2_DOMAIN}\$" /etc/hosts 2>/dev/null; then
-    echo "0.0.0.0 ${C2_DOMAIN}" >>/etc/hosts
-fi
-log "blocked C2 infrastructure: ${ATTACKER_IP} / ${C2_DOMAIN}"
+iptables -I OUTPUT -d "${C2_IP}" -j DROP
+# The scenario pre-seeds "${C2_IP} ${C2_DOMAIN}" in /etc/hosts as a sinkhole so
+# the beacon is observable before containment. REPLACE that line rather than
+# appending: with two entries the first one wins, and the first would still be
+# the live C2 address — containment would look applied and do nothing.
+sed -i "/[[:space:]]${C2_DOMAIN}\$/d" /etc/hosts 2>/dev/null
+echo "0.0.0.0 ${C2_DOMAIN}" >>/etc/hosts
+log "blocked C2 infrastructure: ${C2_IP} / ${C2_DOMAIN} (sinkhole rewritten to 0.0.0.0)"
 
 # =============================================================================
 # 3. QUARANTINE THE PAYLOAD  (ports quarantine_and_patch.yml)
@@ -151,20 +154,26 @@ fi
 # =============================================================================
 # 6. STATUS MARKERS  (feed UML step 11: containment & eradication status)
 # =============================================================================
+# First line is the graded answer for training level L19 — keep it verbatim.
 cat >"${ISOLATION_MARKER}" <<MARKER
+{{ puc2_isolation_status }}
 isolated_by=ng_soar/puc2-isolate
 isolated_at=$(date -Iseconds)
 allow_cidr=${SANDBOX_CIDR}
-blocked_ip=${ATTACKER_IP}
+blocked_ip=${C2_IP}
 blocked_domain=${C2_DOMAIN}
 MARKER
 
+# First line is the graded answer for training level L21 — keep it verbatim.
+# It reports {{ puc2_eradication_status }} only when something was actually
+# quarantined; the multi-stage delivery guarantees at least one artefact, so a
+# different value here means the injection never ran, which is worth seeing.
 cat >"${ERADICATION_MARKER}" <<MARKER
+$([ "${QUARANTINED}" -gt 0 ] && echo "{{ puc2_eradication_status }}" || echo "eradication_incomplete_no_payload_found")
 quarantine_dir=${QUARANTINE_DIR}
 quarantined_files=${QUARANTINED}
 credentials_reset=$(id "${VICTIM_USER}" >/dev/null 2>&1 && echo yes || echo n/a)
 security_updates=${PATCH_STATUS}
-status=$([ "${QUARANTINED}" -gt 0 ] && echo eradicated || echo isolated_no_payload_found)
 eradicated_at=$(date -Iseconds)
 MARKER
 

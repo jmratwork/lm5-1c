@@ -16,3 +16,5 @@ puc2_delivery_paths:
   - "/home/victim/Downloads/invoice.exe"
   - "/tmp/invoice.exe"
   - "/home/victim/Downloads/statement.exe"
+puc2_isolation_status: "isolated"
+puc2_eradication_status: "eradicated"

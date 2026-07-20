@@ -62,13 +62,37 @@
       group_vars/puc2_2c.yml or the generation task above.
   when: puc2_generated_payload.stat.checksum != puc2_payload_md5
 
-- name: Deliver the phishing email to the victim's mailbox
+# Delivered to the real mail spool: training level L5 has the trainee grep
+# `href=` out of {{ puc2_victim_mail_spool }}, so the message must live there
+# and must carry an actual HTML anchor.
+- name: Deliver the phishing email to the victim's mail spool
+  ansible.builtin.template:
+    src: phishing_email.eml.j2
+    dest: "{{ puc2_victim_mail_spool }}"
+    owner: "{{ puc2_victim_user }}"
+    group: mail
+    mode: '0660'
+
+- name: Keep a readable copy in the victim's home
   ansible.builtin.template:
     src: phishing_email.eml.j2
     dest: "/home/{{ puc2_victim_user }}/phishing_email.eml"
     owner: "{{ puc2_victim_user }}"
     group: "{{ puc2_victim_user }}"
     mode: '0644'
+
+# ── C2 sinkhole (training levels L11 and L15) ────────────────────────────────
+# The analyst is asked to correlate an outbound attempt to the C2 DOMAIN. For a
+# name-based connection to be observable at all, the name has to resolve before
+# the attack — otherwise the beacon dies in the resolver and never reaches the
+# egress filter that logs it. This entry is the sinkhole; puc2-isolate REPLACES
+# it with 0.0.0.0 during containment.
+- name: Sinkhole the C2 domain so the beacon is observable
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    regexp: '\s{{ puc2_c2_domain | regex_escape }}$'
+    line: "{{ puc2_c2_ip }} {{ puc2_c2_domain }}"
+    state: present
 
 - name: Render the scenario-kickoff script
   ansible.builtin.template:

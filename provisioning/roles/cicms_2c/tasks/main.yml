@@ -89,6 +89,63 @@
   failed_when: false
   when: "'PUC2-2C-Malware' not in (puc2_iris_templates.content | default(''))"
 
+# ── The scenario case (UML step 7, training level L14) ───────────────────────
+# Training L14 grades the case SOC id, which must be exactly
+# {{ puc2_case_soc_id }}. The substrate's custom-iris integration builds its own
+# ids (WAZUH-<rule>-<ip>-<user>-<hash>) and IS NOT OURS TO EDIT, so the scenario
+# case is created here at provision time instead. custom-iris keeps adding its
+# own alert-derived cases alongside; both are expected in the IRIS case list.
+- name: Check whether the scenario case already exists in CICMS
+  ansible.builtin.uri:
+    url: "{{ puc2_iris_url }}/manage/cases/list"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ puc2_iris_api_key }}"
+      Content-Type: "application/json"
+    validate_certs: false
+    status_code: [200, 401, 403]
+    timeout: 30
+  register: puc2_iris_cases
+  no_log: true
+  failed_when: false
+
+- name: Create the PUC2 2c scenario case
+  ansible.builtin.uri:
+    url: "{{ puc2_iris_url }}/manage/cases/add"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ puc2_iris_api_key }}"
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      case_soc_id: "{{ puc2_case_soc_id }}"
+      case_customer: 1
+      case_name: "[PUC2-2C] Malware attack on the lab endpoint"
+      case_description: >-
+        Scenario case for PUC2 (CYNET) Sub Case 2c. NG-SIEM context: rules
+        100101/100103 on agent victim ({{ puc2_victim_ip }}), manager
+        {{ puc2_ng_siem_ip }}. Enrichment from CTI-SS at {{ puc2_misp_url }}.
+      severity_id: "4"
+      case_tags: "puc2-2c,malware,{{ puc2_mitre_initial_access }},{{ puc2_mitre_execution }}"
+    validate_certs: false
+    status_code: [200, 201]
+    timeout: 30
+  register: puc2_case_create
+  no_log: true
+  changed_when: puc2_case_create.status in [200, 201]
+  failed_when: false
+  when: puc2_case_soc_id not in (puc2_iris_cases.content | default(''))
+
+- name: FAIL if the scenario case could not be created
+  ansible.builtin.fail:
+    msg: >-
+      Case {{ puc2_case_soc_id }} is absent from CICMS and could not be created
+      (HTTP {{ puc2_case_create.status | default('unreachable') }}). Training
+      level L14 grades this exact SOC id and would be unanswerable.
+  when:
+    - puc2_case_soc_id not in (puc2_iris_cases.content | default(''))
+    - puc2_case_create.status | default(0) not in [200, 201]
+
 # ── Operator-driven case opening (UML step 7) ────────────────────────────────
 - name: Ensure jq is available for the operator helper scripts
   ansible.builtin.apt:

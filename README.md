@@ -125,7 +125,7 @@ action library that workflow references.
 | 9 | Execute containment playbooks | ng-siem / docker-server | **automatic:** `<active-response>` block injected by `roles/ng_siem_rules_2c` (rules `100101,100103`); **operator-driven:** `roles/soar_actions_2c/templates/ngsoar_trigger.sh.j2` → the NG-SOAR webhook |
 | 10 | Apply isolation and remediation | victim | `roles/lab_endpoint_2c/templates/puc2-isolate.j2` (isolation, C2 block, quarantine, credential reset, security updates); library in `roles/soar_actions_2c/files/*.yml` |
 | 11 | Containment and eradication status | victim → analyst | `/var/run/ngsoar_isolated`, `/var/run/ngsoar_eradication_status`, `/var/ossec/logs/active-responses.log`, `/var/log/puc2-security-updates.log` |
-| 12 | Share malware intel (+ playbooks) | docker-server | `roles/cti_ss_2c` sharing group `PUC2-CYNET-Training` + `templates/share_intel.sh.j2` (CTI Specialist action) + the playbook library |
+| 12 | Share malware intel (+ playbooks) | docker-server | `roles/cti_ss_2c` sharing group `NG-SOC-PUC2` + `templates/share_intel.sh.j2` (CTI Specialist action) + the playbook library |
 | 13 | Training summary + feedback | ng-siem | `roles/evaluation_reporting` (`collect_evaluation.sh`, `lessons_learned_template.md`) |
 
 ### Component scope rule (read this before proposing an addition)
@@ -215,7 +215,7 @@ be auto-loaded.
 # 2. Kick off the scenario — UML steps 1-2. The Cyber Range injects into the
 #    endpoint; provisioning never fires this by itself:
 ansible-playbook provisioning/playbook.yml --tags puc2-inject --limit victim
-#    (equivalently, on the endpoint: sudo /opt/scenario-injection/inject_scenario.sh)
+#    (equivalently, on the endpoint: sudo /opt/puc2/inject_scenario.sh)
 
 # 3. Watch the detection chain on ng-siem:
 tail -f /var/ossec/logs/alerts/alerts.json | grep -E '1001(00|01|02|03)'

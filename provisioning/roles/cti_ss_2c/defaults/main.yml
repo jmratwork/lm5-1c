@@ -2,7 +2,7 @@
 # role: cti_ss_2c (CTI-SS = MISP, deployed by the substrate docker_server role)
 # Fallbacks only. The authoritative values live in group_vars/puc2_2c.yml.
 puc2_misp_seed_dir: "/opt/cti-ss-seed"
-puc2_misp_sharing_group_name: "PUC2-CYNET-Training"
+puc2_misp_sharing_group_name: "NG-SOC-PUC2"
 puc2_misp_url: "https://127.0.0.1:8443"
 puc2_misp_api_key: "CHANGE_ME"
 puc2_payload_md5: "44d88612fea8a8f36de82e1278abb02f"
@@ -13,3 +13,5 @@ puc2_soar_playbook_dir: "/opt/NG-SOAR/playbooks"
 puc2_victim_ip: "10.0.16.100"
 puc2_c2_ip: "10.0.16.50"
 puc2_payload_url: "http://10.0.16.50:8000/invoice.exe"
+puc2_mitre_initial_access: "T1566.001"
+puc2_mitre_execution: "T1204.002"

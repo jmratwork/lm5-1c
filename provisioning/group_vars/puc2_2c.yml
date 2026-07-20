@@ -43,6 +43,17 @@ puc2_soar_webhook_url: "http://{{ puc2_docker_server_ip }}:{{ puc2_soar_webhook_
 puc2_misp_api_key: "{{ hostvars['docker-server']['misp_api_key'] | default(vault_misp_api_key | default('CHANGE_ME')) }}"
 puc2_iris_api_key: "{{ hostvars['docker-server']['iris_api_key'] | default(vault_iris_api_key | default('CHANGE_ME')) }}"
 
+# ---- Values the training definition grades against --------------------------
+# Each of these is an exact string a trainee submits as an answer. Changing one
+# breaks the corresponding level; validation/validate_training.sh checks them.
+puc2_arm_token: "puc2-2c-armed"                # L4
+puc2_case_soc_id: "CASE-PUC2-2C"               # L14
+puc2_isolation_status: "isolated"              # L19
+puc2_eradication_status: "eradicated"          # L21
+puc2_mitre_initial_access: "T1566.001"         # L9  (Spearphishing Link)
+puc2_mitre_execution: "T1204.002"              # L26 (User Execution: Malicious File)
+puc2_victim_mail_spool: "/var/mail/victim"     # L5
+
 # ---- Scenario identity ------------------------------------------------------
 puc2_victim_user: "victim"
 puc2_payload_name: "invoice.exe"
@@ -77,7 +88,7 @@ puc2_eradication_marker: "/var/run/ngsoar_eradication_status"
 puc2_eval_root: "/opt/evaluation"
 
 # ---- On-host paths used by the overlay roles --------------------------------
-puc2_injection_root: "/opt/scenario-injection"
+puc2_injection_root: "/opt/puc2"              # training L4 expects this exact path
 puc2_misp_seed_dir: "/opt/cti-ss-seed"
 puc2_iris_assets_dir: "/opt/cicms-assets"
 puc2_soar_playbook_dir: "/opt/NG-SOAR/playbooks"
@@ -86,7 +97,7 @@ puc2_soar_playbook_dir: "/opt/NG-SOAR/playbooks"
 puc2_victim_mgmt_user: "ubuntu"     # topology base_box mgmt_user of `victim`
 
 # ---- CTI-SS sharing (UML step 12) -------------------------------------------
-puc2_misp_sharing_group_name: "PUC2-CYNET-Training"
+puc2_misp_sharing_group_name: "NG-SOC-PUC2"   # training L24 expects this exact name
 
 # ---- Simulated C2 beacon (feeds the firewall source for rule 100102) --------
 # The payload "beacons" to this port; the endpoint has a pre-staged LOG+DROP

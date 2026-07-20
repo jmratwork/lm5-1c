@@ -5,7 +5,7 @@ host it happens on, and the resource that supports it.
 
 | # | UML step | Trainee action | Host | Resource / file |
 |---|----------|----------------|------|-----------------|
-| 1 | Initiate malware scenario | NG-SOC Operator runs the kickoff | Cyber Range → `victim` | `--tags puc2-inject` or `/opt/scenario-injection/inject_scenario.sh` |
+| 1 | Initiate malware scenario | NG-SOC Operator runs the kickoff | Cyber Range → `victim` | `--tags puc2-inject` or `/opt/puc2/inject_scenario.sh` |
 | 2 | Inject phishing + payload | Cyber Range injects directly on the endpoint | Cyber Range → `victim` | role `scenario_injection_2c` (4-stage EICAR delivery + `phishing_email.eml`) |
 | 3 | Telemetry (file hash) | Wazuh agent ships FIM events | `victim` 10.0.16.100 | role `lab_endpoint_2c` (FIM on `~victim/Downloads`) → NG-SIEM |
 | 4 | Enrich hash with CTI | SIEM matches the CDB IOC list; MISP holds the same IOCs | `ng-siem` ↔ `docker-server` | `ng_siem_rules_2c` (`etc/lists/cti-malware-hashes`) + `cti_ss_2c` + the substrate MISP integration |
@@ -25,7 +25,7 @@ host it happens on, and the resource that supports it.
 # Steps 1-2 — the Cyber Range injects into the endpoint.
 # Provisioning stages the scenario but never fires it:
 ansible-playbook provisioning/playbook.yml --tags puc2-inject --limit victim
-# (or, on the endpoint itself: sudo /opt/scenario-injection/inject_scenario.sh)
+# (or, on the endpoint itself: sudo /opt/puc2/inject_scenario.sh)
 
 # Steps 3-6 — on ng-siem: work the dashboard, watch the chain fire
 tail -f /var/ossec/logs/alerts/alerts.json | grep -E '1001(00|01|02|03)'
