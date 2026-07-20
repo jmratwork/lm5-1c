@@ -48,6 +48,13 @@
     - quarantine_and_patch.yml
     - reset_credentials.yml
 
+# ── NG-SOAR Operator touchpoint (UML step 9) ─────────────────────────────────
+- name: Deploy the NG-SOAR Operator containment trigger
+  ansible.builtin.template:
+    src: ngsoar_trigger.sh.j2
+    dest: "{{ puc2_soar_playbook_dir }}/ngsoar_trigger.sh"
+    mode: '0750'
+
 - name: Document the containment contract next to the library
   ansible.builtin.copy:
     dest: "{{ puc2_soar_playbook_dir }}/README.md"

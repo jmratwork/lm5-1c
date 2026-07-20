@@ -1,0 +1,30 @@
+<!--
+  NG-SIEM custom decoders - PUC2 (CYNET) Sub Case 2c.
+  Deployed by role ng_siem_rules_2c onto the wazuh-manager of the siemng image.
+
+  WHY A CUSTOM DECODER: rule 100102 needs firewall telemetry, and originally it
+  keyed off <if_group>firewall</if_group> — which nothing in this sandbox ever
+  produced, so the rule could never fire. The endpoint now carries a pre-staged
+  iptables LOG+DROP rule for the simulated C2 port, tagged with a prefix we own.
+  Decoding it here ourselves is deterministic: it does not depend on whichever
+  iptables decoder variant ships with the image.
+
+  Matching kernel line (as written to /var/log/kern.log on the endpoint):
+    kernel: [12345.67] {{ puc2_fw_log_prefix }}: IN= OUT=ens4 SRC=10.0.16.100
+      DST=10.0.16.50 LEN=60 ... PROTO=TCP SPT=54321 DPT={{ puc2_c2_port }} ...
+-->
+<decoder name="puc2-iptables">
+  <prematch>{{ puc2_fw_log_prefix }}: </prematch>
+</decoder>
+
+<decoder name="puc2-iptables-addresses">
+  <parent>puc2-iptables</parent>
+  <regex offset="after_prematch">SRC=(\d+.\d+.\d+.\d+)\s+DST=(\d+.\d+.\d+.\d+)</regex>
+  <order>srcip,dstip</order>
+</decoder>
+
+<decoder name="puc2-iptables-ports">
+  <parent>puc2-iptables</parent>
+  <regex offset="after_prematch">PROTO=(\w+)\s+SPT=(\d+)\s+DPT=(\d+)</regex>
+  <order>protocol,srcport,dstport</order>
+</decoder>

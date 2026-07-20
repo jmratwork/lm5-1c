@@ -89,6 +89,20 @@
   failed_when: false
   when: "'PUC2-2C-Malware' not in (puc2_iris_templates.content | default(''))"
 
+# ── Operator-driven case opening (UML step 7) ────────────────────────────────
+- name: Ensure jq is available for the operator helper scripts
+  ansible.builtin.apt:
+    name: jq
+    state: present
+    update_cache: false
+
+- name: Deploy the NG-SOC Operator case-opening helper
+  ansible.builtin.template:
+    src: open_case.sh.j2
+    dest: "{{ puc2_iris_assets_dir }}/open_case.sh"
+    mode: '0750'
+  no_log: true
+
 - name: Report the CICMS registration outcome
   ansible.builtin.debug:
     msg: >-

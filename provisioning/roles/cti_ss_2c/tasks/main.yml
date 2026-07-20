@@ -113,6 +113,14 @@
   changed_when: puc2_misp_seed.status in [200, 201]
   when: puc2_payload_md5 not in (puc2_misp_existing.content | default(''))
 
+# ── CTI Specialist sharing action (UML step 12) ──────────────────────────────
+- name: Deploy the CTI Specialist intel-sharing helper
+  ansible.builtin.template:
+    src: share_intel.sh.j2
+    dest: "{{ puc2_misp_seed_dir }}/share_intel.sh"
+    mode: '0750'
+  no_log: true
+
 - name: Report the CTI-SS seeding outcome
   ansible.builtin.debug:
     msg: >-

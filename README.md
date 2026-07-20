@@ -115,14 +115,27 @@ action library that workflow references.
 | 3 | Telemetry (file hash) | victim → ng-siem | `roles/lab_endpoint_2c/tasks/main.yml` (FIM on `~victim/Downloads`) → rule `100100` |
 | 4 | Enrich hash with CTI | ng-siem ↔ docker-server | `roles/ng_siem_rules_2c` (CDB list `etc/lists/cti-malware-hashes`) + `roles/cti_ss_2c` (same IOCs seeded into MISP) + the substrate's MISP integration |
 | 5 | Alert: malware detected | ng-siem | `roles/ng_siem_rules_2c/files/local_rules.xml` rule `100101` (level 12) |
-| 6 | Correlate logs + confirm attack pattern | ng-siem | rules `100102` / `100103` + `training/ng_siem_correlation_guide.md` |
-| 7 | Open incident case + attach SIEM context | ng-siem → docker-server | substrate `custom-iris` integration (creates the case, dedups by `case_soc_id`) + `roles/cicms_2c` (case template & tasks) |
+| 6 | Correlate logs + confirm attack pattern | ng-siem | rule `100102` (firewall source: `local_decoder.xml.j2` + the endpoint's baseline egress filter) and rule `100103` (fired by the multi-stage delivery) + `training/ng_siem_correlation_guide.md` |
+| 7 | Open incident case + attach SIEM context | ng-siem → docker-server | **automatic:** substrate `custom-iris` integration (dedups by `case_soc_id`); **operator-driven:** `roles/cicms_2c/templates/open_case.sh.j2` + the registered case template |
 | 8 | Enrich with CTI (IOCs/TTPs) | docker-server | `roles/cicms_2c` + `roles/cti_ss_2c`; the IRIS↔MISP module is wired by the substrate |
-| 9 | Execute containment playbooks | ng-siem | `<active-response>` block injected by `roles/ng_siem_rules_2c` (rules `100101,100103`) — orchestration path: IRIS → NG-SOAR webhook |
-| 10 | Apply isolation and remediation | victim | `roles/lab_endpoint_2c/templates/puc2-isolate.j2`; library in `roles/soar_actions_2c/files/*.yml` |
-| 11 | Containment and eradication status | victim → analyst | `/var/run/ngsoar_isolated`, `/var/run/ngsoar_eradication_status`, `/var/ossec/logs/active-responses.log` |
-| 12 | Share malware intel (+ playbooks) | docker-server | `roles/cti_ss_2c` sharing group `PUC2-CYNET-Training` + `roles/soar_actions_2c` library |
+| 9 | Execute containment playbooks | ng-siem / docker-server | **automatic:** `<active-response>` block injected by `roles/ng_siem_rules_2c` (rules `100101,100103`); **operator-driven:** `roles/soar_actions_2c/templates/ngsoar_trigger.sh.j2` → the NG-SOAR webhook |
+| 10 | Apply isolation and remediation | victim | `roles/lab_endpoint_2c/templates/puc2-isolate.j2` (isolation, C2 block, quarantine, credential reset, security updates); library in `roles/soar_actions_2c/files/*.yml` |
+| 11 | Containment and eradication status | victim → analyst | `/var/run/ngsoar_isolated`, `/var/run/ngsoar_eradication_status`, `/var/ossec/logs/active-responses.log`, `/var/log/puc2-security-updates.log` |
+| 12 | Share malware intel (+ playbooks) | docker-server | `roles/cti_ss_2c` sharing group `PUC2-CYNET-Training` + `templates/share_intel.sh.j2` (CTI Specialist action) + the playbook library |
 | 13 | Training summary + feedback | ng-siem | `roles/evaluation_reporting` (`collect_evaluation.sh`, `lessons_learned_template.md`) |
+
+### Declared deviations from the UML
+
+Two steps are implemented with a different actor than the diagram shows, and
+one capability is a training stand-in. These are choices, not oversights:
+
+| UML | Diagram says | Implementation | Why |
+|---|---|---|---|
+| Step 7 | NG-SOC Operator opens the case | the case is *also* created automatically by `custom-iris` on alert | automatic creation is faster and dedups; `open_case.sh` preserves the operator's explicit action, so both actors have a path |
+| Step 9 | NG-SOAR Operator triggers containment | containment *also* fires automatically from the SIEM active response | the automatic path is the one that reliably works in the sandbox; `ngsoar_trigger.sh` drives the real NG-SOAR webhook so the operator exercises orchestration, not a mock |
+| 6.3.2.3 | BIPS detects via AI/ML; UEBA; NG-SOAR file/code analysis | Wazuh rule chain + FIM + correlation | no AI/ML component is deployed; this is explicitly a rule-based stand-in, catalogued in `VALIDATION.md` §2 |
+
+Everything else follows the diagram's actor, direction and ordering.
 
 ---
 

@@ -24,10 +24,28 @@
   register: puc2_ossec_conf
   failed_when: not puc2_ossec_conf.stat.exists
 
+# ── Firewall decoder (makes rule 100102 reachable — UML step 6) ──────────────
+- name: Ensure the Wazuh decoders directory exists
+  ansible.builtin.file:
+    path: /var/ossec/etc/decoders
+    state: directory
+    owner: wazuh
+    group: wazuh
+    mode: '0750'
+
+- name: Deploy the PUC2 2c firewall decoder
+  ansible.builtin.template:
+    src: local_decoder.xml.j2
+    dest: /var/ossec/etc/decoders/puc2_local_decoder.xml
+    owner: wazuh
+    group: wazuh
+    mode: '0660'
+  notify: restart wazuh-manager
+
 # ── Detection rules (UML steps 3, 5, 6) ──────────────────────────────────────
 - name: Deploy PUC2 2c correlation rules
-  ansible.builtin.copy:
-    src: local_rules.xml
+  ansible.builtin.template:
+    src: local_rules.xml.j2
     dest: /var/ossec/etc/rules/local_rules.xml
     owner: wazuh
     group: wazuh
@@ -126,3 +144,30 @@
   retries: 12
   delay: 5
   changed_when: false
+
+# ── Prove the ruleset actually loaded ────────────────────────────────────────
+# The default ossec.conf <ruleset> already includes etc/decoders and etc/rules,
+# so the files above are picked up without extra wiring. Verify it rather than
+# assume it: a silently unloaded ruleset means no alerts and no containment.
+- name: Verify the PUC2 2c rules and decoder are loaded
+  ansible.builtin.shell: |
+    set -o pipefail
+    out=$(echo 'test' | /var/ossec/bin/wazuh-logtest -v 2>&1 || true)
+    for token in 100100 100101 100102 100103 puc2-iptables; do
+      echo "$out" | grep -q "$token" || echo "MISSING:$token"
+    done
+    echo "LOGTEST_DONE"
+  args:
+    executable: /bin/bash
+  register: puc2_ruleset_check
+  changed_when: false
+  failed_when: false
+
+- name: Warn if any PUC2 2c ruleset element did not load
+  ansible.builtin.debug:
+    msg: >-
+      wazuh-logtest did not report every PUC2 2c element as loaded:
+      {{ puc2_ruleset_check.stdout_lines | select('match', '^MISSING:') | list }}.
+      Confirm the <ruleset> block in ossec.conf includes etc/decoders and
+      etc/rules before running the exercise.
+  when: puc2_ruleset_check.stdout is search('MISSING:')

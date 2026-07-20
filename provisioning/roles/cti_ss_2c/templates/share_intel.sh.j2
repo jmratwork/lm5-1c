@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# =============================================================================
+# UML step 12 — "CTI Specialist: share malware intel (+ relevant playbooks)".
+#
+# WHY THIS EXISTS: provisioning seeds the event and creates the sharing group,
+# but the ACT of sharing is the CTI Specialist's action in the UML. This script
+# is that action: it publishes the Sub Case 2c event into the sharing group and
+# prints the playbook library that accompanies it.
+#
+# The API key is injected from the Ansible facts at render time; no secret is
+# hardcoded in the repository.
+# =============================================================================
+set -euo pipefail
+
+MISP_URL="{{ puc2_misp_url }}"
+MISP_API_KEY="{{ puc2_misp_api_key }}"
+SHARING_GROUP="{{ puc2_misp_sharing_group_name }}"
+PLAYBOOK_DIR="{{ puc2_soar_playbook_dir }}"
+
+command -v jq >/dev/null 2>&1 || { echo "jq is required" >&2; exit 1; }
+
+auth=(-H "Authorization: ${MISP_API_KEY}" -H "Accept: application/json" -H "Content-Type: application/json")
+
+echo "[CTI-SS] Locating the PUC2 2c event (UML step 12)"
+EVENT_ID=$(curl -sk "${auth[@]}" -X POST "${MISP_URL}/events/restSearch" \
+  --data '{"value":"{{ puc2_payload_md5 }}","returnFormat":"json"}' \
+  | jq -r '.response[0].Event.id // empty')
+
+if [ -z "${EVENT_ID}" ]; then
+    echo "[CTI-SS] Event not found. Was cti_ss_2c seeding skipped?" >&2
+    exit 1
+fi
+echo "[CTI-SS] Event id ${EVENT_ID}"
+
+echo "[CTI-SS] Resolving sharing group '${SHARING_GROUP}'"
+SG_ID=$(curl -sk "${auth[@]}" "${MISP_URL}/sharing_groups/index" \
+  | jq -r --arg n "${SHARING_GROUP}" '.[] | select(.SharingGroup.name==$n) | .SharingGroup.id' | head -n1)
+
+if [ -z "${SG_ID}" ]; then
+    echo "[CTI-SS] Sharing group not found; publishing with community distribution instead."
+    curl -sk "${auth[@]}" -X POST "${MISP_URL}/events/edit/${EVENT_ID}" \
+      --data '{"Event":{"distribution":"1"}}' >/dev/null
+else
+    echo "[CTI-SS] Sharing group id ${SG_ID}; scoping the event to it"
+    curl -sk "${auth[@]}" -X POST "${MISP_URL}/events/edit/${EVENT_ID}" \
+      --data "{\"Event\":{\"distribution\":\"4\",\"sharing_group_id\":\"${SG_ID}\"}}" >/dev/null
+fi
+
+echo "[CTI-SS] Publishing the event"
+curl -sk "${auth[@]}" -X POST "${MISP_URL}/events/publish/${EVENT_ID}" >/dev/null
+
+echo "[CTI-SS] Shared. Relevant playbooks to accompany the intel:"
+ls -1 "${PLAYBOOK_DIR}"/*.yml 2>/dev/null | sed 's/^/    /' || echo "    (playbook library not present on this host)"

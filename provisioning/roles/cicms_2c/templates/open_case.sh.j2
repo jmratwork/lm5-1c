@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# =============================================================================
+# UML step 7 — "NG-SOC Operator: open incident case + attach SIEM context".
+#
+# WHY THIS EXISTS: the substrate's custom-iris integration creates the case
+# automatically the moment rule 100101 fires, which is operationally better but
+# leaves the NG-SOC Operator — an actor the UML puts in the driving seat for
+# this step — with nothing to do. This script gives that actor the explicit
+# action: open the Sub Case 2c case from the registered template and attach the
+# NG-SIEM context by hand.
+#
+# Both paths coexist. The automatic case dedups on case_soc_id, so running this
+# yields a SEPARATE, operator-owned case rather than a duplicate of it.
+#
+# Usage:  open_case.sh ["free-text SIEM context"]
+# The API key is injected from the Ansible facts at render time; no secret is
+# hardcoded in the repository.
+# =============================================================================
+set -euo pipefail
+
+IRIS_URL="{{ puc2_iris_url }}"
+IRIS_API_KEY="{{ puc2_iris_api_key }}"
+TEMPLATE="{{ puc2_iris_assets_dir }}/case_template_puc2.json"
+SIEM_CONTEXT="${1:-Opened manually by the NG-SOC Operator. Attach the NG-SIEM alert view for rules 100101/100103 from {{ puc2_ng_siem_ip }}.}"
+
+command -v jq >/dev/null 2>&1 || { echo "jq is required" >&2; exit 1; }
+
+CASE_SOC_ID="PUC2-2C-OPERATOR-$(date +%Y%m%d-%H%M%S)"
+
+echo "[CICMS] Opening incident case ${CASE_SOC_ID} (UML step 7)"
+
+BODY=$(jq -n \
+  --arg soc_id "${CASE_SOC_ID}" \
+  --arg name "[PUC2-2C] Malware attack on the lab endpoint — opened by NG-SOC Operator" \
+  --arg desc "${SIEM_CONTEXT}" \
+  '{case_soc_id:$soc_id, case_customer:1, case_name:$name,
+    case_description:$desc, severity_id:"4",
+    case_tags:"puc2-2c,malware,operator-opened"}')
+
+RESPONSE=$(curl -sk -X POST "${IRIS_URL}/manage/cases/add" \
+  -H "Authorization: Bearer ${IRIS_API_KEY}" \
+  -H "Content-Type: application/json" \
+  --data "${BODY}")
+
+echo "${RESPONSE}" | jq -r '.status // "unknown"' | grep -qi success \
+  && echo "[CICMS] Case opened. Apply the 'PUC2-2C-Malware' template to load the task list." \
+  || { echo "[CICMS] Case creation failed:"; echo "${RESPONSE}"; exit 1; }
+
+echo "[CICMS] Template on disk for reference: ${TEMPLATE}"
+echo "[CICMS] Next: enrich from CTI-SS at {{ puc2_misp_url }} (UML step 8)."

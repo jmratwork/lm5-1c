@@ -88,3 +88,18 @@ puc2_injection_targets:
 
 # ---- CTI-SS sharing (UML step 12) -------------------------------------------
 puc2_misp_sharing_group_name: "PUC2-CYNET-Training"
+
+# ---- Simulated C2 beacon (feeds the firewall source for rule 100102) --------
+# The payload "beacons" to this port; the endpoint has a pre-staged LOG+DROP
+# rule for it, so the attempt is blocked AND logged BEFORE containment runs.
+# That log line is the firewall telemetry UML step 6 correlates.
+puc2_c2_port: 4444
+puc2_fw_log_prefix: "PUC2-FW-DROP"
+
+# ---- Multi-stage delivery (makes rule 100103 reachable) --------------------
+# Rule 100103 needs repeated IOC matches inside its timeframe. A single drop
+# would only ever fire 100101 once, leaving UML step 6 without a live trigger.
+puc2_delivery_paths:
+  - "/home/victim/Downloads/invoice.exe"
+  - "/tmp/invoice.exe"
+  - "/home/victim/Downloads/statement.exe"

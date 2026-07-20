@@ -44,6 +44,23 @@ Per-step file traceability: see the 13-row table in
 [README.md](README.md#the-13-uml-steps--file-map). Every step maps to a
 concrete file, host and IP; none is left implicit.
 
+## 1b. Live-trigger audit (every step has a working path)
+
+An earlier revision had artefacts for all 13 steps but three of them could
+never actually fire. Resolved as follows:
+
+| Finding | Was | Now |
+|---|---|---|
+| Rule 100103 unreachable — `frequency="2"` over 100101, but the injection delivered the payload once | UML step 6 had no live trigger, and half the active-response trigger set was dead | `inject_scenario.sh` performs a **4-stage delivery** (Downloads → C2 beacon → /tmp staging → second lure), producing three 100101 hits inside the 600 s window |
+| Rule 100102 unreachable — keyed on `<if_group>firewall</if_group>`, but nothing emitted firewall logs | the "blocked C2/exfil" branch of step 6 never fired | endpoint carries a **pre-staged iptables LOG+DROP** for tcp/4444 (`puc2-fw-baseline.service`), `/var/log/kern.log` is ingested via `<localfile>`, and a **custom decoder** (`puc2-iptables`) parses it; 100102 now keys on `decoded_as` instead of a group nothing populated |
+| NG-SOAR Operator had no touchpoint | step 9's actor was unrepresented | `ngsoar_trigger.sh` POSTs to the real NG-SOAR webhook the substrate wires |
+| NG-SOC Operator had no touchpoint for step 7 | case creation was fully automatic | `open_case.sh` gives the operator an explicit case-opening action alongside the automatic one |
+| CTI Specialist had no touchpoint for step 12 | provisioning created the sharing group; nobody published | `share_intel.sh` scopes the event to the sharing group and publishes it |
+| "apply security updates" (6.3.2.3) missing from the live path | only present in the playbook library | `puc2-isolate` triggers a **detached** apt security run and records the outcome in the eradication marker (detached because a blocking AR would be killed by the manager) |
+
+Ruleset loading is no longer assumed: `ng_siem_rules_2c` runs `wazuh-logtest`
+after the restart and reports any rule or decoder that failed to load.
+
 ## 2. Detection capability mapping (BIPS / UEBA / advanced)
 
 Unchanged in substance from the previous report — restated for honesty about
@@ -95,9 +112,12 @@ ansible-lint provisioning/
 | 5 | AR deployed | `ls -l /var/ossec/active-response/bin/puc2-isolate` on `victim` | `root:wazuh 0750` |
 | 6 | CTI seeded | MISP UI → search md5 `44d88612…` | event *PUC2 … Sub Case 2c* present |
 | 7 | Steps 1–2 | `sudo /opt/malware-injection/inject_scenario.sh` on `kali` | payload lands in `~victim/Downloads` |
-| 8 | Steps 3–5 | `grep 100101 /var/ossec/logs/alerts/alerts.json` on `ng-siem` | alert present within ~1 min |
-| 9 | Step 7 | DFIR-IRIS UI `:8083` | case auto-created by `custom-iris`, deduped |
-| 10 | Steps 9–11 | `cat /var/run/ngsoar_isolated /var/run/ngsoar_eradication_status` on `victim` | markers present; `status=eradicated` |
+| 8 | Steps 3–5 | `grep -c '"id":"100101"' /var/ossec/logs/alerts/alerts.json` on `ng-siem` | **3** hits after a full injection run |
+| 8b | Step 6 — firewall branch | `grep '"id":"100102"' /var/ossec/logs/alerts/alerts.json` | present (decoded from the endpoint's blocked C2 beacon) |
+| 8c | Step 6 — correlation | `grep '"id":"100103"' /var/ossec/logs/alerts/alerts.json` | present (repeated IOC inside 600 s) |
+| 9 | Step 7 | DFIR-IRIS UI `:8083`; then `/opt/cicms-assets/open_case.sh` | auto-created case present and deduped; the operator script opens a second, operator-owned case |
+| 9b | Step 9 — operator path | `/opt/NG-SOAR/playbooks/ngsoar_trigger.sh isolate_host` | webhook returns 2xx |
+| 10 | Steps 9–11 | `cat /var/run/ngsoar_isolated /var/run/ngsoar_eradication_status` on `victim` | markers present; `status=eradicated`; `security_updates=triggered_background` |
 | 11 | Isolation effective | `curl -m5 http://10.0.16.50:8000/invoice.exe` on `victim` | fails; `ping 10.0.16.70` still succeeds |
 | 12 | Step 13 | `/opt/evaluation/collect_evaluation.sh` on `ng-siem` | report lists per-rule alert counts and both markers |
 

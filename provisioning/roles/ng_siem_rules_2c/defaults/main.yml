@@ -2,6 +2,9 @@
 # role: ng_siem_rules_2c
 # Fallbacks only. The authoritative values live in group_vars/puc2_2c.yml,
 # which playbook.yml loads into the overlay plays via vars_files.
+puc2_ng_siem_ip: "10.0.16.70"
 puc2_payload_md5: "44d88612fea8a8f36de82e1278abb02f"
 puc2_payload_sha256: "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f"
 puc2_active_response_rules: "100101,100103"
+puc2_c2_port: 4444
+puc2_fw_log_prefix: "PUC2-FW-DROP"

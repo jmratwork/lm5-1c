@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# =============================================================================
+# UML step 9 — "NG-SOAR Operator: execute containment playbooks".
+#
+# WHY THIS EXISTS: containment in this sandbox fires automatically through the
+# Wazuh active response, which is the reliable path — but it left the NG-SOAR
+# Operator, an actor the UML gives an explicit action, with no touchpoint at
+# all. This script is that touchpoint: it drives the SAME NG-SOAR webhook that
+# DFIR-IRIS already calls, so the operator exercises the real orchestration
+# path rather than a mock.
+#
+# IT DOES NOT REIMPLEMENT NG-SOAR. The workflow behind the webhook lives in the
+# NG-SOAR.yml compose stack the substrate deploys; this only POSTs to it.
+#
+# Usage:  ngsoar_trigger.sh [playbook] [target-ip]
+#   playbook  one of: isolate_host | block_malicious_ip |
+#                     quarantine_and_patch | reset_credentials  (default: all)
+#   target-ip endpoint to act on (default: {{ puc2_victim_ip }})
+# =============================================================================
+set -euo pipefail
+
+WEBHOOK="{{ puc2_soar_webhook_url }}"
+PLAYBOOK_DIR="{{ puc2_soar_playbook_dir }}"
+PLAYBOOK="${1:-all}"
+TARGET="${2:-{{ puc2_victim_ip }}}"
+
+VALID=(isolate_host block_malicious_ip quarantine_and_patch reset_credentials all)
+if [[ ! " ${VALID[*]} " =~ " ${PLAYBOOK} " ]]; then
+    echo "Unknown playbook '${PLAYBOOK}'. Valid: ${VALID[*]}" >&2
+    exit 2
+fi
+
+echo "[NG-SOAR] Requesting containment '${PLAYBOOK}' on ${TARGET} (UML step 9)"
+echo "[NG-SOAR] Webhook: ${WEBHOOK}"
+
+PAYLOAD=$(cat <<JSON
+{
+  "source": "puc2-2c-ngsoar-operator",
+  "playbook": "${PLAYBOOK}",
+  "playbook_dir": "${PLAYBOOK_DIR}",
+  "target": "${TARGET}",
+  "context": {
+    "case": "PUC2-2C",
+    "c2_ip": "{{ puc2_attacker_ip }}",
+    "c2_domain": "{{ puc2_c2_domain }}",
+    "payload_md5": "{{ puc2_payload_md5 }}",
+    "sandbox_cidr": "{{ puc2_sandbox_cidr }}"
+  }
+}
+JSON
+)
+
+HTTP_CODE=$(curl -sk -o /tmp/ngsoar_trigger_response.json -w '%{http_code}' \
+  -X POST "${WEBHOOK}" \
+  -H "Content-Type: application/json" \
+  --data "${PAYLOAD}" --max-time 30 || echo "000")
+
+echo "[NG-SOAR] HTTP ${HTTP_CODE}"
+cat /tmp/ngsoar_trigger_response.json 2>/dev/null; echo
+
+case "${HTTP_CODE}" in
+  2*) echo "[NG-SOAR] Accepted. Verify the effect on ${TARGET} (UML steps 10-11):"
+      echo "          cat {{ puc2_isolation_marker }} {{ puc2_eradication_marker }}" ;;
+  000) echo "[NG-SOAR] Webhook unreachable. The active-response path remains the"
+       echo "          authoritative containment route — check it on the endpoint." ; exit 1 ;;
+  *)  echo "[NG-SOAR] Webhook rejected the request; inspect the NG-SOAR workflow." ; exit 1 ;;
+esac

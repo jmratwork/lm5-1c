@@ -1,12 +1,12 @@
 <!--
   NG-SIEM custom correlation rules - PUC2 (CYNET) Sub Case 2c.
   Deployed by role ng_siem_rules_2c onto the wazuh-manager of the siemng image
-  (host ng-siem, 10.0.16.70) provisioned by the integrations substrate.
+  (host ng-siem, {{ puc2_ng_siem_ip }}) provisioned by the integrations substrate.
 
   UML coverage:
-    100100 -> step 3 : payload lands in the monitored Downloads dir (telemetry)
-    100101 -> step 4/5: file hash matches the CTI-SS watchlist -> MALWARE ALERT
-    100102 -> step 6 : blocked outbound C2/exfil attempt
+    100100 -> step 3 : payload lands in a monitored path (file-hash telemetry)
+    100101 -> step 4/5: hash matches the CTI-SS watchlist -> MALWARE ALERT
+    100102 -> step 6 : blocked outbound C2/exfil attempt (firewall source)
     100103 -> step 6 : correlated targeted-attack confirmation
 
   Rules 100101 and 100103 are the trigger set of the puc2-isolate active
@@ -39,21 +39,27 @@
     </mitre>
   </rule>
 
-  <!-- Outbound C2 / exfiltration attempt from an endpoint -->
+  <!-- Outbound C2 / exfiltration attempt, blocked and logged by the endpoint's
+       pre-staged iptables LOG+DROP rule and decoded by puc2-iptables.
+       This deliberately does NOT use <if_group>firewall</if_group>: nothing in
+       this sandbox emits logs that land in that group, so such a rule could
+       never fire. See templates/local_decoder.xml.j2. -->
   <rule id="100102" level="10">
-    <if_group>firewall</if_group>
-    <field name="dstport">4444|8080|443</field>
-    <field name="action">DROP|DENY</field>
+    <decoded_as>puc2-iptables</decoded_as>
+    <field name="dstport">^{{ puc2_c2_port }}$|^8080$|^443$</field>
     <description>PUC2: blocked outbound connection from endpoint (possible C2/exfil)</description>
     <mitre>
       <id>T1048</id>
     </mitre>
   </rule>
 
-  <!-- Correlated targeted-attack pattern: payload + IOC repeated in-window -->
+  <!-- Correlated targeted-attack pattern: the IOC is seen repeatedly inside the
+       window. inject_scenario.sh performs a multi-stage delivery precisely so
+       this rule is reachable - a single payload drop would fire 100101 once and
+       leave UML step 6 without a live trigger. -->
   <rule id="100103" level="14" frequency="2" timeframe="600">
     <if_matched_sid>100101</if_matched_sid>
-    <description>PUC2: correlated targeted malware attack confirmed (payload + IOC + C2)</description>
+    <description>PUC2: correlated targeted malware attack confirmed (repeated IOC + C2)</description>
     <mitre>
       <id>T1021</id>
     </mitre>

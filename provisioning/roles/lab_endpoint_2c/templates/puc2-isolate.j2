@@ -96,9 +96,10 @@ mkdir -p "${QUARANTINE_DIR}"
 chmod 0700 "${QUARANTINE_DIR}"
 QUARANTINED=0
 for candidate in \
-    "/home/${VICTIM_USER}/Downloads/${PAYLOAD_NAME}" \
+{% for p in puc2_delivery_paths %}
+    "{{ p }}" \
+{% endfor %}
     "/home/${VICTIM_USER}/${PAYLOAD_NAME}" \
-    "/tmp/${PAYLOAD_NAME}" \
     "/tmp/payload.sh"; do
     if [ -e "${candidate}" ]; then
         mv -f "${candidate}" "${QUARANTINE_DIR}/" 2>/dev/null && {
@@ -123,7 +124,32 @@ if id "${VICTIM_USER}" >/dev/null 2>&1; then
 fi
 
 # =============================================================================
-# 5. STATUS MARKERS  (feed UML step 11: containment & eradication status)
+# 5. APPLY SECURITY UPDATES  (ports quarantine_and_patch.yml)
+#    6.3.2.3: "threat elimination playbooks ... quarantine endpoints and apply
+#    security updates". Run DETACHED: an apt run can take minutes and an active
+#    response that blocks that long would be killed by the manager. Note the
+#    host is already isolated at this point, so this only succeeds against
+#    reachable mirrors inside the sandbox — the outcome is recorded honestly in
+#    the eradication marker rather than assumed.
+# =============================================================================
+PATCH_LOG="/var/log/puc2-security-updates.log"
+if command -v apt-get >/dev/null 2>&1; then
+    nohup setsid bash -c "
+        export DEBIAN_FRONTEND=noninteractive
+        {
+          echo \"=== puc2-isolate security update run: \$(date -Iseconds) ===\"
+          apt-get update -q && apt-get -y -q --only-upgrade dist-upgrade
+          echo \"exit=\$?\"
+        } >>'${PATCH_LOG}' 2>&1
+    " >/dev/null 2>&1 &
+    PATCH_STATUS="triggered_background (see ${PATCH_LOG})"
+    log "security update run triggered in background"
+else
+    PATCH_STATUS="skipped_no_apt"
+fi
+
+# =============================================================================
+# 6. STATUS MARKERS  (feed UML step 11: containment & eradication status)
 # =============================================================================
 cat >"${ISOLATION_MARKER}" <<MARKER
 isolated_by=ng_soar/puc2-isolate
@@ -137,6 +163,7 @@ cat >"${ERADICATION_MARKER}" <<MARKER
 quarantine_dir=${QUARANTINE_DIR}
 quarantined_files=${QUARANTINED}
 credentials_reset=$(id "${VICTIM_USER}" >/dev/null 2>&1 && echo yes || echo n/a)
+security_updates=${PATCH_STATUS}
 status=$([ "${QUARANTINED}" -gt 0 ] && echo eradicated || echo isolated_no_payload_found)
 eradicated_at=$(date -Iseconds)
 MARKER

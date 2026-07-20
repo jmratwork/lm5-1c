@@ -24,7 +24,7 @@ Rules fire in this chain:
 |------|-------|---------|
 | 100100 | 8 | Suspicious payload file created |
 | 100101 | 12 | Hash matches CTI IOC → **MALWARE DETECTED** |
-| 100102 | 10 | Blocked outbound C2/exfil |
+| 100102 | 10 | Blocked outbound C2/exfil (from the endpoint's egress filter) |
 | 100103 | 14 | **Targeted attack confirmed** (payload + IOC + C2) |
 
 The level-12/14 alerts are what notify the SOC Analyst.
@@ -34,7 +34,13 @@ Build the holistic view across sources:
 
 1. *Security events* → group by `agent.name` to see all affected endpoints.
 2. Correlate FIM (payload) + firewall drops (rule 100102) + the campaign window.
-3. When **rule 100103** fires, the attack is confirmed as **targeted** — attach this
+   The firewall source is real: the endpoint carries a pre-staged iptables
+   LOG+DROP rule for tcp/4444, its `kern.log` is ingested by the agent, and the
+   custom `puc2-iptables` decoder parses it. Filter `rule.id: 100102` to see the
+   payload's blocked C2 beacon.
+3. The delivery is multi-stage, so **rule 100101 fires three times**; that
+   repetition inside 600 s is exactly what rule 100103 correlates.
+4. When **rule 100103** fires, the attack is confirmed as **targeted** — attach this
    view to the CICMS case (step 7).
 
 ## 5. Automated containment (UML steps 9-11)

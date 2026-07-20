@@ -35,8 +35,11 @@
     group: "{{ puc2_victim_user }}"
     mode: '0755'
 
-# ── FIM on the payload landing zone (UML step 3) ─────────────────────────────
-- name: Enable FIM on the victim download directory
+# ── FIM + firewall telemetry (UML steps 3 and 6) ─────────────────────────────
+# The <localfile> is what makes rule 100102 reachable: without an ingested
+# firewall source, the "blocked C2/exfil" branch of the correlation could never
+# fire. /var/log/kern.log is where the pre-staged iptables LOG rule below lands.
+- name: Enable FIM and firewall-log ingestion on the endpoint
   ansible.builtin.blockinfile:
     path: /var/ossec/etc/ossec.conf
     insertbefore: "</ossec_config>"
@@ -46,7 +49,54 @@
         <directories check_all="yes" realtime="yes" report_changes="yes">/home/{{ puc2_victim_user }}/Downloads</directories>
         <directories check_all="yes" realtime="yes">/tmp</directories>
       </syscheck>
+
+      <localfile>
+        <log_format>syslog</log_format>
+        <location>/var/log/kern.log</location>
+      </localfile>
   notify: restart wazuh-agent
+
+# ── Pre-staged firewall rule producing that telemetry (UML step 6) ───────────
+# Installed BEFORE the exercise so the payload's C2 beacon is blocked AND
+# logged while the host is still healthy. This is ordinary egress filtering,
+# not containment: containment is what puc2-isolate adds on top later.
+- name: Deploy the baseline egress-filter unit
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/puc2-fw-baseline.service
+    mode: '0644'
+    content: |
+      [Unit]
+      Description=PUC2 2c baseline egress filter (logs blocked C2 beacons)
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      # Idempotent: -C checks before -I inserts, so restarts do not stack rules.
+      ExecStart=/bin/bash -c '\
+        iptables -C OUTPUT -p tcp --dport {{ puc2_c2_port }} -j LOG --log-prefix "{{ puc2_fw_log_prefix }}: " --log-level 4 2>/dev/null || \
+        iptables -I OUTPUT -p tcp --dport {{ puc2_c2_port }} -j LOG --log-prefix "{{ puc2_fw_log_prefix }}: " --log-level 4; \
+        iptables -C OUTPUT -p tcp --dport {{ puc2_c2_port }} -j DROP 2>/dev/null || \
+        iptables -A OUTPUT -p tcp --dport {{ puc2_c2_port }} -j DROP'
+
+      [Install]
+      WantedBy=multi-user.target
+  notify: restart wazuh-agent
+
+- name: Enable and start the baseline egress filter
+  ansible.builtin.systemd:
+    name: puc2-fw-baseline
+    state: started
+    enabled: true
+    daemon_reload: true
+
+- name: Ensure kernel messages are written to /var/log/kern.log
+  ansible.builtin.service:
+    name: rsyslog
+    state: started
+    enabled: true
+  failed_when: false
 
 # ── Containment action invoked by the manager (UML steps 10-11) ──────────────
 - name: Ensure the active-response bin directory exists
