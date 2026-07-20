@@ -1,0 +1,76 @@
+---
+# =============================================================================
+# PUC2 (CYNET) - Sub Case 2c: single source of truth for the scenario overlay.
+#
+# Loaded explicitly via `vars_files` by the overlay plays in playbook.yml (the
+# substrate topology declares `groups: []`, so plays target host names and a
+# group_vars/<group>.yml file would never be picked up automatically).
+#
+# ADDRESSING POLICY: every address is resolved from the inventory facts that
+# the substrate roles publish (docker_server / ng-siem set them with
+# `cacheable: yes`). The 10.0.16.x literals are only a fallback for when the
+# overlay is run standalone against an already-provisioned sandbox.
+#
+# NO SECRETS HERE. Credentials come from group_vars/vault.yml (git-ignored)
+# or, for MISP/IRIS, straight from the facts published by docker_server.
+# =============================================================================
+
+# ---- Host coordinates (UML actor -> substrate host) -------------------------
+# NG-SIEM                 -> ng-siem
+puc2_ng_siem_ip: "{{ hostvars['ng-siem']['ng_siem_internal_ip'] | default('10.0.16.70') }}"
+# CTI-SS (MISP) / CICMS (DFIR-IRIS) / NG-SOAR -> docker-server
+puc2_docker_server_ip: "{{ hostvars['docker-server']['docker_server_internal_ip'] | default('10.0.16.60') }}"
+# Phishing / payload delivery origin -> kali
+puc2_attacker_ip: "{{ hostvars['kali']['ansible_all_ipv4_addresses'] | default([]) | select('match', '^10\\.0\\.16\\.') | first | default('10.0.16.50') }}"
+# Lab Hosts / Endpoints -> victim
+puc2_victim_ip: "{{ hostvars['victim']['ansible_all_ipv4_addresses'] | default([]) | select('match', '^10\\.0\\.16\\.') | first | default('10.0.16.100') }}"
+
+# Flat sandbox subnet. The isolation action (UML step 10) keeps this reachable
+# so the Wazuh agent and the SOC control channel survive quarantine.
+puc2_sandbox_cidr: "10.0.16.0/24"
+
+# ---- Service ports (as exposed by the substrate roles) ----------------------
+puc2_misp_port: 8443           # docker_server: CORE_HTTPS_PORT
+puc2_iris_port: 8083           # docker_server: iris_nginx 8083:443
+puc2_soar_webhook_port: 8080   # docker_server: IRIS webhook -> /trigger/playbook
+puc2_payload_http_port: 8000   # malware_injection_2c payload server on kali
+
+puc2_misp_url: "https://{{ puc2_docker_server_ip }}:{{ puc2_misp_port }}"
+puc2_iris_url: "https://{{ puc2_docker_server_ip }}:{{ puc2_iris_port }}"
+puc2_soar_webhook_url: "http://{{ puc2_docker_server_ip }}:{{ puc2_soar_webhook_port }}/trigger/playbook"
+
+# ---- Credentials sourced from the substrate facts ---------------------------
+# docker_server publishes both with `cacheable: yes`; vault.yml may override.
+puc2_misp_api_key: "{{ hostvars['docker-server']['misp_api_key'] | default(vault_misp_api_key | default('CHANGE_ME')) }}"
+puc2_iris_api_key: "{{ hostvars['docker-server']['iris_api_key'] | default(vault_iris_api_key | default('CHANGE_ME')) }}"
+
+# ---- Scenario identity ------------------------------------------------------
+puc2_victim_user: "victim"
+puc2_payload_name: "invoice.exe"
+puc2_payload_url: "http://{{ puc2_attacker_ip }}:{{ puc2_payload_http_port }}/{{ puc2_payload_name }}"
+puc2_quarantine_dir: "/var/quarantine"
+
+# ---- IOCs seeded into CTI-SS and matched by NG-SIEM -------------------------
+# The payload is an EICAR-equivalent benign artefact assembled at provision
+# time; its MD5 is the well-known EICAR md5, which is what rule 100101 matches
+# against the etc/lists/cti-malware-hashes CDB list.
+puc2_payload_md5: "44d88612fea8a8f36de82e1278abb02f"
+puc2_payload_sha256: "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f"
+puc2_c2_domain: "c2.puc2-training.lab"
+puc2_block_ips:
+  - "{{ puc2_attacker_ip }}"
+
+# ---- Detection rule IDs (provisioning/roles/ng_siem_rules_2c/files) ---------
+puc2_rule_payload_dropped: 100100   # UML step 3
+puc2_rule_ioc_match: 100101         # UML steps 4-5  -> triggers active response
+puc2_rule_c2_blocked: 100102        # UML step 6
+puc2_rule_correlated: 100103        # UML step 6     -> triggers active response
+# Rules whose firing launches the puc2-isolate active response (UML steps 9-10)
+puc2_active_response_rules: "100101,100103"
+
+# ---- Containment markers read back for UML step 11 --------------------------
+puc2_isolation_marker: "/var/run/ngsoar_isolated"
+puc2_eradication_marker: "/var/run/ngsoar_eradication_status"
+
+# ---- Evaluation (UML step 13) ----------------------------------------------
+puc2_eval_root: "/opt/evaluation"
