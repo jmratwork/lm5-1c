@@ -10,3 +10,7 @@ __pycache__/
 .DS_Store
 .idea/
 .vscode/
+
+# Training definitions are uploaded to CyberRangeCZ by hand and must never
+# reach the remote repository.
+*training-definition.json
