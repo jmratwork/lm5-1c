@@ -237,6 +237,12 @@ sudo iptables -L -n
 See `VALIDATION.md` for the full acceptance procedure and `training/` for the
 trainee-facing brief, runbook and correlation guide.
 
+The 30-level linear training definition uploaded to CyberRangeCZ is
+`puc2-cynet-2c-malware-detection-response_linear-training-definition.json`, in
+the repository root — the single source of truth for it. `validation/
+validate_training.sh` checks that every graded answer in it is actually
+obtainable in the built sandbox.
+
 ---
 
 ## Secrets
