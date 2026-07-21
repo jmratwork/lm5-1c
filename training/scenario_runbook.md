@@ -13,7 +13,7 @@ host it happens on, and the resource that supports it.
 | 6 | Correlate logs + confirm | Analyst correlates FIM + firewall drops; 100102 and 100103 confirm | `ng-siem` | `local_decoder.xml.j2` (firewall source) + `training/ng_siem_correlation_guide.md` |
 | 7 | Open case + attach SIEM context | Auto-created on alert; the NG-SOC Operator also opens one explicitly | `docker-server` 10.0.16.60 | substrate `custom-iris` + `/opt/cicms-assets/open_case.sh` |
 | 8 | Enrich with CTI (IOCs/TTPs) | IRIS pulls from MISP | `docker-server` | `cicms_2c` ↔ `cti_ss_2c`; IRIS MISP module wired by the substrate |
-| 9 | Execute containment playbooks | Rules 100101/100103 fire the AR; the NG-SOAR Operator can also drive the webhook | `ng-siem` / `docker-server` | `<active-response>` + `/opt/NG-SOAR/playbooks/ngsoar_trigger.sh` |
+| 9 | Execute containment playbooks | Rule 100103 (correlated confirmation) fires the AR; the NG-SOAR Operator can also drive the webhook | `ng-siem` / `docker-server` | `<active-response>` + `/opt/NG-SOAR/playbooks/ngsoar_trigger.sh` |
 | 10 | Apply isolation + remediation | AR script contains the endpoint | `victim` | `lab_endpoint_2c/templates/puc2-isolate.j2`; library in `soar_actions_2c/files/*.yml` |
 | 11 | Containment/eradication status | Analyst reads the status markers | `victim` | `/var/run/ngsoar_isolated`, `/var/run/ngsoar_eradication_status`, `active-responses.log` |
 | 12 | Share malware intel | CTI Specialist publishes to the sharing group | `docker-server` | `/opt/cti-ss-seed/share_intel.sh` + the playbook library |

@@ -59,6 +59,8 @@ never actually fire. Resolved as follows:
 | NG-SOC Operator had no touchpoint for step 7 | case creation was fully automatic | `open_case.sh` gives the operator an explicit case-opening action alongside the automatic one |
 | CTI Specialist had no touchpoint for step 12 | provisioning created the sharing group; nobody published | `share_intel.sh` scopes the event to the sharing group and publishes it |
 | "apply security updates" (6.3.2.3) missing from the live path | only present in the playbook library | `puc2-isolate` triggers a **detached** apt security run and records the outcome in the eradication marker (detached because a blocking AR would be killed by the manager) |
+| Active response wired to `100101,100103` — 100101 fires on the **first** payload drop, seconds into a delivery that takes ~60 s | containment ran mid-injection: the C2 name was sinkholed to `0.0.0.0` and `OUTPUT` policy set to DROP **before** stage 2 beaconed, so rule 100102 could never fire and UML step 6 lost its firewall evidence; the payload was also quarantined before the analyst could see it | the trigger set is **`100103` only** (`puc2_active_response_rules`). The whole 4-stage delivery completes, 100102 fires on the blocked beacon, and containment follows the *targeted attack confirmed* verdict — the order the UML draws (step 6 → step 9) |
+| `puc2-isolate` set `INPUT/OUTPUT` policy DROP allowing only `10.0.16.0/24` | trainees reach `victim` over the CyberRangeCZ **management** interface, which is outside that CIDR: an already-open SSH session survived on the conntrack rule, but every **reconnect** was refused, leaving training levels L20/L22 ("read the containment markers on victim") unanswerable over SSH | the action explicitly preserves the administrative channel (`tcp/{{ puc2_admin_ssh_port }}`, default 22) before flipping the policy, and records `admin_channel=` in the isolation marker. Malware containment is unaffected — the payload does not listen on 22 |
 
 Ruleset loading is no longer assumed: `ng_siem_rules_2c` runs `wazuh-logtest`
 after the restart and reports any rule or decoder that failed to load.
@@ -121,6 +123,8 @@ ansible-lint provisioning/
 | 9b | Step 9 — operator path | `/opt/NG-SOAR/playbooks/ngsoar_trigger.sh isolate_host` | webhook returns 2xx |
 | 10 | Steps 9–11 | `cat /var/run/ngsoar_isolated /var/run/ngsoar_eradication_status` on `victim` | markers present; `status=eradicated`; `security_updates=triggered_background` |
 | 11 | Isolation effective | `ping -c2 -W2 10.0.16.50` then `ping -c2 -W2 10.0.16.70` on `victim` | C2 unreachable, NG-SIEM still reachable — the discriminator that proves containment is selective |
+| 11b | Endpoint still administrable | **new** SSH session to `victim` after containment | connects — the preserved admin channel is what keeps L20/L22 answerable |
+| 11c | Trigger set correct | `grep -A2 '<active-response>' /var/ossec/etc/ossec.conf` on `ng-siem` | `<rules_id>100103</rules_id>` — 100101 must NOT be there |
 | 12 | Step 13 | `/opt/evaluation/collect_evaluation.sh` on `ng-siem` | report lists per-rule alert counts and both markers |
 
 ## 5. Secrets hygiene

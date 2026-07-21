@@ -90,12 +90,18 @@ fallback.
 This is the single most important thing to understand about the sandbox.
 
 **LIVE and verifiable — Wazuh active response.**
-Rules `100101` / `100103` on the `ng-siem` manager execute
-`/var/ossec/active-response/bin/puc2-isolate` on the affected endpoint
-(`location=local`). That script ports the logic of all four containment
-playbooks: iptables isolation that keeps `10.0.16.0/24` reachable so the agent
-keeps reporting, a DROP on the C2 host plus a `/etc/hosts` blackhole of the C2
-domain, payload quarantine, and credential expiry. It writes
+Rule `100103` — the correlated *targeted attack confirmed* rule — on the
+`ng-siem` manager executes `/var/ossec/active-response/bin/puc2-isolate` on the
+affected endpoint (`location=local`). Only that rule triggers it: `100101` fires
+on the very first payload drop, seconds into a delivery that takes about a
+minute, so containing there would sinkhole the C2 name before the beacon stage
+and rule `100102` could never fire. Containing after confirmation is also the
+order the UML draws (step 6 → step 9). That script ports the logic of all four
+containment playbooks: iptables isolation that keeps `10.0.16.0/24` reachable so
+the agent keeps reporting **and preserves tcp/22 so the endpoint stays
+administrable** (the trainee reaches it over the management interface, which is
+outside the sandbox CIDR), a DROP on the C2 host plus a `/etc/hosts` blackhole
+of the C2 domain, payload quarantine, and credential expiry. It writes
 `/var/run/ngsoar_isolated` and `/var/run/ngsoar_eradication_status`, which are
 what UML step 11 reports. This path is provisioned end to end by
 `ng_siem_rules_2c` + `lab_endpoint_2c`, and it is what `VALIDATION.md` exercises.
@@ -122,7 +128,7 @@ action library that workflow references.
 | 6 | Correlate logs + confirm attack pattern | ng-siem | rule `100102` (firewall source: `local_decoder.xml.j2` + the endpoint's baseline egress filter) and rule `100103` (fired by the multi-stage delivery) + `training/ng_siem_correlation_guide.md` |
 | 7 | Open incident case + attach SIEM context | ng-siem → docker-server | **automatic:** substrate `custom-iris` integration (dedups by `case_soc_id`); **operator-driven:** `roles/cicms_2c/templates/open_case.sh.j2` + the registered case template |
 | 8 | Enrich with CTI (IOCs/TTPs) | docker-server | `roles/cicms_2c` + `roles/cti_ss_2c`; the IRIS↔MISP module is wired by the substrate |
-| 9 | Execute containment playbooks | ng-siem / docker-server | **automatic:** `<active-response>` block injected by `roles/ng_siem_rules_2c` (rules `100101,100103`); **operator-driven:** `roles/soar_actions_2c/templates/ngsoar_trigger.sh.j2` → the NG-SOAR webhook |
+| 9 | Execute containment playbooks | ng-siem / docker-server | **automatic:** `<active-response>` block injected by `roles/ng_siem_rules_2c` (rule `100103` only — see *Containment*); **operator-driven:** `roles/soar_actions_2c/templates/ngsoar_trigger.sh.j2` → the NG-SOAR webhook |
 | 10 | Apply isolation and remediation | victim | `roles/lab_endpoint_2c/templates/puc2-isolate.j2` (isolation, C2 block, quarantine, credential reset, security updates); library in `roles/soar_actions_2c/files/*.yml` |
 | 11 | Containment and eradication status | victim → analyst | `/var/run/ngsoar_isolated`, `/var/run/ngsoar_eradication_status`, `/var/ossec/logs/active-responses.log`, `/var/log/puc2-security-updates.log` |
 | 12 | Share malware intel (+ playbooks) | docker-server | `roles/cti_ss_2c` sharing group `NG-SOC-PUC2` + `templates/share_intel.sh.j2` (CTI Specialist action) + the playbook library |
