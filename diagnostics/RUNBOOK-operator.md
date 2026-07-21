@@ -5,25 +5,56 @@ Run these on a host with the OpenStack client and credentials for project
 
 ```bash
 mkdir -p diagnostics
-export DS=c08fea99-2b8f-46b2-b784-88aa35b56dc6   # docker-server
-export NS=24743039-03b2-4168-9939-6b12ab630830   # ng-siem
+
+# Attempt B (latest build) — four instances in ERROR
+export B_KALI=42e70192-2bff-48af-8cbc-8e8b1e3202de   # kali,          deploy.tf:299
+export B_DS=bce799d6-a33d-4d22-aa79-08516a3c2205     # docker-server, deploy.tf:320
+export B_VICTIM=fa7bc839-5fcf-49eb-8b94-e3503080cc82 # victim,        deploy.tf:362
+export B_MAN=dc8b8a8a-c8de-4edc-aa2e-4fda948b4512    # man,           deploy.tf:421
+
+# Attempt A (earlier build) — check whether these still exist. If they do,
+# they are consuming allocation and are the prime suspect for the escalation
+# from 2 to 4 failures.
+export A_DS=c08fea99-2b8f-46b2-b784-88aa35b56dc6     # docker-server
+export A_NS=24743039-03b2-4168-9939-6b12ab630830     # ng-siem
 ```
 
 ## Step 1 — Get the real fault (read-only, do this first)
 
 ```bash
-openstack server show "$DS" -f json > diagnostics/docker-server.json
-openstack server show "$NS" -f json > diagnostics/ng-siem.json
+for id in "$B_KALI" "$B_DS" "$B_VICTIM" "$B_MAN"; do
+  echo "== $id =="
+  openstack server show "$id" -f value -c name -c status -c fault 2>&1
+  openstack server event list "$id" 2>&1
+done | tee diagnostics/faults.txt
 
-# THE decisive output — the log hid this behind %!s(<nil>)
-openstack server show "$DS" -f value -c fault
-openstack server show "$NS" -f value -c fault
-
-openstack server event list "$DS"
-openstack server event list "$NS"
-# then, for the failing request-id:
-openstack server event show "$DS" <request-id>
+# Full detail for the two that failed in BOTH attempts
+openstack server show "$B_DS" -f json > diagnostics/docker-server.json
+# then, for the failing request-id of any of them:
+openstack server event show "$B_DS" <request-id>
 ```
+
+## Step 1b — Inventory of orphans (the aggravating hypothesis)
+
+Failures went 2 → 4 between attempts. If attempt A's instances were never
+reaped, attempt B started with less headroom — which would make cleanup the
+root fix rather than housekeeping. This inventory settles it:
+
+```bash
+openstack server list --long                          | tee diagnostics/servers.txt
+openstack server list --status ERROR -f value -c ID -c Name \
+                                                      | tee diagnostics/servers_error.txt
+openstack stack list 2>/dev/null                      | tee diagnostics/stacks.txt
+openstack volume list --status error 2>/dev/null      | tee diagnostics/volumes_error.txt
+
+# Are attempt A's instances still alive?
+openstack server show "$A_DS" -f value -c name -c status 2>&1
+openstack server show "$A_NS" -f value -c name -c status 2>&1
+```
+
+Read `servers.txt` for instances belonging to sandboxes that are no longer in
+use, not only for `ERROR` ones: a leftover *ACTIVE* sandbox consumes the same
+allocation and is easier to miss.
 
 Quota and capacity:
 
@@ -42,10 +73,23 @@ openstack flavor show standard.xmedium
 openstack flavor show standard.small
 ```
 
-Sanity check to perform by hand: does
-`ram(standard.ngsiem) + ram(standard.xmedium)` fit inside
-`maxTotalRAMSize - totalRAMUsed`? Same for vCPUs and disk. If not, the verdict
-is **QUOTA**.
+Sanity check to perform by hand — do **all six** instances of one sandbox fit in
+the *real* free margin (max − used − orphans)?
+
+```
+                    max      used    orphans    free    needed (6 VMs)
+ram (MB)          ______   ______   _______   ______   ______
+cores             ______   ______   _______   ______   ______
+gigabytes         ______   ______   _______   ______   ______
+instances         ______   ______   _______   ______        6
+```
+
+If `needed > free`, the verdict is **QUOTA** — and if `orphans` alone closes the
+gap, it is `QUOTA-ORPHANS` and no quota increase is required.
+
+Pay attention to the **instances** row. In attempt B the largest flavour built
+while two `standard.small` failed; a per-count ceiling behaves exactly like
+that, a RAM ceiling normally does not.
 
 Record the verdict and the verbatim fault in `DIAGNOSIS.md`.
 
@@ -63,11 +107,27 @@ exist, which causes confusing failures on the next build.
 depends on them:
 
 ```bash
-openstack server delete "$DS" "$NS"
+# This attempt's failures
+openstack server delete "$B_KALI" "$B_DS" "$B_VICTIM" "$B_MAN"
+
+# Anything else left in ERROR — REVIEW diagnostics/servers_error.txt FIRST,
+# it may contain instances belonging to other people's sandboxes
+openstack server delete <ids from servers_error.txt>
+
+# Orphaned volumes, if any
+openstack volume delete <ids from volumes_error.txt>
+
 openstack server list --status ERROR      # must come back empty
 ```
 
 > Destructive. Do not run without confirming the sandbox is not in use.
+
+Then re-measure and prove the headroom came back — this is what tells you
+whether cleanup alone fixes the build:
+
+```bash
+openstack limits show --absolute | tee diagnostics/limits-after-cleanup.txt
+```
 
 ## Step 3 — Apply the fix that matches the verdict
 

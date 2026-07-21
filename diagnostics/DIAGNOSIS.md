@@ -1,91 +1,94 @@
 # Diagnosis — PUC2 2c sandbox build failure (project p0000000094, sandbox s0000000522)
 
-## Status: **PENDIENTE DE CONFIRMAR**
+## Status: **PENDIENTE DE CONFIRMAR** (second failed attempt analysed)
 
 `OPENSTACK_UNAVAILABLE`. The workstation this analysis ran on has no
 `openstack` client, no `nova`, no `terraform`/`tofu`, and zero `OS_*`
-environment variables. **No diagnostic command could be executed**, so the root
-cause below is a hypothesis derived from the build log alone. It must be
-confirmed with the runbook in `RUNBOOK-operator.md` before any fix is applied.
+environment variables. **No diagnostic command could be executed**, so
+everything below is derived from the two build logs. It must be confirmed with
+`RUNBOOK-operator.md` before any fix is applied.
 
-Nothing in this file is an observation from the live cloud. Where a statement
-is inference, it says so.
+Nothing in this file is an observation from the live cloud. Where a statement is
+inference, it says so.
 
-## What the log actually shows
+## Two attempts, two different failure sets
 
-| Instance | Flavor | Image | Result |
-|---|---|---|---|
-| kali | standard.xmedium | kali | ACTIVE after 10s |
-| victim | standard.small | ubuntu-noble-x86_64 | ACTIVE after 10s |
-| man | standard.small | debian-12-x86_64 | ACTIVE after 10s |
-| router | standard.small | debian-12-x86_64 | ACTIVE after 10s |
-| **docker-server** | **standard.xmedium** | **ubuntu-noble-x86_64** | **ERROR** |
-| **ng-siem** | **standard.ngsiem** | **siemng** | **ERROR** |
+| Instance | Flavor | Image | Attempt A | Attempt B (this log) |
+|---|---|---|---|---|
+| ng-siem | standard.ngsiem | siemng | **ERROR** | ACTIVE `35151302-6889-4281-b769-9f6c47d5d2dc` |
+| router | standard.small | debian-12 | ACTIVE | ACTIVE `36da7bd6-7c8b-47ed-a74c-7f53a7f68e0f` |
+| kali | standard.xmedium | kali | ACTIVE | **ERROR** `42e70192-2bff-48af-8cbc-8e8b1e3202de` (deploy.tf:299) |
+| docker-server | standard.xmedium | ubuntu-noble | **ERROR** | **ERROR** `bce799d6-a33d-4d22-aa79-08516a3c2205` (deploy.tf:320) |
+| victim | standard.small | ubuntu-noble | ACTIVE | **ERROR** `fa7bc839-5fcf-49eb-8b94-e3503080cc82` (deploy.tf:362) |
+| man | standard.small | debian-12 | ACTIVE | **ERROR** `dc8b8a8a-c8de-4edc-aa2e-4fda948b4512` (deploy.tf:421) |
+| | | | **2 ERROR** | **4 ERROR** |
 
-All 26 network resources were created without error. Both failures are compute
-only, and both surfaced as:
+Both attempts: all network resources (testnet/wan/man, subnets, ports) created
+without error. Both attempts fail compute-only, with the same message:
 
 ```
 Error waiting for instance (<uuid>) to become ready:
 unexpected state 'ERROR', wanted target 'ACTIVE'. last error: %!s(<nil>)
 ```
 
-Failed instance IDs:
-- docker-server `c08fea99-2b8f-46b2-b784-88aa35b56dc6` (deploy.tf:320)
-- ng-siem `24743039-03b2-4168-9939-6b12ab630830` (deploy.tf:341)
+`%!s(<nil>)` is not the fault — it is the **absence** of one. The Go provider
+rendered a nil `fault` field with `%s`. Nova reported `status=ERROR` and the
+provider read no populated fault. **The real reason is not in either log and
+cannot be recovered from them.** Retrieving it is step 1 of the runbook.
 
-### `%!s(<nil>)` is not the fault — it is the absence of one
+## What the comparison rules out — this is the decisive evidence
 
-That string is a Go formatting artefact: the provider tried to render a nil
-value with `%s`. It means nova reported `status=ERROR` but the provider read no
-populated `fault` field. **The real reason is not in this log and cannot be
-recovered from it.** Retrieving it is step 1 of the runbook.
+The failing set **changed between attempts**, and it changed in a way that
+kills every host-, image- and flavour-specific explanation:
 
-## What the evidence rules out
+- **Not the `standard.ngsiem` flavour or the `siemng` image.** They failed in
+  attempt A and **succeeded in attempt B** — the largest instance of the six
+  built fine while two `standard.small` did not.
+- **Not `standard.xmedium`, not `standard.small`.** Each flavour appears on
+  both sides of the line across the two attempts.
+- **Not `ubuntu-noble-x86_64`, not `debian-12-x86_64`, not `kali`.** Same.
+- **Not a single sick compute host.** A host-local fault would not reshuffle
+  which four of six instances fail.
+- **Not networking, not the repository.** Terraform planned and created every
+  network resource; provisioning never started, so no Ansible role — and
+  therefore nothing in the 2c overlay — can be implicated in either attempt.
 
-This is the useful part of the log, and it narrows the field considerably:
+What remains is a **shared, exhaustible resource consumed in creation order**:
+whichever instances are scheduled while headroom lasts become ACTIVE, the rest
+fail. That is quota or capacity, and only the live cloud can say which.
 
-- **Not the `xmedium` flavor.** `kali` is also `standard.xmedium` and became
-  ACTIVE. A flavor that is definitionally unschedulable would have failed there
-  too.
-- **Not the `ubuntu-noble-x86_64` image.** `victim` used it and became ACTIVE.
-- **Not networking.** Every port, subnet and network reached
-  `Creation complete`, including the ports carrying the fixed IPs of both
-  failed hosts (`10.0.16.60`, `10.0.16.70`).
-- **Not the repository.** Terraform generated a plan of 26 resources from the
-  topology without error; provisioning never started, so no Ansible role — and
-  therefore nothing added by the 2c overlay — can be implicated.
+## The aggravating hypothesis: orphans from attempt A
 
-## Leading hypothesis (unconfirmed): cumulative resource ceiling
+Failures went **2 → 4** between attempts. The scenario that explains an
+escalation is that attempt A's two ERROR instances (and possibly its whole
+stack) were never reaped, so attempt B started against a project that had
+already lost that headroom. Under that reading, **cleanup is the root fix, not
+housekeeping**, and no quota increase is needed at all.
 
-The two failures are **the two largest instances**, and they are the **last two
-scheduled** — the log shows `kali`, `victim`, `man`, `router` entering creation
-first and completing, with `ng-siem` and `docker-server` entering creation last
-and failing. That ordering is what a cumulative ceiling looks like: the first
-allocations succeed and consume headroom, the largest remaining ones cannot be
-placed.
+This is a hypothesis with a cheap test: `openstack server list --long` and
+`openstack server list --status ERROR` will show whether attempt A's instances
+(`c08fea99-…` docker-server, `24743039-…` ng-siem) are still there consuming
+allocation. Until that inventory is run, nothing here is established.
 
-Two variants remain, and the log cannot distinguish them:
+Note also that both attempts are recorded under sandbox **s0000000522**. If
+that is literal rather than a transcription artefact, attempt A's resources may
+still exist under the same names, which is worth confirming while taking the
+inventory.
 
-- **QUOTA** — the project's RAM / vCPU / disk allowance is exhausted. Would
-  normally surface a `quota exceeded` fault or a 403 at the API.
-- **CAPACITY** — quota has headroom but no single compute host can fit
-  `standard.ngsiem`. Surfaces as `No valid host was found`.
-
-A third possibility is not excluded and is cheap to check: **IMAGE/VOLUME** —
-the `siemng` image is custom and large; if `min_disk`/`min_ram` exceed the
-`standard.ngsiem` flavor, or boot-from-volume hits the volume quota, the build
-fails at exactly this point. This would explain `ng-siem` but not
-`docker-server`, so on its own it is a weaker fit.
-
-## Classification criteria (fill in after running the runbook)
+## Candidate verdicts (fill in after running the runbook)
 
 | Verdict | Confirm when |
 |---|---|
-| `QUOTA` | fault or `server event list` mentions quota; or `limits show --absolute` shows `totalRAMUsed + <needed>` exceeding `maxTotalRAMSize` (likewise cores / volume gigabytes) |
-| `CAPACITY` | fault or scheduler log says `No valid host was found` **and** quota has headroom |
-| `IMAGE/VOLUME` | `siemng` not `active`; or `min_disk`/`min_ram` > flavor; or block device mapping / volume-quota failure |
+| `QUOTA-ORPHANS` | `server list --status ERROR` shows instances from previous attempts; `limits show` headroom recovers after they are removed |
+| `QUOTA-RAM/CORES` | fault or `server event list` mentions quota; or `totalRAMUsed + <needed>` exceeds `maxTotalRAMSize` (likewise cores, gigabytes) |
+| `QUOTA-INSTANCES` | `maxTotalInstances` reached — this fits attempt B well, where two `standard.small` failed while the largest flavour succeeded: a **count** ceiling is size-blind |
+| `CAPACITY` | fault or scheduler says `No valid host was found` **and** quota has headroom |
+| `IMAGE/VOLUME` | `siemng` not `active`; or `min_disk`/`min_ram` > flavour; or volumes in `error` / volume quota hit |
 | `OTRO` | anything else — transcribe the fault verbatim, do not paraphrase |
+
+`QUOTA-INSTANCES` deserves particular attention this time: in attempt B the
+resource-hungry instance built and the two smallest did not, which is what a
+per-count limit looks like and is **not** what a RAM ceiling usually looks like.
 
 **Result: _____________ (to be completed by the operator)**
 
@@ -95,21 +98,20 @@ fails at exactly this point. This would explain `ng-siem` but not
 (paste `openstack server show <id> -f value -c fault` output here)
 ```
 
-## Why the fix is deliberately not pre-applied
+## Why no fix is pre-applied
 
-Right-sizing the flavors in `topology.yml` would make the build succeed under
-*either* QUOTA or CAPACITY, which makes it a tempting blind fix. It is the
-wrong first move:
+Right-sizing the flavours in `topology.yml` would plausibly make the build pass
+under QUOTA or CAPACITY, which makes it a tempting blind fix. It is the wrong
+first move, and after attempt B it is also unsupported by the evidence:
 
+- The failing set is **not** correlated with size. `ng-siem` — the instance
+  right-sizing would target — built successfully in the failing attempt.
 - `topology.yml` is vendored **byte-identical** from the `integrations`
-  substrate (see README, "Reuse of the integrations substrate"). Editing it
-  breaks that guarantee for a cause nobody has confirmed.
+  substrate. Editing it breaks that guarantee for a cause nobody has confirmed.
 - `standard.ngsiem` exists because the Wazuh indexer plus the SPHYNX stack need
-  the RAM. Shrinking it trades a hard failure for a soft one: OOM kills,
-  an indexer that never becomes ready, and degraded detection — which would
-  surface much later, as training levels that mysteriously fail.
+  the RAM. Shrinking it trades a hard failure for a soft one: OOM kills, an
+  indexer that never becomes ready, degraded detection — surfacing later as
+  training levels that mysteriously fail.
 
-If the cause is QUOTA and the quota is extendable, or CAPACITY resolvable by
-scheduling into an AZ/aggregate with room, the correct fix is operational and
-the repository does not change at all. Right-sizing is the last resort, not the
-first.
+If the cause is orphaned resources or an extendable quota, the correct fix is
+operational and the repository does not change at all.
