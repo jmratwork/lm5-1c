@@ -130,6 +130,16 @@ for candidate in \
 done
 chmod -R 0600 "${QUARANTINE_DIR}"/* 2>/dev/null
 
+# Eradication is a STATE, not an event. This action is re-runnable by design:
+# rule {{ puc2_active_response_rules }} can match more than once, and training
+# level L18 tells the trainee to fire containment again from NG-SOAR while the
+# phase text promises that doing so is "safe and idempotent". On that second run
+# there is nothing left to move, so a status derived from THIS run's move count
+# alone would rewrite the marker to "incomplete" — and level L21's graded answer
+# would vanish the moment the trainee did what the training asked. What matters
+# is whether the payload is in quarantine, not who put it there.
+QUARANTINE_HELD=$(ls -A "${QUARANTINE_DIR}" 2>/dev/null | wc -l)
+
 # Kill anything still executing the payload.
 pkill -f "${PAYLOAD_NAME}" 2>/dev/null
 
@@ -183,13 +193,22 @@ blocked_domain=${C2_DOMAIN}
 MARKER
 
 # First line is the graded answer for training level L21 — keep it verbatim.
-# It reports {{ puc2_eradication_status }} only when something was actually
-# quarantined; the multi-stage delivery guarantees at least one artefact, so a
-# different value here means the injection never ran, which is worth seeing.
+# It reports {{ puc2_eradication_status }} when the payload is held in
+# quarantine, whether this run moved it or an earlier one did. The multi-stage
+# delivery guarantees at least one artefact, so the "incomplete" value can only
+# mean the injection never ran — which is worth seeing, and is the one case
+# where it is the honest answer.
+if [ "${QUARANTINED}" -gt 0 ] || [ "${QUARANTINE_HELD}" -gt 0 ]; then
+    ERADICATION_STATUS="{{ puc2_eradication_status }}"
+else
+    ERADICATION_STATUS="eradication_incomplete_no_payload_found"
+fi
+
 cat >"${ERADICATION_MARKER}" <<MARKER
-$([ "${QUARANTINED}" -gt 0 ] && echo "{{ puc2_eradication_status }}" || echo "eradication_incomplete_no_payload_found")
+${ERADICATION_STATUS}
 quarantine_dir=${QUARANTINE_DIR}
-quarantined_files=${QUARANTINED}
+quarantined_this_run=${QUARANTINED}
+quarantined_total=${QUARANTINE_HELD}
 credentials_reset=$(id "${VICTIM_USER}" >/dev/null 2>&1 && echo yes || echo n/a)
 security_updates=${PATCH_STATUS}
 eradicated_at=$(date -Iseconds)

@@ -50,6 +50,11 @@
       # ...write the graded status words on the first line of each marker...
       - puc2_isolation_marker in (puc2_pf_ar_script.content | b64decode)
       - puc2_eradication_marker in (puc2_pf_ar_script.content | b64decode)
+      # ...keep saying `eradicated` when containment runs a SECOND time. Level 9
+      # tells the trainee to re-trigger it and the phase text promises that is
+      # idempotent; deriving the status from this run's move count alone erases
+      # L21's answer the moment they comply.
+      - "'QUARANTINE_HELD' in (puc2_pf_ar_script.content | b64decode)"
       # ...and keep the endpoint reachable afterwards, or L20 and L21 cannot be
       # answered over SSH at all once containment has run.
       - "'--dport \"${SSH_PORT}\"' in (puc2_pf_ar_script.content | b64decode)"

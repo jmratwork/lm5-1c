@@ -1,3 +1,13 @@
+> **SUPERSEDED by [diagnostics/PRE-USE-VERIFICATION.md](diagnostics/PRE-USE-VERIFICATION.md).**
+> This report's verdict — "no blocking issues found", subject to a 60-second
+> glance at two dashboards — did not hold. The glance was never done, and a
+> deeper audit that followed each level's own command back through the code
+> found two blocking defects this method could not see: the eradication marker
+> was destroyed by doing what level 9 asks, and rule 100102 could never fire.
+> Both are fixed. The dashboard glance no longer exists as a concept: the
+> preflight gate reads every resource back and fails the deployment.
+> Kept for the record of what was checked and when.
+
 # QA Report — PUC2 (CYNET) Sub Case 2c: pre-use check for blocking issues
 
 **Objective:** confirm, before trainees use it, that no level of the training definition

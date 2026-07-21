@@ -46,9 +46,16 @@
        This deliberately does NOT use <if_group>firewall</if_group>: nothing in
        this sandbox emits logs that land in that group, so such a rule could
        never fire. See templates/local_decoder.xml.j2. -->
+  <!-- Deliberately keyed on the decoder ALONE, with no <field> condition. The
+       endpoint's LOG rule carries the {{ puc2_fw_log_prefix }} prefix on
+       tcp/{{ puc2_c2_port }} and nothing else, so every line this decoder sees
+       IS a blocked C2 beacon — the port test added no selectivity while making
+       the rule depend on field extraction succeeding. It previously depended on
+       `dstport`, which a decoder-ordering bug left permanently unset, and the
+       rule could never fire. Evidence for UML step 6 and level L11 must not
+       hinge on that. -->
   <rule id="100102" level="10">
     <decoded_as>puc2-iptables</decoded_as>
-    <field name="dstport">^{{ puc2_c2_port }}$|^8080$|^443$</field>
     <description>PUC2: blocked outbound connection from endpoint (possible C2/exfil)</description>
     <mitre>
       <id>T1048</id>

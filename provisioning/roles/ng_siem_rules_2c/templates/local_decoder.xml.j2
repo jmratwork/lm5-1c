@@ -17,14 +17,16 @@
   <prematch>{{ puc2_fw_log_prefix }}: </prematch>
 </decoder>
 
-<decoder name="puc2-iptables-addresses">
+<!--
+  ONE child decoder, not two. Sibling child decoders are tried in order and the
+  FIRST that matches wins — the rest never run. Split across an "addresses"
+  decoder and a "ports" decoder, the addresses one always matched first and the
+  ports one never executed, so `dstport` was never populated and rule 100102 —
+  which required that field — could not fire under any circumstances. Every
+  field the rule and the analyst need has to come out of a single regex.
+-->
+<decoder name="puc2-iptables-fields">
   <parent>puc2-iptables</parent>
-  <regex offset="after_prematch">SRC=(\d+.\d+.\d+.\d+)\s+DST=(\d+.\d+.\d+.\d+)</regex>
-  <order>srcip,dstip</order>
-</decoder>
-
-<decoder name="puc2-iptables-ports">
-  <parent>puc2-iptables</parent>
-  <regex offset="after_prematch">PROTO=(\w+)\s+SPT=(\d+)\s+DPT=(\d+)</regex>
-  <order>protocol,srcport,dstport</order>
+  <regex offset="after_prematch">SRC=(\d+.\d+.\d+.\d+)\s+DST=(\d+.\d+.\d+.\d+).*PROTO=(\w+)\s+SPT=(\d+)\s+DPT=(\d+)</regex>
+  <order>srcip,dstip,protocol,srcport,dstport</order>
 </decoder>
