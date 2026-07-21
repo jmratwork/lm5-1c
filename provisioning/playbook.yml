@@ -131,3 +131,23 @@
   roles:
     - role: puc2_preflight
       tags: [puc2-preflight]
+
+# =============================================================================
+# Diagnostics — read-only, opt-in, NEVER part of a build (tagged `never`).
+#
+#   ansible-playbook provisioning/playbook.yml --tags puc2_diag --limit docker-server
+#
+# Asks CTI-SS and CICMS directly whether the scenario content is there, and
+# writes diagnostics/DIAGNOSIS.md with the HTTP status and the API's own words
+# for each resource. Creates nothing; cannot fail a build.
+# =============================================================================
+- name: PUC2 2c — diagnose the CTI-SS / CICMS content against the live APIs
+  hosts: docker-server
+  become: true
+  gather_facts: true
+  vars_files:
+    - group_vars/puc2_2c.yml
+    - "{{ lookup('first_found', ['group_vars/vault.yml', 'group_vars/vault.yml.example']) }}"
+  roles:
+    - role: puc2_diag
+      tags: [puc2_diag, puc2-diag, never]

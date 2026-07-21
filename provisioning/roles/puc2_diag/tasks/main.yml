@@ -1,0 +1,322 @@
+---
+# =============================================================================
+# role: puc2_diag        (host: docker-server — READ-ONLY, never in a build)
+#
+#   ansible-playbook provisioning/playbook.yml --tags puc2_diag --limit docker-server
+#
+# WHY THIS EXISTS
+# The preflight gate said "MISP event: False, sharing group: False, IRIS case:
+# False" while the tasks that create them all reported success. One of those two
+# statements is a lie and no human should have to open a dashboard to find out
+# which. This role asks the live APIs directly and writes the answer — with the
+# HTTP status and the API's own error text — to diagnostics/DIAGNOSIS.md.
+#
+# It creates nothing, modifies nothing and cannot fail a build.
+#
+# ON no_log
+# The brief asks for `no_log: false` here. Applied literally to a task whose
+# arguments carry an Authorization header, that publishes the key to anyone
+# reading the log with -v: `invocation.module_args` is part of a task result.
+# So the rule used is stricter and gives the same visibility:
+#   * tasks that CARRY a credential keep no_log: true;
+#   * the RESPONSE BODIES — what was hidden, and the whole point of the
+#     exercise — are lifted into plain, un-hidden facts, through a redaction
+#     pass first, then printed and reported in full.
+# No no_log outside this role's tag is touched.
+# =============================================================================
+
+# ── Credentials: which key would create, which key would verify ──────────────
+# Read from the files the substrate wrote (0600, on the host running the
+# services) rather than from hostvars, so this works standalone against an
+# already-provisioned sandbox where no fact cache survives.
+
+- name: Read the on-host MISP credential file
+  ansible.builtin.slurp:
+    src: "{{ puc2_diag_misp_env }}"
+  register: puc2_diag_misp_env_raw
+  no_log: true
+  failed_when: false
+
+- name: Read the on-host DFIR-IRIS credential file
+  ansible.builtin.slurp:
+    src: "{{ puc2_diag_iris_env }}"
+  register: puc2_diag_iris_env_raw
+  no_log: true
+  failed_when: false
+
+- name: Read the DFIR-IRIS key straight out of the database
+  community.docker.docker_container_exec:
+    container: iris_db
+    command: >
+      psql -U postgres -d iris_db -t -A -c
+      "SELECT api_key FROM \"user\" WHERE name = 'administrator' LIMIT 1;"
+  register: puc2_diag_iris_db
+  no_log: true
+  failed_when: false
+  changed_when: false
+
+- name: Resolve every candidate key
+  ansible.builtin.set_fact:
+    # regex_search returns None when the file is absent, and `None | first`
+    # raises — hence the default([], true) before first.
+    puc2_diag_misp_key_file: >-
+      {{ (puc2_diag_misp_env_raw.content | default('') | b64decode
+          | regex_search('MISP_API_KEY=(.*)', '\1')
+          | default([], true) | first | default('', true)) | trim }}
+    puc2_diag_iris_key_file: >-
+      {{ (puc2_diag_iris_env_raw.content | default('') | b64decode
+          | regex_search('IRIS_API_KEY=(.*)', '\1')
+          | default([], true) | first | default('', true)) | trim }}
+    puc2_diag_iris_key_db: "{{ puc2_diag_iris_db.stdout | default('') | trim }}"
+    puc2_diag_misp_key_var: "{{ puc2_misp_api_key | default('') | trim }}"
+    puc2_diag_iris_key_var: "{{ puc2_iris_api_key | default('') | trim }}"
+  no_log: true
+
+# The keys the probes present: for IRIS the database is authoritative (that is
+# where docker_server itself goes when the hardcoded key is rejected); for MISP
+# the on-host file is, since that is what the running services were given.
+- name: Choose the keys the probes will present
+  ansible.builtin.set_fact:
+    puc2_diag_misp_key: "{{ puc2_diag_misp_key_file or puc2_diag_misp_key_var }}"
+    puc2_diag_iris_key: "{{ puc2_diag_iris_key_db or puc2_diag_iris_key_file or puc2_diag_iris_key_var }}"
+  no_log: true
+
+- name: Fingerprint each candidate key (sha256[:12]/length — never the key)
+  ansible.builtin.set_fact:
+    puc2_diag_keys:
+      misp_from_file: "{{ (puc2_diag_misp_key_file | hash('sha256'))[:12] }}/{{ puc2_diag_misp_key_file | length }}"
+      misp_from_var: "{{ (puc2_diag_misp_key_var | hash('sha256'))[:12] }}/{{ puc2_diag_misp_key_var | length }}"
+      iris_from_db: "{{ (puc2_diag_iris_key_db | hash('sha256'))[:12] }}/{{ puc2_diag_iris_key_db | length }}"
+      iris_from_file: "{{ (puc2_diag_iris_key_file | hash('sha256'))[:12] }}/{{ puc2_diag_iris_key_file | length }}"
+      iris_from_var: "{{ (puc2_diag_iris_key_var | hash('sha256'))[:12] }}/{{ puc2_diag_iris_key_var | length }}"
+    puc2_diag_misp_key_agrees: "{{ (puc2_diag_misp_key_var | length > 0)
+                                   and (puc2_diag_misp_key_var == puc2_diag_misp_key) }}"
+    puc2_diag_iris_key_agrees: "{{ (puc2_diag_iris_key_var | length > 0)
+                                   and (puc2_diag_iris_key_var == puc2_diag_iris_key) }}"
+    puc2_diag_iris_var_is_stale: "{{ (puc2_diag_iris_key_var | hash('sha256')) == puc2_diag_stale_iris_key_sha256 }}"
+    puc2_diag_iris_probe_is_stale: "{{ (puc2_diag_iris_key | hash('sha256')) == puc2_diag_stale_iris_key_sha256 }}"
+  no_log: true
+
+- name: Build the redaction pattern from every credential in play
+  ansible.builtin.set_fact:
+    puc2_diag_secret_re: >-
+      {{ ([puc2_diag_misp_key_file, puc2_diag_misp_key_var, puc2_diag_iris_key_db,
+           puc2_diag_iris_key_file, puc2_diag_iris_key_var]
+          | reject('equalto', '') | unique | map('regex_escape') | join('|'))
+         | default('(?!x)x', true) }}
+  no_log: true
+
+# ── The gate's own blind spot, reproduced ────────────────────────────────────
+# Identical request, twice: once exactly as puc2_preflight issues it, once with
+# return_content. If the first carries no `content` and the second does, then
+# the gate was testing substrings against an empty string and its three False
+# verdicts were never statements about MISP at all.
+
+- name: Probe MISP exactly as the gate does (no return_content)
+  ansible.builtin.uri:
+    url: "{{ puc2_misp_url }}/events/restSearch"
+    method: POST
+    headers:
+      Authorization: "{{ puc2_diag_misp_key }}"
+      Accept: "application/json"
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      value: "{{ puc2_payload_md5 }}"
+      returnFormat: "json"
+    validate_certs: false
+    status_code: [200, 401, 403, 404]
+    timeout: 30
+  register: puc2_diag_gatestyle
+  no_log: true
+  failed_when: false
+
+# ── Real reads ───────────────────────────────────────────────────────────────
+
+- name: MISP — search the event by payload MD5 (published and unpublished)
+  ansible.builtin.uri:
+    url: "{{ puc2_misp_url }}/events/restSearch"
+    method: POST
+    headers:
+      Authorization: "{{ puc2_diag_misp_key }}"
+      Accept: "application/json"
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      value: "{{ puc2_payload_md5 }}"
+      returnFormat: "json"
+    return_content: true
+    validate_certs: false
+    status_code: [200, 401, 403, 404]
+    timeout: 30
+  register: puc2_diag_event
+  no_log: true
+  failed_when: false
+
+- name: MISP — list every event the key can see (unfiltered control)
+  ansible.builtin.uri:
+    url: "{{ puc2_misp_url }}/events/index"
+    method: GET
+    headers:
+      Authorization: "{{ puc2_diag_misp_key }}"
+      Accept: "application/json"
+    return_content: true
+    validate_certs: false
+    status_code: [200, 401, 403, 404]
+    timeout: 30
+  register: puc2_diag_event_index
+  no_log: true
+  failed_when: false
+
+- name: MISP — list the sharing groups
+  ansible.builtin.uri:
+    url: "{{ puc2_misp_url }}/sharing_groups/index"
+    method: GET
+    headers:
+      Authorization: "{{ puc2_diag_misp_key }}"
+      Accept: "application/json"
+    return_content: true
+    validate_certs: false
+    status_code: [200, 401, 403, 404]
+    timeout: 30
+  register: puc2_diag_groups
+  no_log: true
+  failed_when: false
+
+- name: CICMS — check what the key authenticates as
+  ansible.builtin.uri:
+    url: "{{ puc2_iris_url }}/api/ping"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ puc2_diag_iris_key }}"
+      Content-Type: "application/json"
+    return_content: true
+    validate_certs: false
+    status_code: [200, 401, 403, 404]
+    timeout: 20
+  register: puc2_diag_iris_ping
+  no_log: true
+  failed_when: false
+
+- name: CICMS — list the cases
+  ansible.builtin.uri:
+    url: "{{ puc2_iris_url }}/manage/cases/list"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ puc2_diag_iris_key }}"
+      Content-Type: "application/json"
+    return_content: true
+    validate_certs: false
+    status_code: [200, 401, 403, 404]
+    timeout: 30
+  register: puc2_diag_cases
+  no_log: true
+  failed_when: false
+
+- name: NG-SOAR — list the containment library
+  ansible.builtin.find:
+    paths: "{{ puc2_soar_playbook_dir }}"
+    patterns: "*.yml"
+  register: puc2_diag_soar
+  failed_when: false
+
+# ── Lift the bodies into plain sight (redacted, never hidden) ────────────────
+
+- name: Expose the response bodies as redacted facts
+  ansible.builtin.set_fact:
+    puc2_diag_body_event: "{{ (puc2_diag_event.content | default('')) | regex_replace(puc2_diag_secret_re, '<redacted>') }}"
+    puc2_diag_body_index: "{{ (puc2_diag_event_index.content | default('')) | regex_replace(puc2_diag_secret_re, '<redacted>') }}"
+    puc2_diag_body_groups: "{{ (puc2_diag_groups.content | default('')) | regex_replace(puc2_diag_secret_re, '<redacted>') }}"
+    puc2_diag_body_cases: "{{ (puc2_diag_cases.content | default('')) | regex_replace(puc2_diag_secret_re, '<redacted>') }}"
+    puc2_diag_body_ping: "{{ (puc2_diag_iris_ping.content | default('')) | regex_replace(puc2_diag_secret_re, '<redacted>') }}"
+
+- name: Extract the structured view of the MISP search
+  ansible.builtin.set_fact:
+    puc2_diag_events: "{{ puc2_diag_event.json.response | default([], true)
+                          | selectattr('Event', 'defined') | map(attribute='Event') | list }}"
+  failed_when: false
+
+- name: Extract the structured view of the CICMS case list
+  ansible.builtin.set_fact:
+    # IRIS has moved this payload between versions; try each shape in turn, and
+    # keep a list whatever comes back so the reductions below cannot raise.
+    puc2_diag_case_rows: "{{ puc2_diag_cases.json.data.data
+                             | default(puc2_diag_cases.json.data, true)
+                             | default([], true) }}"
+  failed_when: false
+
+- name: Keep the case rows a list of mappings whatever the API returned
+  ansible.builtin.set_fact:
+    puc2_diag_case_rows: "{{ (puc2_diag_case_rows is sequence and puc2_diag_case_rows is not string
+                              and puc2_diag_case_rows is not mapping)
+                             | ternary(puc2_diag_case_rows, []) }}"
+  failed_when: false
+
+- name: Reduce every probe to exists / why-not
+  ansible.builtin.set_fact:
+    puc2_diag_findings:
+      misp_event:
+        http: "{{ puc2_diag_event.status | default('unreachable') }}"
+        exists: "{{ (puc2_diag_events | default([]) | length) > 0 }}"
+        published: "{{ puc2_diag_events | default([]) | map(attribute='published', default='(absent)') | list }}"
+        has_initial_access: "{{ puc2_mitre_initial_access in puc2_diag_body_event }}"
+        has_execution: "{{ puc2_mitre_execution in puc2_diag_body_event }}"
+        has_c2: "{{ puc2_c2_domain in puc2_diag_body_event }}"
+        has_md5: "{{ puc2_payload_md5 in puc2_diag_body_event }}"
+        events_visible_total: "{{ puc2_diag_event_index.json | default([]) | length }}"
+      sharing_group:
+        http: "{{ puc2_diag_groups.status | default('unreachable') }}"
+        exists: "{{ puc2_misp_sharing_group_name in puc2_diag_body_groups }}"
+      iris_case:
+        http: "{{ puc2_diag_cases.status | default('unreachable') }}"
+        ping_http: "{{ puc2_diag_iris_ping.status | default('unreachable') }}"
+        exists_by_soc_id: "{{ puc2_diag_case_rows | default([]) | selectattr('case_soc_id', 'defined')
+                              | selectattr('case_soc_id', 'equalto', puc2_case_soc_id) | list | length > 0 }}"
+        exists_in_body: "{{ puc2_case_soc_id in puc2_diag_body_cases }}"
+        row_count: "{{ puc2_diag_case_rows | default([]) | length }}"
+        row_fields: "{{ (puc2_diag_case_rows | default([]) | first | default({}, true)) | dict2items
+                        | map(attribute='key') | list }}"
+      soar_library:
+        exists: "{{ (puc2_diag_soar.files | default([]) | length) > 0 }}"
+        books: "{{ puc2_diag_soar.files | default([]) | map(attribute='path') | map('basename') | sort }}"
+      gate_blind_spot:
+        gate_style_http: "{{ puc2_diag_gatestyle.status | default('unreachable') }}"
+        gate_style_has_content: "{{ puc2_diag_gatestyle.content is defined }}"
+        diag_has_content: "{{ puc2_diag_event.content is defined }}"
+
+# ── Verdict ──────────────────────────────────────────────────────────────────
+# "FALSO NEGATIVO" = the resource is there and the gate said otherwise.
+# "FALLO REAL"     = the API answered normally and the resource is absent.
+
+- name: Classify each resource
+  ansible.builtin.set_fact:
+    puc2_diag_verdict:
+      misp_event: "{{ 'FALSO NEGATIVO' if (puc2_diag_findings.misp_event.exists | bool)
+                      else ('FALLO REAL' if puc2_diag_findings.misp_event.http | string == '200'
+                            else 'FALLO DE ACCESO (HTTP ' ~ puc2_diag_findings.misp_event.http ~ ')') }}"
+      sharing_group: "{{ 'FALSO NEGATIVO' if (puc2_diag_findings.sharing_group.exists | bool)
+                         else ('FALLO REAL' if puc2_diag_findings.sharing_group.http | string == '200'
+                               else 'FALLO DE ACCESO (HTTP ' ~ puc2_diag_findings.sharing_group.http ~ ')') }}"
+      iris_case: "{{ 'FALSO NEGATIVO' if (puc2_diag_findings.iris_case.exists_by_soc_id | bool)
+                     else ('FALLO REAL' if puc2_diag_findings.iris_case.http | string == '200'
+                           else 'FALLO DE ACCESO (HTTP ' ~ puc2_diag_findings.iris_case.http ~ ')') }}"
+      gate_mechanism: "{{ 'GATE CIEGO — uri sin return_content: comparaba contra cadena vacia'
+                          if ((not (puc2_diag_findings.gate_blind_spot.gate_style_has_content | bool))
+                              and (puc2_diag_findings.gate_blind_spot.diag_has_content | bool))
+                          else 'el gate si recibia cuerpo; el False no viene de return_content' }}"
+
+- name: Show the findings on the console
+  ansible.builtin.debug:
+    var: puc2_diag_findings
+
+- name: Show the verdict on the console
+  ansible.builtin.debug:
+    var: puc2_diag_verdict
+
+- name: Write diagnostics/DIAGNOSIS.md on the controller
+  ansible.builtin.template:
+    src: DIAGNOSIS.md.j2
+    dest: "{{ puc2_diag_report }}"
+    mode: '0644'
+  delegate_to: localhost
+  become: false
