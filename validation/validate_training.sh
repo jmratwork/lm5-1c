@@ -130,6 +130,11 @@ echo "-- Phase 2: detection (L8, L9, L10, L11) ---------------------------------
 staged_md5=$(ssh_to "${VICTIM_IP}" "sudo md5sum /opt/puc2/invoice.exe | cut -d' ' -f1")
 check "L8  payload MD5" "44d88612fea8a8f36de82e1278abb02f" "${staged_md5}"
 
+# The active response must fire on the CORRELATION rule only. With 100101 in the
+# trigger set, containment interrupts the delivery and rule 100102 never fires.
+ar_rules=$(ssh_to "${NGSIEM_IP}" "sudo sed -n '/PUC2-2C DETECTION AND RESPONSE/,/END ANSIBLE/p' /var/ossec/etc/ossec.conf | sed -n 's:.*<rules_id>\(.*\)</rules_id>.*:\1:p' | tr -d ' '")
+check "L18 active response triggers on 100103 only" "100103" "${ar_rules}"
+
 rules=$(ssh_to "${NGSIEM_IP}" "sudo grep -o 'id=\"1001[0-9][0-9]\"' /var/ossec/etc/rules/local_rules.xml | sort -u | tr -d '\n'")
 for rid in 100100 100101 100102 100103; do
     check_contains "L10 rule ${rid} present in local_rules.xml" "${rid}" "${rules}"
@@ -219,9 +224,37 @@ if [ "${WITH_ATTACK}" -eq 1 ]; then
         printf '  \033[31m[FAIL]\033[0m %-58s no 100103 alerts\n' "L11 rule 100103 correlation fired"
         FAIL=$((FAIL+1)); FAILURES+=("rule 100103 never fired — L11 unanswerable")
     fi
+
+    # L12 asks the analyst to correlate the blocked C2 beacon. If containment
+    # ran before the beacon stage, the sinkhole is already 0.0.0.0 and this
+    # alert never exists — exactly the regression the 100103-only trigger fixes.
+    c2fw=$(ssh_to "${NGSIEM_IP}" "sudo grep -c '\"id\":\"100102\"' /var/ossec/logs/alerts/alerts.json")
+    if [ "${c2fw:-0}" -ge 1 ]; then
+        printf '  \033[32m[ OK ]\033[0m %-58s -> %s alert(s)\n' "L12 rule 100102 blocked-C2 fired" "${c2fw}"; PASS=$((PASS+1))
+    else
+        printf '  \033[31m[FAIL]\033[0m %-58s no 100102 alerts\n' "L12 rule 100102 blocked-C2 fired"
+        FAIL=$((FAIL+1)); FAILURES+=("rule 100102 never fired — L12 has no correlation evidence")
+    fi
+
+    # The trainee must be able to come BACK to the endpoint after containment to
+    # read the markers (L20, L22). This is a fresh connection, so it exercises
+    # the admin channel the isolation action preserves.
+    if ssh_to "${VICTIM_IP}" true >/dev/null 2>&1; then
+        printf '  \033[32m[ OK ]\033[0m %-58s -> reachable\n' "L20 victim still reachable AFTER containment"; PASS=$((PASS+1))
+    else
+        printf '  \033[31m[FAIL]\033[0m %-58s isolation cut the admin channel\n' "L20 victim still reachable AFTER containment"
+        FAIL=$((FAIL+1)); FAILURES+=("victim unreachable after containment — L20/L22 unanswerable over SSH")
+    fi
+
+    # L22 sends the trainee to the quarantine directory; make sure the artefact
+    # is really there and readable with sudo.
+    quar=$(ssh_to "${VICTIM_IP}" "sudo md5sum /var/quarantine/invoice.exe 2>/dev/null | cut -d' ' -f1")
+    check "L22 quarantined payload readable" "44d88612fea8a8f36de82e1278abb02f" "${quar}"
 else
-    skip "L19/L21 containment markers" "re-run with --with-attack"
-    skip "L5/L11 alert firing"          "re-run with --with-attack"
+    skip "L19/L21 containment markers"  "re-run with --with-attack"
+    skip "L5/L11/L12 alert firing"      "re-run with --with-attack"
+    skip "L20 post-containment access"  "re-run with --with-attack"
+    skip "L22 quarantined payload"      "re-run with --with-attack"
 fi
 
 # ---------------------------------------------------------------------------
