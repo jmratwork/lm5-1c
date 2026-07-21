@@ -28,6 +28,7 @@ PAYLOAD_NAME="{{ puc2_payload_name }}"
 QUARANTINE_DIR="{{ puc2_quarantine_dir }}"
 ISOLATION_MARKER="{{ puc2_isolation_marker }}"
 ERADICATION_MARKER="{{ puc2_eradication_marker }}"
+SSH_PORT="{{ puc2_admin_ssh_port }}"
 
 log() {
     echo "$(date '+%Y/%m/%d %H:%M:%S') active-response/bin/puc2-isolate: $*" >>"${LOG_FILE}"
@@ -50,6 +51,8 @@ if [ "${COMMAND}" = "delete" ]; then
     iptables -P INPUT ACCEPT  2>/dev/null
     iptables -P OUTPUT ACCEPT 2>/dev/null
     iptables -D OUTPUT -d "${C2_IP}" -j DROP 2>/dev/null
+    iptables -D INPUT  -p tcp --dport "${SSH_PORT}" -m conntrack --ctstate NEW -j ACCEPT 2>/dev/null
+    iptables -D OUTPUT -p tcp --sport "${SSH_PORT}" -j ACCEPT 2>/dev/null
     sed -i "/[[:space:]]${C2_DOMAIN}\$/d" /etc/hosts 2>/dev/null
     rm -f "${ISOLATION_MARKER}" "${ERADICATION_MARKER}"
     log "containment lifted"
@@ -74,9 +77,23 @@ iptables -I INPUT  -i lo -j ACCEPT
 iptables -I OUTPUT -o lo -j ACCEPT
 iptables -A INPUT  -s "${SANDBOX_CIDR}" -j ACCEPT
 iptables -A OUTPUT -d "${SANDBOX_CIDR}" -j ACCEPT
+
+# ---- Preserve the administrative control channel ---------------------------
+# Real host isolation keeps an out-of-band path for the responder; here it is
+# also what keeps the exercise playable. The trainee (and the evidence
+# collector of UML step 13) reaches this endpoint over SSH through the
+# CyberRangeCZ management interface, which is NOT part of ${SANDBOX_CIDR}:
+# with a bare DROP policy every RECONNECT would be refused and training levels
+# L20/L22 — "read the containment markers on victim" — become unanswerable.
+# The already-open session survives on the conntrack rule above; these two make
+# a new one possible. Isolation of the malware's own traffic is unaffected: the
+# payload does not listen on tcp/${SSH_PORT}.
+iptables -A INPUT  -p tcp --dport "${SSH_PORT}" -m conntrack --ctstate NEW -j ACCEPT
+iptables -A OUTPUT -p tcp --sport "${SSH_PORT}" -j ACCEPT
+
 iptables -P INPUT  DROP
 iptables -P OUTPUT DROP
-log "network isolation applied (allow-list: ${SANDBOX_CIDR})"
+log "network isolation applied (allow-list: ${SANDBOX_CIDR}, admin channel tcp/${SSH_PORT} preserved)"
 
 # =============================================================================
 # 2. BLOCK MALICIOUS INFRASTRUCTURE  (ports block_malicious_ip.yml)
@@ -160,6 +177,7 @@ cat >"${ISOLATION_MARKER}" <<MARKER
 isolated_by=ng_soar/puc2-isolate
 isolated_at=$(date -Iseconds)
 allow_cidr=${SANDBOX_CIDR}
+admin_channel=tcp/${SSH_PORT} (preserved)
 blocked_ip=${C2_IP}
 blocked_domain=${C2_DOMAIN}
 MARKER

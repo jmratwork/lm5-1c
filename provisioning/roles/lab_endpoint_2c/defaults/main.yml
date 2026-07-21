@@ -9,7 +9,8 @@ puc2_c2_domain: "c2.puc2-training.lab"
 puc2_quarantine_dir: "/var/quarantine"
 puc2_isolation_marker: "/var/run/ngsoar_isolated"
 puc2_eradication_marker: "/var/run/ngsoar_eradication_status"
-puc2_active_response_rules: "100101,100103"
+puc2_active_response_rules: "100103"
+puc2_admin_ssh_port: 22
 puc2_c2_port: 4444
 puc2_fw_log_prefix: "PUC2-FW-DROP"
 puc2_delivery_paths:
