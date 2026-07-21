@@ -110,3 +110,24 @@
     - "{{ lookup('first_found', ['group_vars/vault.yml', 'group_vars/vault.yml.example']) }}"
   roles:
     - evaluation_reporting
+
+# =============================================================================
+# QA gate — runs last, fails the deployment if the range cannot answer its own
+# training. Read-only: it arms the scenario (the script's read-only mode) and
+# reads back the live services; it never fires the attack.
+#
+#   ansible-playbook provisioning/playbook.yml --tags puc2-preflight
+#
+# to re-run just the gate against an already-provisioned sandbox.
+# =============================================================================
+- name: PUC2 2c — preflight, every graded training answer must be obtainable
+  hosts: ng-siem,victim,docker-server
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+  vars_files:
+    - group_vars/puc2_2c.yml
+    - "{{ lookup('first_found', ['group_vars/vault.yml', 'group_vars/vault.yml.example']) }}"
+  roles:
+    - role: puc2_preflight
+      tags: [puc2-preflight]

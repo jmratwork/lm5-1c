@@ -1,0 +1,73 @@
+---
+# NG-SIEM side of the gate: training levels L10 (rule id), L12 (correlation
+# evidence) and the containment trigger that L19/L20/L21 depend on.
+
+- name: Read the active PUC2 2c ossec.conf block
+  ansible.builtin.slurp:
+    src: /var/ossec/etc/ossec.conf
+  register: puc2_pf_ossec
+
+- name: Extract the active-response trigger set
+  ansible.builtin.set_fact:
+    puc2_pf_ar_rules: >-
+      {{ (puc2_pf_ossec.content | b64decode
+          | regex_search('<rules_id>([0-9,\s]+)</rules_id>', '\1')
+          | first | default('') | replace(' ', '')) }}
+
+- name: Read the deployed detection rules
+  ansible.builtin.slurp:
+    src: /var/ossec/etc/rules/local_rules.xml
+  register: puc2_pf_rules
+
+- name: Read the CTI hash watchlist
+  ansible.builtin.slurp:
+    src: /var/ossec/etc/lists/cti-malware-hashes
+  register: puc2_pf_cdb
+
+- name: Check the compiled CDB list and the firewall decoder exist
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - /var/ossec/etc/lists/cti-malware-hashes.cdb
+    - /var/ossec/etc/decoders/puc2_local_decoder.xml
+  register: puc2_pf_files
+
+- name: Check wazuh-manager is running
+  ansible.builtin.command: systemctl is-active wazuh-manager
+  register: puc2_pf_manager
+  changed_when: false
+  failed_when: false
+
+- name: GATE — NG-SIEM can produce every answer that depends on it
+  ansible.builtin.assert:
+    that:
+      # L10: the hash-match rule the trainee submits
+      - "'id=\"100101\"' in (puc2_pf_rules.content | b64decode)"
+      # L12: without 100102 there is no blocked-C2 alert to correlate, and
+      # without 100103 there is no targeted-attack verdict and no containment
+      - "'id=\"100102\"' in (puc2_pf_rules.content | b64decode)"
+      - "'id=\"100103\"' in (puc2_pf_rules.content | b64decode)"
+      # L8: the CDB list must carry the payload hash or 100101 never fires
+      - puc2_payload_md5 in (puc2_pf_cdb.content | b64decode)
+      - puc2_pf_files.results[0].stat.exists
+      - puc2_pf_files.results[1].stat.exists
+      # L19/L20/L21: containment must fire from the CORRELATION rule only.
+      # With 100101 in the set it fires mid-delivery, the C2 beacon never
+      # reaches the egress filter, and L12 loses its evidence.
+      - puc2_pf_ar_rules == puc2_active_response_rules
+      - puc2_pf_manager.stdout == 'active'
+    fail_msg: >-
+      NG-SIEM preflight FAILED — trainees would hit a blocking level.
+      active-response trigger set is '{{ puc2_pf_ar_rules }}'
+      (expected '{{ puc2_active_response_rules }}');
+      wazuh-manager is '{{ puc2_pf_manager.stdout | default("unknown") }}';
+      rule 100101 present: {{ 'id="100101"' in (puc2_pf_rules.content | b64decode) }},
+      100102: {{ 'id="100102"' in (puc2_pf_rules.content | b64decode) }},
+      100103: {{ 'id="100103"' in (puc2_pf_rules.content | b64decode) }};
+      payload hash on the watchlist:
+      {{ puc2_payload_md5 in (puc2_pf_cdb.content | b64decode) }}.
+      Re-run: ansible-playbook provisioning/playbook.yml --limit ng-siem
+    success_msg: >-
+      NG-SIEM OK — rules 100100-100103 loaded, hash watchlist compiled,
+      firewall decoder in place, containment triggered by
+      rule {{ puc2_pf_ar_rules }} only.

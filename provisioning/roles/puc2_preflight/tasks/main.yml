@@ -1,0 +1,30 @@
+---
+# =============================================================================
+# role: puc2_preflight     (hosts: ng-siem, victim, docker-server — runs LAST)
+#
+# THE DEPLOYMENT'S OWN QA GATE.
+#
+# Every graded answer of the 30-level training definition must be obtainable in
+# the sandbox the moment provisioning ends. Verifying that by hand after the
+# fact — or worse, discovering it when a trainee is stuck on level 9 — is how
+# blocking levels reach students. So the checks live here and they FAIL THE
+# PLAY: a range that cannot answer its own training never gets handed over.
+#
+# Everything here is READ-ONLY. It never fires the injection (`--arm` is the
+# scenario script's read-only mode) and never contains the endpoint.
+#
+# Re-runnable on its own at any time:
+#   ansible-playbook provisioning/playbook.yml --tags puc2-preflight
+# =============================================================================
+
+- name: Preflight — NG-SIEM detection and response wiring
+  ansible.builtin.include_tasks: ng_siem.yml
+  when: inventory_hostname == 'ng-siem'
+
+- name: Preflight — endpoint scenario readiness
+  ansible.builtin.include_tasks: victim.yml
+  when: inventory_hostname == 'victim'
+
+- name: Preflight — CTI-SS, CICMS and NG-SOAR content
+  ansible.builtin.include_tasks: docker_server.yml
+  when: inventory_hostname == 'docker-server'
