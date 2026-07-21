@@ -43,6 +43,18 @@ puc2_soar_webhook_url: "http://{{ puc2_docker_server_ip }}:{{ puc2_soar_webhook_
 puc2_misp_api_key: "{{ hostvars['docker-server']['misp_api_key'] | default(vault_misp_api_key | default('CHANGE_ME')) }}"
 puc2_iris_api_key: "{{ hostvars['docker-server']['iris_api_key'] | default(vault_iris_api_key | default('CHANGE_ME')) }}"
 
+# ---- Addresses the training definition hardcodes ----------------------------
+# The addresses above are RESOLVED from inventory facts. The training text is
+# not: level 10b grades the literal `10.0.16.50`, and the access primer and
+# several levels send trainees to fixed dashboard URLs. If resolution ever
+# disagrees with these, a trainee submits the right answer and is marked wrong,
+# or is sent to a dashboard that is not there — so the preflight gate compares
+# them and fails the deployment on a mismatch.
+puc2_expected_c2_ip: "10.0.16.50"              # L20, graded literally
+puc2_expected_victim_ip: "10.0.16.100"         # level text, trigger command
+puc2_expected_ng_siem_ip: "10.0.16.70"         # NG-SIEM dashboard URL
+puc2_expected_docker_server_ip: "10.0.16.60"   # MISP/IRIS/NG-SOAR URLs
+
 # ---- Values the training definition grades against --------------------------
 # Each of these is an exact string a trainee submits as an answer. Changing one
 # breaks the corresponding level; validation/validate_training.sh checks them.

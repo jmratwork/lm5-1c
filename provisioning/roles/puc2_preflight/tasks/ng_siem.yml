@@ -29,12 +29,14 @@
     src: /var/ossec/etc/lists/cti-malware-hashes
   register: puc2_pf_cdb
 
-- name: Check the compiled CDB list and the firewall decoder exist
+- name: Check the compiled CDB list, the firewall decoder and the evidence collector
   ansible.builtin.stat:
     path: "{{ item }}"
   loop:
     - /var/ossec/etc/lists/cti-malware-hashes.cdb
     - /var/ossec/etc/decoders/puc2_local_decoder.xml
+    # Level 13 tells the instructor to run this by absolute path.
+    - "{{ puc2_eval_root }}/collect_evaluation.sh"
   register: puc2_pf_files
 
 - name: Check wazuh-manager is running
@@ -56,6 +58,9 @@
       - puc2_payload_md5 in (puc2_pf_cdb.content | b64decode)
       - puc2_pf_files.results[0].stat.exists
       - puc2_pf_files.results[1].stat.exists
+      # L25's evidence pack, named by absolute path in the level text
+      - puc2_pf_files.results[2].stat.exists
+      - puc2_pf_files.results[2].stat.executable
       # L19/L20/L21: containment must fire from the CORRELATION rule only.
       # With 100101 in the set it fires mid-delivery, the C2 beacon never
       # reaches the egress filter, and L12 loses its evidence.
@@ -70,7 +75,9 @@
       100102: {{ 'id="100102"' in (puc2_pf_rules.content | b64decode) }},
       100103: {{ 'id="100103"' in (puc2_pf_rules.content | b64decode) }};
       payload hash on the watchlist:
-      {{ puc2_payload_md5 in (puc2_pf_cdb.content | b64decode) }}.
+      {{ puc2_payload_md5 in (puc2_pf_cdb.content | b64decode) }};
+      {{ puc2_eval_root }}/collect_evaluation.sh executable:
+      {{ puc2_pf_files.results[2].stat.executable | default(false) }}.
       Re-run: ansible-playbook provisioning/playbook.yml --limit ng-siem
     success_msg: >-
       NG-SIEM OK — rules 100100-100103 loaded, hash watchlist compiled,

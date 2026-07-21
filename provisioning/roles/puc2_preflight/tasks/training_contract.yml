@@ -1,0 +1,97 @@
+---
+# =============================================================================
+# THE CONTRACT BETWEEN THE TRAINING TEXT AND THE SANDBOX.
+#
+# The checks in the other three files prove the scenario CONTENT exists. This
+# one proves the sandbox is the sandbox the training definition describes —
+# a different way to block a trainee, and one no amount of correct content
+# prevents:
+#
+#   * Level 10b grades the literal string `10.0.16.50`. The overlay resolves
+#     that address from kali's inventory facts. If kali comes up on a different
+#     address, the trainee reads the right value off MISP and the firewall log,
+#     submits it, and is marked wrong. Nothing in the content checks notices.
+#   * The access primer and six levels send trainees to fixed URLs —
+#     https://10.0.16.70, https://10.0.16.60:8443, :8083, http://10.0.16.60:8080.
+#     A service that does not answer there is a dead end mid-exercise.
+#   * Four levels tell the trainee to run a specific helper by absolute path.
+#     A missing or non-executable script is a blocking level.
+#
+# Runs on docker-server, which is the host the levels point at most and the one
+# with facts for every other host.
+#
+# NOTE on a standalone `--tags puc2-preflight` run: with kali outside the play
+# and no fact cache, puc2_c2_ip falls back to its literal default and the
+# address comparison passes trivially. It is meaningful in a full provisioning
+# run, which is when it matters — that is when the addresses are actually
+# assigned.
+# =============================================================================
+
+- name: GATE — the sandbox is at the addresses the training tells trainees to use
+  ansible.builtin.assert:
+    that:
+      - puc2_c2_ip == puc2_expected_c2_ip
+      - puc2_victim_ip == puc2_expected_victim_ip
+      - puc2_ng_siem_ip == puc2_expected_ng_siem_ip
+      - puc2_docker_server_ip == puc2_expected_docker_server_ip
+    fail_msg: >-
+      ADDRESS CONTRACT BROKEN — the training text and the sandbox disagree, so
+      trainees would be sent to the wrong place or marked wrong for a correct
+      answer. C2 (graded literally by level 10b): resolved {{ puc2_c2_ip }},
+      training says {{ puc2_expected_c2_ip }};
+      victim: {{ puc2_victim_ip }} vs {{ puc2_expected_victim_ip }};
+      NG-SIEM: {{ puc2_ng_siem_ip }} vs {{ puc2_expected_ng_siem_ip }};
+      docker-server: {{ puc2_docker_server_ip }} vs
+      {{ puc2_expected_docker_server_ip }}.
+      Either the topology assigned different addresses, or a host's facts were
+      not gathered. Fix the addressing — do NOT edit the training definition to
+      match, it is uploaded to CyberRangeCZ separately and graded as it stands.
+    success_msg: >-
+      Address contract holds — C2 {{ puc2_c2_ip }}, victim {{ puc2_victim_ip }},
+      NG-SIEM {{ puc2_ng_siem_ip }}, docker-server {{ puc2_docker_server_ip }}.
+
+# ── The dashboards the levels send trainees to ───────────────────────────────
+# MISP and DFIR-IRIS were already proved to ANSWER AN AUTHENTICATED CALL by
+# puc2_keys, which is stronger than a port check. NG-SOAR has no API this role
+# holds a credential for, so the port is what can be established.
+- name: Check the NG-SOAR endpoint is listening
+  ansible.builtin.wait_for:
+    host: "{{ puc2_docker_server_ip }}"
+    port: "{{ puc2_soar_webhook_port }}"
+    state: started
+    timeout: 30
+  register: puc2_pf_soar_port
+  failed_when: false
+
+# ── The helpers the levels tell trainees to run by absolute path ─────────────
+- name: Inspect the operator helper scripts on docker-server
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ puc2_misp_seed_dir }}/share_intel.sh"        # level 12 (L24)
+    - "{{ puc2_soar_playbook_dir }}/ngsoar_trigger.sh"  # level 9  (L18)
+  register: puc2_pf_helpers
+
+- name: GATE — every dashboard and helper the training names is really there
+  ansible.builtin.assert:
+    that:
+      - puc2_pf_soar_port is not failed
+      - puc2_pf_helpers.results[0].stat.exists
+      - puc2_pf_helpers.results[0].stat.executable
+      - puc2_pf_helpers.results[1].stat.exists
+      - puc2_pf_helpers.results[1].stat.executable
+    fail_msg: >-
+      A resource the training names by address or path is missing — trainees
+      would follow the level text into a dead end.
+      NG-SOAR listening on {{ puc2_docker_server_ip }}:{{ puc2_soar_webhook_port }}:
+      {{ puc2_pf_soar_port is not failed }} (level 9 sends them to
+      http://{{ puc2_docker_server_ip }}:{{ puc2_soar_webhook_port }});
+      {{ puc2_misp_seed_dir }}/share_intel.sh executable:
+      {{ puc2_pf_helpers.results[0].stat.executable | default(false) }}
+      (level 12 tells them to run it);
+      {{ puc2_soar_playbook_dir }}/ngsoar_trigger.sh executable:
+      {{ puc2_pf_helpers.results[1].stat.executable | default(false) }}
+      (level 9 tells them to run it).
+    success_msg: >-
+      NG-SOAR answering on {{ puc2_soar_webhook_port }}; share_intel.sh and
+      ngsoar_trigger.sh present and executable.

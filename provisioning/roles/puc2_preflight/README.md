@@ -23,7 +23,7 @@ dashboard.**
 | Level | Answer | Proven by | Where |
 |---|---|---|---|
 | L4 | `puc2-2c-armed` | token printed by an `--arm` run in which every check passed | `victim.yml` |
-| L5 | `invoice.exe` | `--arm` verifies the lure is staged and the mail delivered | `victim.yml` |
+| L5 | `invoice.exe` | `--arm` verifies the lure is staged and the mail delivered, **and** the mail really carries an `href=` naming the payload — which is the route the level prescribes | `victim.yml` |
 | L8 | `44d88612…abb02f` | hash on the NG-SIEM CDB watchlist **and** on the MISP event | `ng_siem.yml`, `docker_server.yml` |
 | L9 | `T1566.001` | tag read back off the live MISP event | `docker_server.yml` |
 | L10 | `100101` | rule loaded in `local_rules.xml` | `ng_siem.yml` |
@@ -32,7 +32,7 @@ dashboard.**
 | L15 | `c2.puc2-training.lab` | domain IOC on the live MISP event | `docker_server.yml` |
 | L18 | `isolate_host` | playbook present in the NG-SOAR library | `docker_server.yml` |
 | L19 | `isolated` | the deployed active response writes it to the marker's first line | `victim.yml` |
-| L20 | `10.0.16.50` | the C2 address on the MISP event matches the range's actual C2 | `docker_server.yml` |
+| L20 | `10.0.16.50` | the C2 address on the MISP event matches the range's actual C2, **and** the range's C2 is the literal address the level grades | `docker_server.yml`, `training_contract.yml` |
 | L21 | `eradicated` | the deployed active response writes it to the marker's first line | `victim.yml` |
 | L24 | `NG-SOC-PUC2` | sharing group present **and** the event is published | `docker_server.yml` |
 | L25 | `phishing` | derivable from the level text — no environment dependency | — |
@@ -42,6 +42,29 @@ Plus, not graded but load-bearing: rules 100102/100103 must exist or L12 has no
 correlation evidence (`ng_siem.yml`); containment must fire from 100103 **only**
 or the C2 beacon is blocked before the firewall logs it; the endpoint must stay
 reachable over SSH after containment or L20/L21 cannot be answered at all.
+
+## The contract with the training text (`training_contract.yml`)
+
+Correct content in the wrong place still blocks a trainee. The training
+definition is uploaded to CyberRangeCZ separately and hardcodes what the
+sandbox only resolves at deploy time, so the gate compares the two:
+
+- **Addresses.** Level 10b grades the literal `10.0.16.50`. The overlay derives
+  that from kali's inventory facts. If kali comes up elsewhere, the trainee
+  reads the right value off MISP and the firewall log, submits it, and is marked
+  wrong — and no content check notices. Same for the dashboard URLs the access
+  primer and six levels send them to (`10.0.16.70`, `10.0.16.60:8443/:8083/:8080`).
+- **Services.** NG-SOAR must answer on 8080; MISP and IRIS are already proved by
+  `puc2_keys` to answer an *authenticated* call, which is stronger than a port
+  check.
+- **Helpers named by absolute path.** `share_intel.sh` (L24),
+  `ngsoar_trigger.sh` (L18), `collect_evaluation.sh` (L25) and
+  `inject_scenario.sh` (L4) must exist and be executable — the levels instruct
+  trainees to run them by path.
+
+When this fails, fix the addressing. **Do not edit the training definition to
+match**: it is graded as it stands, and it is deliberately not kept in this
+repository.
 
 ## The failure this gate is built around
 

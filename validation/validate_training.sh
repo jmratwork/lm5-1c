@@ -158,8 +158,24 @@ check "L11 C2 domain resolves (sinkhole, pre-containment)" "${C2_IP}" "${sinkhol
 echo
 echo "-- CTI-SS content (L9, L15, L24, L26) -------------------------------------"
 
+# Resolve the keys from the sandbox itself rather than asking an operator to
+# export them. A check that is skipped by default is a check that reports "no
+# blockers found" while never having looked — which is how the MISP and IRIS
+# content went unverified through two builds. Same sources the puc2_keys role
+# uses: the credential files docker_server writes, and the IRIS database.
 if [ -z "${MISP_KEY:-}" ]; then
-    skip "L9/L15/L24/L26 MISP content" "set MISP_KEY=<api key> to check"
+    MISP_KEY=$(ssh_to "${DOCKER_IP}" \
+        "sudo sed -n 's/^MISP_API_KEY=//p' /etc/misp-mcp.env" | tr -d '\r')
+fi
+if [ -z "${IRIS_KEY:-}" ]; then
+    IRIS_KEY=$(ssh_to "${DOCKER_IP}" \
+        "sudo docker exec iris_db psql -U postgres -d iris_db -t -A -c \
+         \"SELECT api_key FROM \\\"user\\\" WHERE name = 'administrator' LIMIT 1;\"" | tr -d '\r')
+fi
+
+if [ -z "${MISP_KEY:-}" ]; then
+    skip "L9/L15/L24/L26 MISP content" \
+         "could not read MISP_API_KEY from /etc/misp-mcp.env on ${DOCKER_IP}"
 else
     misp() { curl -sk -H "Authorization: ${MISP_KEY}" -H 'Accept: application/json' \
                   -H 'Content-Type: application/json' --max-time 20 "$@"; }
@@ -178,11 +194,27 @@ echo
 echo "-- CICMS content (L14) ----------------------------------------------------"
 
 if [ -z "${IRIS_KEY:-}" ]; then
-    skip "L14 IRIS case SOC id" "set IRIS_KEY=<api key> to check"
+    skip "L14 IRIS case SOC id" \
+         "could not read the api_key column from the iris_db container on ${DOCKER_IP}"
 else
     cases=$(curl -sk -H "Authorization: Bearer ${IRIS_KEY}" -H 'Content-Type: application/json' \
                  --max-time 20 "https://${DOCKER_IP}:8083/manage/cases/list")
-    check_contains "L14 IRIS case CASE-PUC2-2C exists" "CASE-PUC2-2C" "${cases}"
+    # Matched on the case_soc_id FIELD, not as a substring of the whole list:
+    # the id appearing in some other case's description is not this case.
+    soc_hit=$(printf '%s' "${cases}" \
+        | tr ',' '\n' | grep -c '"case_soc_id"[[:space:]]*:[[:space:]]*"CASE-PUC2-2C"' || true)
+    if [ "${soc_hit}" -gt 0 ]; then
+        check "L14 IRIS case CASE-PUC2-2C (by case_soc_id)" "1" "1"
+    elif printf '%s' "${cases}" | grep -q 'case_soc_id'; then
+        check "L14 IRIS case CASE-PUC2-2C (by case_soc_id)" "1" "0"
+    else
+        # This IRIS build's list endpoint does not return the SOC id at all, so
+        # absence here proves nothing. The playbook gate reads each case to
+        # settle it; say so rather than reporting a pass or a failure.
+        skip "L14 IRIS case SOC id" \
+             "/manage/cases/list on this build does not return case_soc_id — \
+run: ansible-playbook provisioning/playbook.yml --tags puc2_diag --limit docker-server"
+    fi
 fi
 
 # ---------------------------------------------------------------------------

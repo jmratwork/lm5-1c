@@ -31,6 +31,10 @@
   ansible.builtin.include_tasks: docker_server.yml
   when: inventory_hostname == 'docker-server'
 
+- name: Preflight — the sandbox matches the addresses and paths the training names
+  ansible.builtin.include_tasks: training_contract.yml
+  when: inventory_hostname == 'docker-server'
+
 - name: Report which graded levels this host just proved
   ansible.builtin.debug:
     msg: >-
