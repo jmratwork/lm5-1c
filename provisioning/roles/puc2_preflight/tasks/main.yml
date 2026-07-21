@@ -15,6 +15,8 @@
 #
 # Re-runnable on its own at any time:
 #   ansible-playbook provisioning/playbook.yml --tags puc2-preflight
+#
+# README.md maps each of the 15 hands-on levels to the check that proves it.
 # =============================================================================
 
 - name: Preflight — NG-SIEM detection and response wiring
@@ -28,3 +30,14 @@
 - name: Preflight — CTI-SS, CICMS and NG-SOAR content
   ansible.builtin.include_tasks: docker_server.yml
   when: inventory_hostname == 'docker-server'
+
+- name: Report which graded levels this host just proved
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }} preflight PASSED — levels proven here:
+      {{ {'ng-siem': 'L8 (watchlist), L10, plus the 100102/100103 correlation
+          evidence L12 needs and the containment trigger L19/L20/L21 depend on',
+          'victim': 'L4, L5, L19, L21, and the administrative channel that keeps
+          L20/L21 answerable after containment',
+          'docker-server': 'L8 (event), L9, L14, L15, L18, L20, L24, L26'}
+         [inventory_hostname] | default('none') }}

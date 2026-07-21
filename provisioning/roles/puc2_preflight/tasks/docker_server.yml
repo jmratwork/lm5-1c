@@ -111,6 +111,11 @@
       - puc2_c2_domain in puc2_pf_event
       # L8: the hash that ties the event to the NG-SIEM watchlist
       - puc2_payload_md5 in puc2_pf_event
+      # L20: the C2 address the trainee submits. It reaches them through this
+      # event's ip-dst attribute and the firewall log; if the event carries a
+      # different address than the one the range actually uses, the graded
+      # answer and the evidence disagree.
+      - puc2_c2_ip in puc2_pf_event
       # L24: intel that was never published was never shared
       - puc2_pf_event_published
       # L24: the sharing group published into
@@ -131,6 +136,7 @@
       {{ puc2_mitre_execution }}: {{ puc2_mitre_execution in puc2_pf_event }},
       C2 IOC {{ puc2_c2_domain }}: {{ puc2_c2_domain in puc2_pf_event }},
       hash {{ puc2_payload_md5 }}: {{ puc2_payload_md5 in puc2_pf_event }},
+      C2 address {{ puc2_c2_ip }}: {{ puc2_c2_ip in puc2_pf_event }},
       published: {{ puc2_pf_event_published }}.
       Sharing groups read: HTTP {{ puc2_pf_groups_status }}, body returned:
       {{ puc2_pf_groups_read }}; {{ puc2_misp_sharing_group_name }} present:

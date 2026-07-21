@@ -7,12 +7,17 @@
     src: /var/ossec/etc/ossec.conf
   register: puc2_pf_ossec
 
+# `regex_search` returns None when the pattern is absent and `None | first`
+# raises a templating error — which would replace the actionable assert message
+# below with a stack trace at exactly the moment ossec.conf lost its
+# active-response block, i.e. when the operator most needs the message.
 - name: Extract the active-response trigger set
   ansible.builtin.set_fact:
     puc2_pf_ar_rules: >-
       {{ (puc2_pf_ossec.content | b64decode
           | regex_search('<rules_id>([0-9,\s]+)</rules_id>', '\1')
-          | first | default('') | replace(' ', '')) }}
+          | default([], true) | first | default('', true)
+          | replace(' ', '')) }}
 
 - name: Read the deployed detection rules
   ansible.builtin.slurp:
