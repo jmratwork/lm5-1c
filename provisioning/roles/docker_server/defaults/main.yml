@@ -1,0 +1,14 @@
+---
+# Bootstrap DFIR-IRIS API key, probed before falling back to reading the real
+# one out of iris_db.
+#
+# EMPTY BY DEFAULT, AND THAT IS THE INTENDED STATE. A long-lived credential was
+# hardcoded here in the substrate; the live instance rejects it (the 404 probe
+# in the build log), so it bought nothing, and a key in a git repository is a
+# key to rotate rather than a key to keep. With this empty the probe is skipped
+# and the role goes straight to the database — which is what already happened in
+# practice, one wasted failed request later.
+#
+# Set `vault_iris_bootstrap_key` in group_vars/vault.yml (git-ignored, and
+# encrypt it with ansible-vault) if a pre-seeded key is ever genuinely needed.
+iris_bootstrap_api_key: "{{ vault_iris_bootstrap_key | default('') }}"

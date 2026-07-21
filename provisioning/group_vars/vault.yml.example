@@ -20,6 +20,12 @@ vault_misp_api_key: "CHANGE_ME"
 # --- CICMS (DFIR-IRIS) — overrides hostvars['docker-server'].iris_api_key ----
 vault_iris_api_key: "CHANGE_ME"
 
+# --- Optional bootstrap key probed by docker_server before it reads the real --
+# --- one out of iris_db. Leave empty unless a pre-seeded key genuinely      ---
+# --- exists: the key that used to be hardcoded in the role is stale and has ---
+# --- been removed. A value here belongs in an ansible-vault encrypted file. ---
+vault_iris_bootstrap_key: ""
+
 # --- Optional: password applied to the victim user by the reset-credentials --
 # --- containment action (UML step 10). Empty = only expire the password.  ----
 #   mkpasswd --method=sha-512

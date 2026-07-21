@@ -244,11 +244,24 @@
   until: misp_user_info.rc == 0
   retries: 30
   delay: 15
+  no_log: true          # stdout IS the new API key
 
 - name: Save MISP API key fact
   set_fact:
     misp_api_key: "{{ misp_user_info.stdout.split('Old authentication keys disabled and new key created: ')[1] | trim }}"
     cacheable: yes
+  no_log: true
+
+- name: Confirm a MISP API key was obtained
+  ansible.builtin.assert:
+    that:
+      - misp_api_key | default('') | trim | length > 0
+    fail_msg: >-
+      The MISP admin authkey could not be read from
+      `cake user change_authkey`. Nothing downstream can talk to MISP.
+    success_msg: >-
+      MISP API key obtained ({{ misp_api_key | length }} chars, fingerprint
+      {{ (misp_api_key | hash('sha256'))[:12] }}).
 
 - name: Inject MISP integration settings into DFIR-IRIS .env
   lineinfile:
@@ -397,13 +410,18 @@
     url: "https://localhost:8083/api/v1/users/me"
     method: GET
     headers:
-      Authorization: "Bearer c-8vTC8nDC6iggE9f0jfVS1r6BEWUpAvHiMpT16bDJN1YqEIYPAI6ldxiwEMKx3w7n4cxTml4_X-RKol-_xUuQ"
+      Authorization: "Bearer {{ iris_bootstrap_api_key }}"
       Content-Type: "application/json"
     validate_certs: false
     status_code: [200, 401, 403]
     timeout: 15
   register: iris_key_test
   ignore_errors: true
+  no_log: true          # the Authorization header is a credential
+  # Skipped when no bootstrap key is configured, which is the default: an empty
+  # bearer token can only ever be rejected, and the DB fallback below is the
+  # path that actually produces the key.
+  when: iris_bootstrap_api_key | default('') | trim | length > 0
 
 # ── Extract key from DB if hardcoded key was rejected ────────────────────────
 
@@ -416,6 +434,7 @@
   register: iris_db_key_api_key
   when: iris_key_test.status | default(0) != 200
   ignore_errors: true
+  no_log: true          # stdout IS the API key
 
 - name: Extract DFIR-IRIS API key from DB (column auth_key fallback)
   community.docker.docker_container_exec:
@@ -428,14 +447,16 @@
     - iris_key_test.status | default(0) != 200
     - iris_db_key_api_key.stdout is not defined or iris_db_key_api_key.stdout | trim == ''
   ignore_errors: true
+  no_log: true          # stdout IS the API key
 
 # ── Resolve and save key ──────────────────────────────────────────────────────
 
-- name: Set iris_api_key — from hardcoded key (verified working)
+- name: Set iris_api_key — from the bootstrap key (only if it still authenticates)
   ansible.builtin.set_fact:
-    iris_api_key: "c-8vTC8nDC6iggE9f0jfVS1r6BEWUpAvHiMpT16bDJN1YqEIYPAI6ldxiwEMKx3w7n4cxTml4_X-RKol-_xUuQ"
+    iris_api_key: "{{ iris_bootstrap_api_key }}"
     cacheable: yes
   when: iris_key_test.status | default(0) == 200
+  no_log: true
 
 - name: Set iris_api_key — from DB column api_key
   ansible.builtin.set_fact:
@@ -460,12 +481,16 @@
 
 - name: FAIL — could not obtain a valid DFIR-IRIS API key
   ansible.builtin.fail:
+    # Reports the LENGTH of each candidate, never the value: this message used
+    # to print the freshly minted key in cleartext into the build log, which is
+    # how a live credential ends up in an artefact nobody treats as a secret.
     msg: >
       Could not obtain a working DFIR-IRIS API key.
-      Hardcoded key test: {{ iris_key_test.status | default('UNREACHABLE') }}.
-      DB api_key col:  "{{ iris_db_key_api_key.stdout | default('(skipped)') }}".
-      DB auth_key col: "{{ iris_db_key_auth_key.stdout | default('(skipped)') }}".
-      Check which column holds the key in the iris_db user table.
+      Bootstrap key test: {{ iris_key_test.status | default('not configured') }}.
+      DB api_key column:  {{ iris_db_key_api_key.stdout | default('') | trim | length }} chars.
+      DB auth_key column: {{ iris_db_key_auth_key.stdout | default('') | trim | length }} chars.
+      Both zero means the query returned nothing: check the `iris_db` container
+      is up and which column holds the key in its `user` table.
   when: iris_api_key is not defined or iris_api_key | trim == ''
 
 # ── Configure DFIR-IRIS modules via database ─────────────────────────────────
