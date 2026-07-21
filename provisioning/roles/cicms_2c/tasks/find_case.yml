@@ -1,0 +1,116 @@
+---
+# =============================================================================
+# Find the scenario case in CICMS BY ITS SOC ID — the field training level L14
+# grades — and never by name and never by substring.
+#
+#   include_role: {name: cicms_2c, tasks_from: find_case.yml}
+#
+# Sets: puc2_case_found (bool), puc2_case_found_id, puc2_case_lookup (how it was
+#       decided), puc2_case_row_fields (what a case row actually carries).
+#
+# Why this is not a one-liner: the old check was
+# `puc2_case_soc_id not in (result.content | default(''))`, a substring test
+# over the whole list body. That matches CASE-PUC2-2C appearing in any field of
+# any case — a description, a tag, another case's title — and it also misses a
+# perfectly good case when the list endpoint does not return the SOC id at all,
+# which DFIR-IRIS versions differ on. So: match the field; and if no row even
+# carries the field, go and read each case.
+# =============================================================================
+
+# Facts persist for the host across plays, so a previous lookup would otherwise
+# short-circuit this one and the gate would re-report an earlier answer.
+- name: Reset the result of any previous lookup
+  ansible.builtin.set_fact:
+    puc2_case_found: false
+    puc2_case_found_id: ""
+    puc2_case_lookup: "not looked up"
+    puc2_case_details: {}
+
+- name: CICMS — list the cases
+  ansible.builtin.uri:
+    url: "{{ puc2_iris_url }}/manage/cases/list"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ puc2_iris_api_key }}"
+      Content-Type: "application/json"
+    return_content: true
+    validate_certs: false
+    status_code: [200]
+    timeout: 30
+  register: puc2_case_list
+  no_log: true
+
+- name: Normalise the case rows across IRIS payload shapes
+  ansible.builtin.set_fact:
+    puc2_case_rows: "{{ puc2_case_list.json.data.data
+                        | default(puc2_case_list.json.data, true)
+                        | default([], true) }}"
+
+- name: Keep the rows a list whatever the API returned
+  ansible.builtin.set_fact:
+    puc2_case_rows: "{{ (puc2_case_rows is sequence and puc2_case_rows is not string
+                         and puc2_case_rows is not mapping)
+                        | ternary(puc2_case_rows, []) }}"
+
+- name: Match the case on the case_soc_id field
+  ansible.builtin.set_fact:
+    puc2_case_row_fields: "{{ (puc2_case_rows | first | default({}, true)) | dict2items
+                              | map(attribute='key') | list }}"
+    puc2_case_direct: "{{ puc2_case_rows | selectattr('case_soc_id', 'defined')
+                          | selectattr('case_soc_id', 'equalto', puc2_case_soc_id) | list }}"
+
+- name: Record a direct match
+  ansible.builtin.set_fact:
+    puc2_case_found: true
+    puc2_case_found_id: "{{ (puc2_case_direct | first).case_id | default('') }}"
+    puc2_case_lookup: "case_soc_id field on /manage/cases/list"
+  when: puc2_case_direct | length > 0
+
+# ── Fallback: the list endpoint does not carry the SOC id ────────────────────
+# Only reached when no listed case exposes case_soc_id, so it costs nothing on
+# the versions that do. Bounded to 50 cases: a training sandbox has a handful,
+# and an unbounded loop over a live case list is not something a deployment gate
+# should ever do.
+- name: Read each case when the list does not carry the SOC id
+  ansible.builtin.uri:
+    url: "{{ puc2_iris_url }}/manage/cases/{{ item.case_id }}"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ puc2_iris_api_key }}"
+      Content-Type: "application/json"
+    return_content: true
+    validate_certs: false
+    status_code: [200, 404]
+    timeout: 20
+  register: puc2_case_details
+  no_log: true
+  failed_when: false
+  loop: "{{ puc2_case_rows | selectattr('case_id', 'defined') | list | batch(50) | first | default([]) }}"
+  when:
+    - not (puc2_case_found | default(false))
+    - puc2_case_rows | selectattr('case_soc_id', 'defined') | list | length == 0
+
+- name: Record a match found by reading the cases
+  ansible.builtin.set_fact:
+    puc2_case_found: true
+    puc2_case_found_id: "{{ (puc2_case_hits | first).json.data.case_id | default('') }}"
+    puc2_case_lookup: "case_soc_id read from /manage/cases/<id> (the list does not carry it)"
+  vars:
+    puc2_case_hits: >-
+      {{ puc2_case_details.results | default([])
+         | selectattr('json', 'defined')
+         | selectattr('json.data', 'defined')
+         | selectattr('json.data.case_soc_id', 'defined')
+         | selectattr('json.data.case_soc_id', 'equalto', puc2_case_soc_id) | list }}
+  when:
+    - not (puc2_case_found | default(false))
+    - puc2_case_details.results is defined
+
+- name: Record that the case is absent
+  ansible.builtin.set_fact:
+    puc2_case_found: false
+    puc2_case_found_id: ""
+    puc2_case_lookup: >-
+      not found among {{ puc2_case_rows | length }} case(s); row fields:
+      {{ puc2_case_row_fields }}
+  when: not (puc2_case_found | default(false))

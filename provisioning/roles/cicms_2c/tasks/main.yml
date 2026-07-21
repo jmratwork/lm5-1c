@@ -16,15 +16,12 @@
 #   step 8 - the case's enrichment task pointing at CTI-SS (MISP)
 # =============================================================================
 
-- name: Assert a DFIR-IRIS API key is available
-  ansible.builtin.assert:
-    that:
-      - puc2_iris_api_key is defined
-      - puc2_iris_api_key | trim not in ['', 'CHANGE_ME']
-    fail_msg: >
-      No DFIR-IRIS API key available. It normally arrives as
-      hostvars['docker-server'].iris_api_key from the substrate docker_server
-      role; set vault_iris_api_key in group_vars/vault.yml to override.
+# Elects the key from the host that runs DFIR-IRIS — the database, where
+# docker_server itself goes when the hardcoded key is rejected — and proves the
+# service accepts it, so this role and the preflight gate hold the same key.
+- name: Resolve and prove the CICMS credential
+  ansible.builtin.include_role:
+    name: puc2_keys
 
 - name: Create the CICMS assets directory
   ansible.builtin.file:
@@ -39,23 +36,13 @@
     dest: "{{ puc2_iris_assets_dir }}/case_template_puc2.json"
     mode: '0644'
 
-- name: Wait for the DFIR-IRIS API to answer
-  ansible.builtin.uri:
-    url: "{{ puc2_iris_url }}/api/ping"
-    method: GET
-    headers:
-      Authorization: "Bearer {{ puc2_iris_api_key }}"
-    validate_certs: false
-    status_code: [200, 401, 403, 404]
-    timeout: 15
-  register: puc2_iris_ping
-  until: puc2_iris_ping.status is defined
-  retries: 12
-  delay: 5
-  no_log: true
-  failed_when: false
+# puc2_keys has already proved /api/ping answers 200 with the elected key, which
+# is what the old wait-loop was for.
 
 # ── Register the case template (UML steps 7-8) ───────────────────────────────
+# `return_content: true` throughout: ansible.builtin.uri omits `content`
+# without it, so every `X not in (result.content | default(''))` guard below
+# was testing against the empty string and re-creating on every run.
 - name: List the case templates already registered in CICMS
   ansible.builtin.uri:
     url: "{{ puc2_iris_url }}/manage/case-templates/list"
@@ -63,12 +50,12 @@
     headers:
       Authorization: "Bearer {{ puc2_iris_api_key }}"
       Content-Type: "application/json"
+    return_content: true
     validate_certs: false
-    status_code: [200, 401, 403]
+    status_code: [200]
     timeout: 30
   register: puc2_iris_templates
   no_log: true
-  failed_when: false
 
 - name: Register the PUC2 2c case template in CICMS
   ansible.builtin.uri:
@@ -80,13 +67,18 @@
     body_format: json
     body:
       case_template_json: "{{ lookup('template', 'case_template_puc2.json.j2') }}"
+    return_content: true
     validate_certs: false
     status_code: [200, 201]
     timeout: 30
   register: puc2_iris_template_add
   no_log: true
   changed_when: puc2_iris_template_add.status in [200, 201]
-  failed_when: false
+  # DFIR-IRIS answers 200 with {"status": "error", ...}; the status line alone
+  # cannot tell a registration from a refusal.
+  failed_when: >-
+    puc2_iris_template_add.status not in [200, 201]
+    or (puc2_iris_template_add.json | default({})).status | default('') == 'error'
   when: "'PUC2-2C-Malware' not in (puc2_iris_templates.content | default(''))"
 
 # ── The scenario case (UML step 7, training level L14) ───────────────────────
@@ -96,18 +88,7 @@
 # case is created here at provision time instead. custom-iris keeps adding its
 # own alert-derived cases alongside; both are expected in the IRIS case list.
 - name: Check whether the scenario case already exists in CICMS
-  ansible.builtin.uri:
-    url: "{{ puc2_iris_url }}/manage/cases/list"
-    method: GET
-    headers:
-      Authorization: "Bearer {{ puc2_iris_api_key }}"
-      Content-Type: "application/json"
-    validate_certs: false
-    status_code: [200, 401, 403]
-    timeout: 30
-  register: puc2_iris_cases
-  no_log: true
-  failed_when: false
+  ansible.builtin.include_tasks: find_case.yml
 
 - name: Create the PUC2 2c scenario case
   ansible.builtin.uri:
@@ -127,24 +108,45 @@
         {{ puc2_ng_siem_ip }}. Enrichment from CTI-SS at {{ puc2_misp_url }}.
       severity_id: "4"
       case_tags: "puc2-2c,malware,{{ puc2_mitre_initial_access }},{{ puc2_mitre_execution }}"
+    return_content: true
     validate_certs: false
     status_code: [200, 201]
     timeout: 30
   register: puc2_case_create
   no_log: true
   changed_when: puc2_case_create.status in [200, 201]
-  failed_when: false
-  when: puc2_case_soc_id not in (puc2_iris_cases.content | default(''))
+  # A 200 from DFIR-IRIS is not a created case: it answers 200 with
+  # {"status": "error"} for a duplicate SOC id, a bad customer id or a
+  # validation failure. The case is only real if the response carries its id.
+  failed_when: >-
+    puc2_case_create.status not in [200, 201]
+    or (puc2_case_create.json | default({})).status | default('') == 'error'
+    or ((puc2_case_create.json | default({})).data | default({})).case_id is not defined
+  when: not puc2_case_found
 
-- name: FAIL if the scenario case could not be created
-  ansible.builtin.fail:
-    msg: >-
-      Case {{ puc2_case_soc_id }} is absent from CICMS and could not be created
-      (HTTP {{ puc2_case_create.status | default('unreachable') }}). Training
-      level L14 grades this exact SOC id and would be unanswerable.
-  when:
-    - puc2_case_soc_id not in (puc2_iris_cases.content | default(''))
-    - puc2_case_create.status | default(0) not in [200, 201]
+# Read the case back from the service — by its SOC id — rather than believing
+# the create. This is training level L14's answer; if it is not there the
+# deployment stops, because a trainee finding out instead is the failure this
+# whole gate exists to prevent.
+- name: Confirm the scenario case is now in CICMS
+  ansible.builtin.include_tasks: find_case.yml
+
+- name: FAIL if the scenario case is absent from CICMS
+  ansible.builtin.assert:
+    that:
+      - puc2_case_found
+    fail_msg: >-
+      Case {{ puc2_case_soc_id }} is absent from CICMS after provisioning.
+      Lookup: {{ puc2_case_lookup }}.
+      Create attempt: HTTP {{ puc2_case_create.status | default('skipped') }},
+      case id returned:
+      {{ ((puc2_case_create.json | default({})).data | default({})).case_id | default('none') }}.
+      Training level L14 grades this exact SOC id and would be unanswerable.
+      Diagnose with:
+      `ansible-playbook provisioning/playbook.yml --tags puc2_diag --limit docker-server`
+    success_msg: >-
+      Case {{ puc2_case_soc_id }} present in CICMS
+      (id {{ puc2_case_found_id }}, matched by {{ puc2_case_lookup }}).
 
 # ── Operator-driven case opening (UML step 7) ────────────────────────────────
 - name: Ensure jq is available for the operator helper scripts
@@ -164,6 +166,8 @@
   ansible.builtin.debug:
     msg: >-
       CICMS (DFIR-IRIS) at {{ puc2_iris_url }}: case template 'PUC2-2C-Malware'
-      {{ 'registered' if puc2_iris_template_add is changed else 'already present or skipped' }}.
-      Cases themselves are created by the substrate custom-iris integration on
-      alert; containment is orchestrated via {{ puc2_soar_webhook_url }}.
+      {{ 'registered' if puc2_iris_template_add is changed else 'already present or skipped' }};
+      scenario case {{ puc2_case_soc_id }} present as id {{ puc2_case_found_id }}
+      ({{ puc2_case_lookup }}).
+      The substrate custom-iris integration keeps adding its own alert-derived
+      cases alongside; containment is orchestrated via {{ puc2_soar_webhook_url }}.

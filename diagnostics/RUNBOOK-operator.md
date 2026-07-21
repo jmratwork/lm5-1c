@@ -91,7 +91,9 @@ Pay attention to the **instances** row. In attempt B the largest flavour built
 while two `standard.small` failed; a per-count ceiling behaves exactly like
 that, a RAM ceiling normally does not.
 
-Record the verdict and the verbatim fault in `DIAGNOSIS.md`.
+Record the verdict and the verbatim fault in `DIAGNOSIS-openstack-build.md`
+(this runbook's investigation; `DIAGNOSIS.md` now belongs to the preflight
+diagnosis, which `puc2_diag` overwrites on every run).
 
 ## Step 2 — Clean up the failed attempt
 

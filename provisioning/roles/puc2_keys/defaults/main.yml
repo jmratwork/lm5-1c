@@ -1,0 +1,16 @@
+---
+# role: puc2_keys — one resolution point for the CTI-SS / CICMS credentials.
+
+puc2_keys_misp_env: /etc/misp-mcp.env
+puc2_keys_iris_env: /etc/iris-mcp.env
+
+# SHA-256 of the DFIR-IRIS key hardcoded in docker_server/tasks/main.yml. The
+# live instance rejected it (the 404 probe in the build log), and docker_server
+# reads the real one out of iris_db when that happens. Recognising it by
+# fingerprint keeps a second plaintext copy of a credential out of the repo.
+puc2_keys_stale_iris_sha256: "727f0285349e973adacc201629ed37cc21d56c2974f6b5a0afa22b37ff6c8887"
+
+# Escape hatch: if that key is ever legitimately reissued, an operator can set
+# this to true rather than editing the gate. The live authentication probe below
+# still has to pass either way, so this cannot be used to skip verification.
+puc2_keys_allow_stale_iris: false

@@ -1,0 +1,204 @@
+---
+# =============================================================================
+# role: puc2_keys       (host: docker-server — included, never listed in a play)
+#
+# THE SINGLE PLACE THE 2c OVERLAY DECIDES WHICH KEY IT IS HOLDING.
+#
+# The preflight gate failed with "MISP event: False, IRIS case: False" while the
+# creating tasks reported success, and one of the candidate explanations was
+# that create and verify were presenting different keys. They could not diverge
+# within a run — both read the same group_vars line — but that line can resolve
+# to a key the live service does not accept: `docker_server` probes a hardcoded
+# IRIS key, gets a 404, and falls back to reading the real one out of iris_db.
+# Whether that fact reaches the overlay depends on the fact cache, which a
+# standalone `--tags puc2-preflight` run does not have.
+#
+# So the keys are resolved HERE, from the host that runs the services, and
+# published as the canonical variable names. set_fact outranks vars_files, so
+# every existing `puc2_misp_api_key` / `puc2_iris_api_key` reference in
+# cti_ss_2c, cicms_2c and puc2_preflight picks these up without being rewritten,
+# and create and verify are the same value by construction.
+#
+# Then they are PROVEN to authenticate. An assert on the shape of a credential
+# only says it is not obviously wrong; only the service can say it is right.
+#
+# Idempotent and safe to include repeatedly.
+# =============================================================================
+
+- name: Resolve and prove the CTI-SS / CICMS credentials
+  when: not (puc2_keys_resolved | default(false))
+  block:
+
+    - name: Read the on-host MISP credential file
+      ansible.builtin.slurp:
+        src: "{{ puc2_keys_misp_env }}"
+      register: puc2_keys_misp_env_raw
+      no_log: true
+      failed_when: false
+
+    - name: Read the on-host DFIR-IRIS credential file
+      ansible.builtin.slurp:
+        src: "{{ puc2_keys_iris_env }}"
+      register: puc2_keys_iris_env_raw
+      no_log: true
+      failed_when: false
+
+    - name: Read the DFIR-IRIS key straight out of the database
+      community.docker.docker_container_exec:
+        container: iris_db
+        command: >
+          psql -U postgres -d iris_db -t -A -c
+          "SELECT api_key FROM \"user\" WHERE name = 'administrator' LIMIT 1;"
+      register: puc2_keys_iris_db
+      no_log: true
+      failed_when: false
+      changed_when: false
+
+    - name: Collect every candidate key
+      ansible.builtin.set_fact:
+        # regex_search returns None when the file is absent, and `None | first`
+        # raises — hence the default([], true) before first.
+        puc2_keys_misp_file: >-
+          {{ (puc2_keys_misp_env_raw.content | default('') | b64decode
+              | regex_search('MISP_API_KEY=(.*)', '\1')
+              | default([], true) | first | default('', true)) | trim }}
+        puc2_keys_iris_file: >-
+          {{ (puc2_keys_iris_env_raw.content | default('') | b64decode
+              | regex_search('IRIS_API_KEY=(.*)', '\1')
+              | default([], true) | first | default('', true)) | trim }}
+        puc2_keys_iris_dbval: "{{ puc2_keys_iris_db.stdout | default('') | trim }}"
+        puc2_keys_misp_hostvar: "{{ hostvars['docker-server']['misp_api_key'] | default('') | trim }}"
+        puc2_keys_iris_hostvar: "{{ hostvars['docker-server']['iris_api_key'] | default('') | trim }}"
+      no_log: true
+
+    # IRIS: the database is authoritative — it is where docker_server itself
+    # goes when the hardcoded key is rejected. MISP has no such fallback, so the
+    # fact published this run comes first and the on-host file backs it up.
+    - name: Elect the effective keys
+      ansible.builtin.set_fact:
+        puc2_misp_api_key: "{{ puc2_keys_misp_hostvar or puc2_keys_misp_file }}"
+        puc2_iris_api_key: "{{ puc2_keys_iris_dbval or puc2_keys_iris_hostvar or puc2_keys_iris_file }}"
+      no_log: true
+
+    - name: Describe the elected keys without disclosing them
+      ansible.builtin.set_fact:
+        puc2_keys_report:
+          misp_source: >-
+            {{ 'fact published by docker_server this run' if puc2_keys_misp_hostvar
+               else ('/etc/misp-mcp.env on the host' if puc2_keys_misp_file else 'NONE') }}
+          iris_source: >-
+            {{ 'iris_db database' if puc2_keys_iris_dbval
+               else ('fact published by docker_server this run' if puc2_keys_iris_hostvar
+                     else ('/etc/iris-mcp.env on the host' if puc2_keys_iris_file else 'NONE')) }}
+          misp_fp: "{{ (puc2_misp_api_key | hash('sha256'))[:12] }}/{{ puc2_misp_api_key | length }}"
+          iris_fp: "{{ (puc2_iris_api_key | hash('sha256'))[:12] }}/{{ puc2_iris_api_key | length }}"
+        puc2_keys_iris_is_stale: "{{ (puc2_iris_api_key | hash('sha256')) == puc2_keys_stale_iris_sha256 }}"
+      no_log: true
+
+    # ── Shape ────────────────────────────────────────────────────────────────
+    - name: GATE — the elected credentials are not placeholders or the stale key
+      ansible.builtin.assert:
+        that:
+          - puc2_misp_api_key | default('') | trim | length > 0
+          - puc2_misp_api_key | trim != 'CHANGE_ME'
+          - puc2_iris_api_key | default('') | trim | length > 0
+          - puc2_iris_api_key | trim != 'CHANGE_ME'
+          - (not puc2_keys_iris_is_stale) or puc2_keys_allow_stale_iris
+        fail_msg: >-
+          PUC2 2c credential resolution FAILED — the overlay cannot create or
+          verify anything, so the deployment stops here rather than handing over
+          a range whose scenario content is unknown.
+          MISP key source: {{ puc2_keys_report.misp_source }}
+          (fingerprint {{ puc2_keys_report.misp_fp }});
+          IRIS key source: {{ puc2_keys_report.iris_source }}
+          (fingerprint {{ puc2_keys_report.iris_fp }});
+          IRIS key is the known-stale hardcoded one: {{ puc2_keys_iris_is_stale }}.
+          A NONE source means the substrate docker_server role did not publish
+          the fact and its credential file is missing: re-run
+          `ansible-playbook provisioning/playbook.yml --limit docker-server`.
+          A stale IRIS key means the fallback that reads iris_db did not run;
+          check the `iris_db` container is up and the administrator row has a
+          non-empty api_key column.
+        success_msg: >-
+          Credentials elected — MISP from {{ puc2_keys_report.misp_source }}
+          ({{ puc2_keys_report.misp_fp }}), IRIS from
+          {{ puc2_keys_report.iris_source }} ({{ puc2_keys_report.iris_fp }}).
+
+    # ── Proof ────────────────────────────────────────────────────────────────
+    # A well-formed key that the service rejects is exactly the failure mode
+    # this whole exercise is about, and only the service can rule it out.
+    # /servers/getVersion is the endpoint every MISP version exposes and every
+    # MISP version refuses without a valid key — the narrowest available test of
+    # "this key authenticates" that does not depend on the schema.
+    - name: Prove the MISP key authenticates
+      ansible.builtin.uri:
+        url: "{{ puc2_misp_url }}/servers/getVersion"
+        method: GET
+        headers:
+          Authorization: "{{ puc2_misp_api_key }}"
+          Accept: "application/json"
+        return_content: true
+        validate_certs: false
+        status_code: [200, 401, 403, 404]
+        timeout: 30
+      register: puc2_keys_misp_probe
+      no_log: true
+      failed_when: false
+      retries: 6
+      delay: 10
+      until: puc2_keys_misp_probe.status | default(0) != -1
+
+    - name: Prove the DFIR-IRIS key authenticates
+      ansible.builtin.uri:
+        url: "{{ puc2_iris_url }}/api/ping"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ puc2_iris_api_key }}"
+          Content-Type: "application/json"
+        return_content: true
+        validate_certs: false
+        status_code: [200, 401, 403, 404]
+        timeout: 30
+      register: puc2_keys_iris_probe
+      no_log: true
+      failed_when: false
+      retries: 6
+      delay: 10
+      until: puc2_keys_iris_probe.status | default(0) != -1
+
+    - name: Summarise the probes without disclosing the keys
+      ansible.builtin.set_fact:
+        puc2_keys_probe_report:
+          misp_status: "{{ puc2_keys_misp_probe.status | default('unreachable') }}"
+          iris_status: "{{ puc2_keys_iris_probe.status | default('unreachable') }}"
+          misp_body: "{{ (puc2_keys_misp_probe.content | default(''))[:300]
+                         | regex_replace(puc2_misp_api_key | regex_escape, '<redacted>') }}"
+          iris_body: "{{ (puc2_keys_iris_probe.content | default(''))[:300]
+                         | regex_replace(puc2_iris_api_key | regex_escape, '<redacted>') }}"
+
+    - name: GATE — both services accept the elected credentials
+      ansible.builtin.assert:
+        that:
+          - puc2_keys_probe_report.misp_status | string == '200'
+          - puc2_keys_probe_report.iris_status | string == '200'
+        fail_msg: >-
+          PUC2 2c credential PROOF FAILED — a key was elected but the service
+          rejected it, so every create and every read-back that follows would be
+          meaningless. This is the failure the preflight gate could not see.
+          MISP /servers/getVersion -> HTTP {{ puc2_keys_probe_report.misp_status }}
+          (source {{ puc2_keys_report.misp_source }},
+          fingerprint {{ puc2_keys_report.misp_fp }}): {{ puc2_keys_probe_report.misp_body }}
+          IRIS /api/ping -> HTTP {{ puc2_keys_probe_report.iris_status }}
+          (source {{ puc2_keys_report.iris_source }},
+          fingerprint {{ puc2_keys_report.iris_fp }}): {{ puc2_keys_probe_report.iris_body }}
+          401/403 means the key is wrong for that service; 'unreachable' means
+          the container is not answering on that port. Diagnose with:
+          `ansible-playbook provisioning/playbook.yml --tags puc2_diag --limit docker-server`
+        success_msg: >-
+          Both services accept the elected credentials (MISP
+          {{ puc2_keys_report.misp_fp }}, IRIS {{ puc2_keys_report.iris_fp }}).
+          Create and verify now use these same values.
+
+    - name: Mark the credentials resolved for the rest of the run
+      ansible.builtin.set_fact:
+        puc2_keys_resolved: true

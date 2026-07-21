@@ -14,15 +14,11 @@
 #   step 12 - the sharing group the SOC Analyst publishes malware intel into
 # =============================================================================
 
-- name: Assert a MISP API key is available
-  ansible.builtin.assert:
-    that:
-      - puc2_misp_api_key is defined
-      - puc2_misp_api_key | trim not in ['', 'CHANGE_ME']
-    fail_msg: >
-      No MISP API key available. It normally arrives as
-      hostvars['docker-server'].misp_api_key from the substrate docker_server
-      role; set vault_misp_api_key in group_vars/vault.yml to override.
+# Elects the key from the host that runs MISP and proves the service accepts it,
+# so this role and the preflight gate are holding the same proven credential.
+- name: Resolve and prove the CTI-SS credential
+  ansible.builtin.include_role:
+    name: puc2_keys
 
 - name: Create the CTI-SS seed directory
   ansible.builtin.file:
@@ -39,6 +35,11 @@
     mode: '0644'
 
 # ── Sharing group for the intel-sharing step (UML step 12) ───────────────────
+# `return_content: true` on every read below is not a detail: ansible.builtin.uri
+# omits the `content` key entirely without it, so `content | default('')` yields
+# the empty string and `X not in ''` is always true. Without it these guards
+# never recognise existing content and re-create it on every run, and the
+# preflight gate reports every resource missing however healthy MISP is.
 - name: List existing MISP sharing groups
   ansible.builtin.uri:
     url: "{{ puc2_misp_url }}/sharing_groups/index"
@@ -46,11 +47,12 @@
     headers:
       Authorization: "{{ puc2_misp_api_key }}"
       Accept: "application/json"
+    return_content: true
     validate_certs: false
+    status_code: [200]
     timeout: 30
   register: puc2_misp_sharing_groups
   no_log: true
-  failed_when: false
 
 - name: Create the PUC2 2c sharing group
   ansible.builtin.uri:
@@ -66,19 +68,28 @@
       releasability: "PUC2 (CYNET) Sub Case 2c training participants only"
       description: "Malware intel shared during the Sub Case 2c exercise (UML step 12)"
       active: true
+    return_content: true
     validate_certs: false
-    status_code: [200, 201, 403]
+    status_code: [200, 201]
     timeout: 30
   register: puc2_sharing_group_add
   no_log: true
   changed_when: puc2_sharing_group_add.status in [200, 201]
+  # MISP answers 200 with an error document. Trusting the status is how a
+  # sharing group that was never created gets reported as created.
+  failed_when: >-
+    puc2_sharing_group_add.status not in [200, 201]
+    or (puc2_sharing_group_add.json | default({})).errors is defined
+    or '"saved":false' in (puc2_sharing_group_add.content | default('') | regex_replace('\s', ''))
   when: puc2_misp_sharing_group_name not in (puc2_misp_sharing_groups.content | default(''))
 
 # ── Seed the malware event (UML steps 4 and 8) ───────────────────────────────
 # Idempotent: MISP is searched for an event carrying the payload MD5 first.
+# Searched with /events/restSearch rather than /attributes/restSearch: the same
+# call decides whether to seed AND yields the event id needed to publish it.
 - name: Check whether the PUC2 2c event is already in MISP
   ansible.builtin.uri:
-    url: "{{ puc2_misp_url }}/attributes/restSearch"
+    url: "{{ puc2_misp_url }}/events/restSearch"
     method: POST
     headers:
       Authorization: "{{ puc2_misp_api_key }}"
@@ -87,13 +98,18 @@
     body_format: json
     body:
       value: "{{ puc2_payload_md5 }}"
-      type: "md5"
+      returnFormat: "json"
+    return_content: true
     validate_certs: false
-    status_code: [200, 404]
+    status_code: [200]
     timeout: 30
   register: puc2_misp_existing
   no_log: true
-  failed_when: false
+
+- name: Note the id of an event that is already there
+  ansible.builtin.set_fact:
+    puc2_misp_existing_events: "{{ puc2_misp_existing.json.response | default([], true)
+                                   | selectattr('Event', 'defined') | map(attribute='Event') | list }}"
 
 - name: Seed the PUC2 2c malware event into CTI-SS
   ansible.builtin.uri:
@@ -105,13 +121,68 @@
       Content-Type: "application/json"
     body: "{{ lookup('template', 'misp_event_puc2_malware.json.j2') }}"
     body_format: json
+    return_content: true
     validate_certs: false
     status_code: [200, 201]
     timeout: 60
   register: puc2_misp_seed
   no_log: true
   changed_when: puc2_misp_seed.status in [200, 201]
-  when: puc2_payload_md5 not in (puc2_misp_existing.content | default(''))
+  # MISP reports refusals — validation errors, a rejected key, a malformed
+  # attribute — inside a 200 response. A create that only reads the status
+  # cannot tell "seeded" from "rejected", which is how the deployment came to
+  # believe it had seeded an event that the gate could not find.
+  failed_when: >-
+    puc2_misp_seed.status not in [200, 201]
+    or (puc2_misp_seed.json | default({})).errors is defined
+    or (puc2_misp_seed.json | default({})).Event is not defined
+    or '"saved":false' in (puc2_misp_seed.content | default('') | regex_replace('\s', ''))
+  when: (puc2_misp_existing_events | length) == 0
+
+- name: Resolve the event id to publish
+  ansible.builtin.set_fact:
+    puc2_misp_event_id: >-
+      {{ ((puc2_misp_seed.json | default({})).Event | default({})).id
+         | default((puc2_misp_existing_events | first | default({})).id | default(''), true) }}
+
+- name: FAIL if no event id could be resolved
+  ansible.builtin.assert:
+    that:
+      - puc2_misp_event_id | string | trim | length > 0
+    fail_msg: >-
+      The PUC2 2c malware event has no id in CTI-SS: it was neither found by
+      MD5 {{ puc2_payload_md5 }} nor returned by /events/add. Training levels
+      L9, L15 and L26 read their answers off this event. Diagnose with:
+      `ansible-playbook provisioning/playbook.yml --tags puc2_diag --limit docker-server`
+
+# ── Publish the event (UML step 12) ──────────────────────────────────────────
+# Provisioning left the event unpublished: the template set no `published` flag
+# and nothing here ever called publish — only share_intel.sh does, at runtime,
+# by hand. An unpublished event is invisible to every other organisation and to
+# any consumer that filters on published, which makes the intel-sharing step
+# something the trainee has to take on faith. Publishing is idempotent: MISP
+# accepts publish on an already-published event.
+- name: Publish the PUC2 2c event
+  ansible.builtin.uri:
+    url: "{{ puc2_misp_url }}/events/publish/{{ puc2_misp_event_id }}"
+    method: POST
+    headers:
+      Authorization: "{{ puc2_misp_api_key }}"
+      Accept: "application/json"
+      Content-Type: "application/json"
+    body_format: json
+    body: {}
+    return_content: true
+    validate_certs: false
+    status_code: [200, 201]
+    timeout: 60
+  register: puc2_misp_publish
+  no_log: true
+  changed_when: puc2_misp_publish.status in [200, 201]
+  failed_when: >-
+    puc2_misp_publish.status not in [200, 201]
+    or (puc2_misp_publish.json | default({})).errors is defined
+    or '"saved":false' in (puc2_misp_publish.content | default('') | regex_replace('\s', ''))
 
 # ── CTI Specialist sharing action (UML step 12) ──────────────────────────────
 # jq is declared here too rather than relying on cicms_2c running first: role
@@ -133,6 +204,7 @@
   ansible.builtin.debug:
     msg: >-
       CTI-SS (MISP) at {{ puc2_misp_url }}:
-      event {{ 'seeded' if puc2_misp_seed is changed else 'already present' }},
+      event {{ 'seeded' if puc2_misp_seed is changed else 'already present' }}
+      (id {{ puc2_misp_event_id }}, published),
       sharing group '{{ puc2_misp_sharing_group_name }}'
       {{ 'created' if puc2_sharing_group_add is changed else 'already present' }}.
