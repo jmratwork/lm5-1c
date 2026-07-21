@@ -156,6 +156,32 @@ read-only, tagged `never` so no build can pick it up, and it:
 Credentials never leave the host: bodies are passed through a redaction pass
 built from every key in play before any of them is printed or written.
 
+## What has been changed since (Phases 1, 2 and 4)
+
+Applied on branch `fix/puc2-2c-preflight`. None of it is confirmed against a
+live sandbox — that is Phase 3, and it is blocked on controller access.
+
+- `return_content: true` on every read in `puc2_preflight`, `cti_ss_2c` and
+  `cicms_2c`, which is the defect above. Reads accept only HTTP 200, and the
+  gate reports `body returned` separately so a read that never happened cannot
+  be reported as a resource that is missing.
+- `puc2_keys`: one election per service, IRIS from `iris_db`, published under
+  the canonical variable names so create and verify cannot diverge, asserted
+  non-empty / non-`CHANGE_ME` / not the stale key, then **proved** against
+  `/servers/getVersion` and `/api/ping`.
+- Creates fail on `errors`, `"saved":false`, `status: error`, or a missing
+  `case_id` — a 200 is no longer taken for a result.
+- The case is matched on its `case_soc_id` field, with a fallback that reads
+  each case when the list endpoint does not carry it.
+- The event is seeded published **and** published explicitly.
+- Gate coverage extended to L20 and to "the event is published"; the unguarded
+  `regex_search | first` in `ng_siem.yml` fixed.
+- `docker_server` no longer prints credentials into the build log, and the
+  hardcoded IRIS key is gone from the active role. See `SECURITY-followup.md`.
+
+Once Phase 3 runs, `puc2_diag` overwrites this file with live evidence and this
+section disappears with it — which is the intended outcome, not a loss.
+
 ### What was verified statically
 
 - YAML parse of the new role and of the modified `playbook.yml`: OK.
@@ -165,3 +191,18 @@ built from every key in play before any of them is printed or written.
   `case_soc_id` — and classified them FALSO NEGATIVO / FALLO REAL / FALSO
   NEGATIVO respectively, with no templating error. The shipped gate's
   expression returns False in all three, which is the defect restated.
+- The gate's 14 assert conditions were lifted out of the shipped YAML — not
+  retyped — and evaluated against eight simulated sandboxes. It passes the
+  intact one and blocks the deployment on each of: MISP event absent, event
+  present but unpublished, sharing group absent, IRIS case absent, C2 address
+  mismatch (L20), a missing NG-SOAR playbook, and the read-never-happened case
+  that produced this diagnosis.
+- The MISP event template renders to valid JSON with `published: 1` and no
+  stray keys — worth checking, because a malformed body is now a build failure
+  rather than a silent 200.
+- `yamllint -c .yamllint provisioning/`: no new findings.
+
+What that does **not** establish: that MISP and DFIR-IRIS behave as assumed —
+the endpoints, the response shapes, whether `/manage/cases/list` carries
+`case_soc_id`, whether the elected keys authenticate. Every one of those is a
+question only the live services can answer, which is what Phase 3 is for.
