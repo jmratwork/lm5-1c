@@ -53,6 +53,12 @@
     timeout: 30
   register: puc2_misp_sharing_groups
   no_log: true
+  # Reads are retried; the creates below are not. A transient 502 from a
+  # still-warming MISP must not fail the build, but re-POSTing an event that
+  # may have been accepted would seed duplicates.
+  retries: 10
+  delay: 6
+  until: puc2_misp_sharing_groups.status | default(0) == 200
 
 - name: Create the PUC2 2c sharing group
   ansible.builtin.uri:
@@ -105,6 +111,9 @@
     timeout: 30
   register: puc2_misp_existing
   no_log: true
+  retries: 10
+  delay: 6
+  until: puc2_misp_existing.status | default(0) == 200
 
 - name: Note the id of an event that is already there
   ansible.builtin.set_fact:

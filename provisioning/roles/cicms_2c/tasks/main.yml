@@ -56,6 +56,9 @@
     timeout: 30
   register: puc2_iris_templates
   no_log: true
+  retries: 10
+  delay: 6
+  until: puc2_iris_templates.status | default(0) == 200
 
 - name: Register the PUC2 2c case template in CICMS
   ansible.builtin.uri:

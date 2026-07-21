@@ -144,9 +144,14 @@
       register: puc2_keys_misp_probe
       no_log: true
       failed_when: false
-      retries: 6
-      delay: 10
-      until: puc2_keys_misp_probe.status | default(0) != -1
+      # Retry until it actually answers, not merely until the socket connects:
+      # MISP serves 502s through its own nginx for a while after the container
+      # starts, and this role runs moments after docker_server configured it.
+      # A key that is right must not be failed for arriving early — that would
+      # make this gate the blocker it exists to prevent. 20 x 15s = 5 minutes.
+      retries: 20
+      delay: 15
+      until: puc2_keys_misp_probe.status | default(0) in [200, 401, 403]
 
     - name: Prove the DFIR-IRIS key authenticates
       ansible.builtin.uri:
@@ -162,9 +167,12 @@
       register: puc2_keys_iris_probe
       no_log: true
       failed_when: false
-      retries: 6
-      delay: 10
-      until: puc2_keys_iris_probe.status | default(0) != -1
+      # Same reasoning as the MISP probe: wait out a slow start, then judge.
+      # 401/403 ends the wait because those are answers — the service is up and
+      # rejecting the key, which is a verdict, not a delay.
+      retries: 20
+      delay: 15
+      until: puc2_keys_iris_probe.status | default(0) in [200, 401, 403]
 
     - name: Summarise the probes without disclosing the keys
       ansible.builtin.set_fact:

@@ -43,6 +43,12 @@
   register: puc2_pf_misp_event
   no_log: true
   failed_when: false
+  # Wait for an answer before judging the content. Failing the deployment
+  # because a service was still warming up would make this gate exactly the
+  # blocker it exists to prevent.
+  retries: 10
+  delay: 6
+  until: puc2_pf_misp_event.status | default(0) == 200
 
 - name: Read back the CTI-SS sharing groups
   ansible.builtin.uri:
@@ -58,6 +64,9 @@
   register: puc2_pf_misp_groups
   no_log: true
   failed_when: false
+  retries: 10
+  delay: 6
+  until: puc2_pf_misp_groups.status | default(0) == 200
 
 - name: Read back the scenario case from CICMS by its SOC id
   ansible.builtin.include_role:

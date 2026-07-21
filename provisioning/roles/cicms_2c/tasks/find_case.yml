@@ -39,6 +39,9 @@
     timeout: 30
   register: puc2_case_list
   no_log: true
+  retries: 10
+  delay: 6
+  until: puc2_case_list.status | default(0) == 200
 
 - name: Normalise the case rows across IRIS payload shapes
   ansible.builtin.set_fact:
