@@ -7,6 +7,8 @@
   become: true
   vars:
     sandbox_cidr: "10.0.16.0/24"
+    admin_ssh_port: 22
+    isolation_status: isolated
   tasks:
     - name: Allow established/related connections
       ansible.builtin.iptables:
@@ -18,6 +20,17 @@
       ansible.builtin.iptables:
         chain: INPUT
         source: "{{ sandbox_cidr }}"
+        jump: ACCEPT
+
+    # Same reason as in the live active response (puc2-isolate): the endpoint is
+    # reached over the CyberRangeCZ management interface, which is outside
+    # sandbox_cidr. Without this, isolation locks the responder out too.
+    - name: Preserve the administrative control channel
+      ansible.builtin.iptables:
+        chain: INPUT
+        protocol: tcp
+        destination_port: "{{ admin_ssh_port }}"
+        ctstate: ["NEW"]
         jump: ACCEPT
 
     - name: Drop all other inbound traffic
@@ -36,8 +49,14 @@
         chain: OUTPUT
         policy: DROP
 
+    # First line MUST be the status word alone: training level L20 grades it,
+    # and puc2-isolate (the live path) writes the same marker the same way.
     - name: Mark host as isolated
       ansible.builtin.copy:
         dest: /var/run/ngsoar_isolated
-        content: "isolated_by_ng_soar\n"
+        content: |
+          {{ isolation_status }}
+          isolated_by=ng_soar/isolate_host.yml
+          allow_cidr={{ sandbox_cidr }}
+          admin_channel=tcp/{{ admin_ssh_port }} (preserved)
         mode: "0644"
