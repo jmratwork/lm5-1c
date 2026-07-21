@@ -77,8 +77,19 @@ puc2_rule_payload_dropped: 100100   # UML step 3
 puc2_rule_ioc_match: 100101         # UML steps 4-5  -> triggers active response
 puc2_rule_c2_blocked: 100102        # UML step 6
 puc2_rule_correlated: 100103        # UML step 6     -> triggers active response
-# Rules whose firing launches the puc2-isolate active response (UML steps 9-10)
-puc2_active_response_rules: "100101,100103"
+# Rules whose firing launches the puc2-isolate active response (UML steps 9-10).
+# ONLY 100103, the correlated "targeted attack confirmed" rule. Adding 100101
+# here fires containment on the FIRST payload drop, i.e. seconds into a delivery
+# that takes about a minute: the endpoint would then be isolated and the C2 name
+# sinkholed to 0.0.0.0 BEFORE stage 2 beacons, so rule 100102 could never fire
+# and UML step 6 would lose its firewall evidence. Containing only after
+# confirmation is also the order the UML draws (step 6 -> step 9).
+puc2_active_response_rules: "100103"
+
+# Administrative channel the isolation action keeps open (UML step 10). The
+# trainee and the step-13 evidence collector reach `victim` over SSH through the
+# CyberRangeCZ management interface, which is outside puc2_sandbox_cidr.
+puc2_admin_ssh_port: 22
 
 # ---- Containment markers read back for UML step 11 --------------------------
 puc2_isolation_marker: "/var/run/ngsoar_isolated"

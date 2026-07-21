@@ -19,10 +19,13 @@
 #   (none)    perform the injection (UML step 2).
 #
 # DELIVERY IS MULTI-STAGE ON PURPOSE. Rule 100103 ("targeted attack confirmed",
-# UML step 6) correlates repeated IOC hits inside a 600 s window, and it is one
-# of the two rules wired to the containment active response. A single payload
-# drop fires 100101 exactly once, which would leave step 6 with no live trigger
-# and half the response path dead. Each stage below is a distinct event:
+# UML step 6) correlates repeated IOC hits inside a 600 s window, and it is the
+# rule wired to the containment active response. A single payload drop fires
+# 100101 exactly once, which would leave step 6 with no live trigger and the
+# response path dead. Each stage below is a distinct event, and the whole
+# sequence completes BEFORE containment runs — which is why 100101 must not be
+# in the trigger set: it would isolate the host mid-delivery and stage 2's
+# beacon would never reach the egress filter that feeds rule 100102.
 #
 #   stage 1  payload -> ~{{ puc2_victim_user }}/Downloads      -> 100100 -> 100101
 #   stage 2  C2 beacon to {{ puc2_c2_domain }}:{{ puc2_c2_port }}, blocked+logged
@@ -122,4 +125,4 @@ drop_as_victim "${VICTIM_HOME}/Downloads/statement.exe"
 echo
 echo "[INJECT] Delivery complete. Telemetry inbound to NG-SIEM."
 echo "[INJECT] Expected chain: 100100 -> 100101 (x3) + 100102 -> 100103"
-echo "[INJECT] Rules 100101/100103 fire the puc2-isolate active response."
+echo "[INJECT] Rule 100103 (correlated confirmation) fires puc2-isolate."

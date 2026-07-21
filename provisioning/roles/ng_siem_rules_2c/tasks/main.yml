@@ -14,8 +14,10 @@
 #   step 4  - CTI hash watchlist (CDB list) feeding rule 100101
 #   step 5  - "malware detected" alert (rule 100101, level 12)
 #   step 6  - correlated targeted-attack confirmation (rule 100103, level 14)
-#   step 9/10 - rules 100101/100103 launch the puc2-isolate active response on
-#               the originating agent (location=local)
+#   step 9/10 - rule 100103 launches the puc2-isolate active response on the
+#               originating agent (location=local). Only the correlated rule
+#               triggers it, so containment follows confirmation instead of
+#               interrupting the delivery — see group_vars/puc2_2c.yml.
 # =============================================================================
 
 - name: Assert the substrate ng-siem role already ran on this host

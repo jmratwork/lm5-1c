@@ -9,8 +9,10 @@
     100102 -> step 6 : blocked outbound C2/exfil attempt (firewall source)
     100103 -> step 6 : correlated targeted-attack confirmation
 
-  Rules 100101 and 100103 are the trigger set of the puc2-isolate active
-  response (UML steps 9-10) - see ng_siem_rules_2c/tasks/main.yml.
+  Rule 100103 alone triggers the puc2-isolate active response (UML steps 9-10)
+  - see ng_siem_rules_2c/tasks/main.yml. 100101 deliberately does NOT: it fires
+  on the first payload drop, and containing there would cut the delivery short
+  before 100102 ever sees the C2 beacon.
 
   MITRE ATT&CK: T1566 Phishing, T1204 User Execution,
                 T1021 Lateral Movement, T1048 Exfiltration.

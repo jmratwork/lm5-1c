@@ -16,7 +16,7 @@
 #
 # TWO PATHS EXIST FOR UML STEPS 9-11 — keep them straight:
 #
-#   LIVE / VERIFIABLE  -> Wazuh active response. Rules 100101/100103 on the
+#   LIVE / VERIFIABLE  -> Wazuh active response. Rule 100103 on the
 #                         ng-siem manager execute puc2-isolate on the victim
 #                         endpoint. This path is provisioned end to end by
 #                         ng_siem_rules_2c + lab_endpoint_2c and is what the
