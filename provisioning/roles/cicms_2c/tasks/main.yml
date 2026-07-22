@@ -59,6 +59,11 @@
   retries: 10
   delay: 6
   until: puc2_iris_templates.status | default(0) == 200
+  # Cosmetic path: never fatal. If the listing cannot be had we simply attempt
+  # the registration and let that report for itself. Whether IRIS is healthy
+  # enough for the things the trainee DOES need is decided further down, by the
+  # case creation, and finally by the gate.
+  failed_when: false
 
 - name: Register the PUC2 2c case template in CICMS
   ansible.builtin.uri:
@@ -76,13 +81,47 @@
     timeout: 30
   register: puc2_iris_template_add
   no_log: true
-  changed_when: puc2_iris_template_add.status in [200, 201]
   # DFIR-IRIS answers 200 with {"status": "error", ...}; the status line alone
-  # cannot tell a registration from a refusal.
-  failed_when: >-
-    puc2_iris_template_add.status not in [200, 201]
-    or (puc2_iris_template_add.json | default({})).status | default('') == 'error'
+  # cannot tell a registration from a refusal, so `changed` has to read the body.
+  changed_when: >-
+    puc2_iris_template_add.status | default(0) in [200, 201]
+    and (puc2_iris_template_add.json | default({})).status | default('') != 'error'
+  # NEVER FATAL — this is the whole point of the change.
+  #
+  # This template is decorative: the training definition does not mention
+  # PUC2-2C-Malware anywhere, and no level is graded on it. It used to be fatal,
+  # so IRIS refusing the document aborted the play — which skipped the task that
+  # creates CASE-PUC2-2C, the SOC id level 7 grades, and skipped the preflight
+  # gate entirely, so nothing was left to report what was missing. A trainee
+  # would have reached level 7 to find no case, with a green-looking cause
+  # buried in a task nobody needed.
+  #
+  # A cosmetic resource does not get to decide whether the range ships. What the
+  # trainee actually needs fails hard, in the gate, by name.
+  failed_when: false
   when: "'PUC2-2C-Malware' not in (puc2_iris_templates.content | default(''))"
+
+# `no_log` above hides the request, which carries the bearer token. The RESPONSE
+# body carries no credential, so it can be surfaced — and it must be, or the
+# next schema refusal is as silent as this one was. The reason arrives in the
+# build log by itself, with nobody toggling no_log to go looking for it.
+- name: Report the case-template registration outcome
+  ansible.builtin.debug:
+    msg: >-
+      {% if puc2_iris_template_add is skipped %}
+      CICMS case template 'PUC2-2C-Malware' already registered — nothing to do.
+      {% elif puc2_iris_template_add is changed %}
+      CICMS case template 'PUC2-2C-Malware' registered.
+      {% else %}
+      CICMS case template NOT registered — HTTP
+      {{ puc2_iris_template_add.status | default('unreachable') }},
+      IRIS said: {{ (puc2_iris_template_add.json | default({})).message
+                    | default('(no message in the response body)') }}
+      {{ (puc2_iris_template_add.json | default({})).data | default('') }}.
+      THIS DOES NOT AFFECT ANY TRAINING LEVEL — the template is cosmetic and no
+      level is graded on it. Deployment continues; the resources trainees do
+      need are verified by the puc2_preflight gate at the end of this run.
+      {% endif %}
 
 # ── The scenario case (UML step 7, training level L14) ───────────────────────
 # Training L14 grades the case SOC id, which must be exactly
@@ -168,8 +207,7 @@
 - name: Report the CICMS registration outcome
   ansible.builtin.debug:
     msg: >-
-      CICMS (DFIR-IRIS) at {{ puc2_iris_url }}: case template 'PUC2-2C-Malware'
-      {{ 'registered' if puc2_iris_template_add is changed else 'already present or skipped' }};
+      CICMS (DFIR-IRIS) at {{ puc2_iris_url }}:
       scenario case {{ puc2_case_soc_id }} present as id {{ puc2_case_found_id }}
       ({{ puc2_case_lookup }}).
       The substrate custom-iris integration keeps adding its own alert-derived
