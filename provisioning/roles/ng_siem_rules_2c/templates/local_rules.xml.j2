@@ -58,13 +58,22 @@
        rule and the analyst need — group `firewall` plus srcip, dstip, srcport,
        dstport and protocol, all populated.
 
+       An EXPLICIT parent, not <if_group>firewall</if_group>. With if_group the
+       rule was never even tried: wazuh-logtest showed analysisd matching rule 2
+       ("generic template for all firewall rules"), descending into its children
+       4300 and 4100, matching 4100 and then descending into ITS children — the
+       remaining siblings under rule 2 are never revisited once a child matches.
+       A rule attached beside 4100 rather than beneath it is unreachable for
+       this event. if_sid says where it goes and does not depend on how Wazuh
+       resolves a group name into a position in the tree.
+
        No <dstport> condition on purpose: the endpoint's LOG rule carries the
        {{ puc2_fw_log_prefix }} prefix on tcp/{{ puc2_c2_port }} and nothing
        else, so the prefix alone already identifies a blocked C2 beacon. A port
        test would add no selectivity while making evidence for UML step 6 and
        level L11 hinge on field extraction succeeding. -->
   <rule id="100102" level="10">
-    <if_group>firewall</if_group>
+    <if_sid>4100</if_sid>
     <match>{{ puc2_fw_log_prefix }}</match>
     <description>PUC2: blocked outbound connection from endpoint (possible C2/exfil)</description>
     <mitre>

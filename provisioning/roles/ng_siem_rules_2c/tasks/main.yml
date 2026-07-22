@@ -152,6 +152,38 @@
   changed_when: false
 
 # ── Prove the ruleset actually loaded ────────────────────────────────────────
+# Context for the probe below, gathered BEFORE it so a failure is diagnosable
+# from the deployment log alone. Two very different faults produce the same
+# "100102 did not come back": local_rules.xml is not loaded at all, or it is
+# loaded and the rule sits somewhere the event never reaches. Nothing collected
+# so far can tell them apart, which is why this block exists — it is evidence,
+# never a verdict; the assert stays with the live probe.
+- name: Collect the ruleset wiring analysisd is running with
+  ansible.builtin.shell: |
+    echo "=== <ruleset> block in ossec.conf ==="
+    sed -n '/<ruleset>/,/<\/ruleset>/p' /var/ossec/etc/ossec.conf
+    echo "=== rule counts analysisd reported at startup ==="
+    grep -iE "rules enabled|decoders enabled|lists enabled" \
+      /var/ossec/logs/ossec.log | tail -5
+    echo "=== anything analysisd said about etc/rules ==="
+    grep -iE "local_rules|etc/rules" /var/ossec/logs/ossec.log | tail -5
+    # wazuh-makelists is absent on this image and the compile task swallows the
+    # error, so the .cdb rule 100101 looks up could silently be older than the
+    # hash list it is built from. Surface both timestamps rather than assume.
+    echo "=== CTI watchlist vs its compiled .cdb ==="
+    ls -l --time-style=+%Y-%m-%dT%H:%M:%S \
+      /var/ossec/etc/lists/cti-malware-hashes \
+      /var/ossec/etc/lists/cti-malware-hashes.cdb 2>&1
+  args:
+    executable: /bin/bash
+  register: puc2_ruleset_wiring
+  changed_when: false
+  failed_when: false
+
+- name: Show the ruleset wiring
+  ansible.builtin.debug:
+    var: puc2_ruleset_wiring.stdout_lines
+
 # The default ossec.conf <ruleset> already includes etc/decoders and etc/rules,
 # so the files above are picked up without extra wiring. Verify it rather than
 # assume it: a silently unloaded ruleset means no alerts and no containment.
@@ -160,8 +192,9 @@
 # feeding it the string 'test' therefore reported all four rules and the decoder
 # MISSING on every single run, whether or not they had loaded, and did it from a
 # debug task nothing blocked on. Feed it the real firewall line instead and
-# require rule 100102 back: an answer only a loaded decoder plus a loaded
-# local_rules.xml can produce.
+# require rule 100102 back — which needs local_rules.xml loaded AND the rule
+# placed where this event actually reaches it. Read the "Rule debugging" block
+# in the output: a rule that is loaded but misplaced never appears there at all.
 - name: Verify the PUC2 2c rules and decoder are loaded
   ansible.builtin.shell: |
     set -o pipefail
@@ -181,12 +214,15 @@
       analysisd did not match the PUC2 2c firewall probe line to rule 100102,
       so the ruleset it is running is NOT the one just deployed. Rules
       100100-100103 cannot fire, containment never triggers, and levels L10,
-      L12, L19 and L21 have no evidence to show. Read the Phase 2 and Phase 3
-      blocks below: if Phase 3 reports a built-in id such as 4100 the ruleset
-      loaded but 100102 did not match the line, and if Phase 2 shows no
-      firewall fields the endpoint's log format changed. Otherwise confirm the
-      <ruleset> block in ossec.conf includes etc/rules and check ossec.log for
-      a rejected rule. analysisd said:
+      L12, L19 and L21 have no evidence to show. Read the "Rule debugging"
+      block below against the ruleset wiring printed by the previous task:
+      100102 listed as tried but not matched means the <match> is wrong;
+      100102 absent from the list while the wiring shows etc/rules loaded means
+      the rule is loaded but parked where this event never reaches it (check
+      <if_sid> against the id the traversal actually descends into); 100102
+      absent AND no etc/rules in the <ruleset> block means local_rules.xml is
+      not loaded at all. If Phase 2 shows no firewall fields, the endpoint's
+      log format changed instead. analysisd said:
       {{ puc2_ruleset_check.stdout | default('(no output)') }}
     success_msg: >-
       analysisd matched the probe line to rule 100102 — local_rules.xml is
