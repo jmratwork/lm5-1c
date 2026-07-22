@@ -197,6 +197,27 @@
         path: /var/ossec/ruleset/rules/9999-puc2-2c.xml
         state: absent
 
+    # If analysisd rejects a rule, the shortest way to the right syntax is the
+    # ruleset it already accepts. Show how the built-in FIM rules express the
+    # same thing rather than guessing at the engine's regex dialect again.
+    - name: Show how the accepted ruleset writes the same kind of rule
+      ansible.builtin.shell: |
+        echo "=== built-in rules keyed on syscheck 550/554 ==="
+        grep -rh -B2 -A6 "if_sid>55[04]" /var/ossec/ruleset/rules/ | head -40
+        echo "=== how the accepted ruleset uses field name=file ==="
+        grep -rh 'name="file"' /var/ossec/ruleset/rules/ | head -10
+        echo "=== does this build know type=pcre2 at all? ==="
+        grep -rhc 'type="pcre2"' /var/ossec/ruleset/rules/ | paste -sd+ | bc
+      args:
+        executable: /bin/bash
+      register: puc2_rule_idiom
+      changed_when: false
+      failed_when: false
+
+    - name: Show the idiom
+      ansible.builtin.debug:
+        var: puc2_rule_idiom.stdout_lines
+
     - name: FAIL with what analysisd rejected
       ansible.builtin.fail:
         msg: >-

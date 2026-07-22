@@ -20,10 +20,18 @@
 <group name="puc2,malware,local,">
 
   <!-- Suspicious payload written to a user-writable path.
-       550 = integrity checksum changed, 554 = file added to the system. -->
+       550 = integrity checksum changed, 554 = file added to the system.
+
+       type="pcre2" is not decoration. analysisd rejected this rule outright
+       with "Syntax error on tag 'file' in rule 100100" and refused the whole
+       file with it, which is why none of 100100-100103 ever loaded even after
+       the file was moved to a directory that is read. Wazuh's default engine
+       is OS_Regex, which has no parenthesised alternation, so the pattern
+       below cannot compile there. PCRE2 is the documented way to ask for the
+       syntax this pattern is written in. -->
   <rule id="100100" level="8">
     <if_sid>550,554</if_sid>
-    <field name="file">\.(exe|scr|js|vbs|ps1|sh)$</field>
+    <field name="file" type="pcre2">\.(exe|scr|js|vbs|ps1|sh)$</field>
     <description>PUC2: suspicious payload file created (possible phishing payload)</description>
     <mitre>
       <id>T1204</id>
