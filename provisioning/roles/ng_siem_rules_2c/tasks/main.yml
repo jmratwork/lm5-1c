@@ -167,6 +167,26 @@
       /var/ossec/logs/ossec.log | tail -5
     echo "=== anything analysisd said about etc/rules ==="
     grep -iE "local_rules|etc/rules" /var/ossec/logs/ossec.log | tail -5
+    # Four rewrites of rule 100102 produced byte-identical analysisd behaviour,
+    # which points at the file rather than the rule. These answer that directly:
+    # what is on disk, whether analysisd can read it, and what it says when it
+    # parses the ruleset on demand.
+    echo "=== what is actually deployed ==="
+    ls -la /var/ossec/etc/rules/
+    md5sum /var/ossec/etc/rules/local_rules.xml
+    echo "--- grep for the rule ids in the deployed file ---"
+    grep -c "rule id=" /var/ossec/etc/rules/local_rules.xml
+    echo "=== can the wazuh user read it ==="
+    sudo -u wazuh head -1 /var/ossec/etc/rules/local_rules.xml 2>&1 | head -2
+    echo "=== analysisd ruleset self-test, if this build ships one ==="
+    if [ -x /var/ossec/bin/wazuh-analysisd ]; then
+      /var/ossec/bin/wazuh-analysisd -t 2>&1 | tail -20
+    else
+      echo "no /var/ossec/bin/wazuh-analysisd on this image"
+      ls /var/ossec/bin/
+    fi
+    echo "=== last analysisd startup lines ==="
+    grep -iE "wazuh-analysisd" /var/ossec/logs/ossec.log | tail -12
     # wazuh-makelists is absent on this image and the compile task swallows the
     # error, so the .cdb rule 100101 looks up could silently be older than the
     # hash list it is built from. Surface both timestamps rather than assume.
