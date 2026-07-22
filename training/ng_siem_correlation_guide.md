@@ -35,9 +35,10 @@ Build the holistic view across sources:
 1. *Security events* → group by `agent.name` to see all affected endpoints.
 2. Correlate FIM (payload) + firewall drops (rule 100102) + the campaign window.
    The firewall source is real: the endpoint carries a pre-staged iptables
-   LOG+DROP rule for tcp/4444, its `kern.log` is ingested by the agent, and the
-   custom `puc2-iptables` decoder parses it. Filter `rule.id: 100102` to see the
-   payload's blocked C2 beacon.
+   LOG+DROP rule for tcp/4444, its `kern.log` is ingested by the agent, and
+   Wazuh's built-in kernel decoder parses it into the `firewall` group with
+   `srcip`, `dstip`, `srcport`, `dstport` and `protocol` populated. Filter
+   `rule.id: 100102` to see the payload's blocked C2 beacon.
 3. The delivery is multi-stage, so **rule 100101 fires three times**; that
    repetition inside 600 s is exactly what rule 100103 correlates.
 4. When **rule 100103** fires, the attack is confirmed as **targeted** — attach this

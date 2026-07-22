@@ -10,7 +10,7 @@ host it happens on, and the resource that supports it.
 | 3 | Telemetry (file hash) | Wazuh agent ships FIM events | `victim` 10.0.16.100 | role `lab_endpoint_2c` (FIM on `~victim/Downloads`) → NG-SIEM |
 | 4 | Enrich hash with CTI | SIEM matches the CDB IOC list; MISP holds the same IOCs | `ng-siem` ↔ `docker-server` | `ng_siem_rules_2c` (`etc/lists/cti-malware-hashes`) + `cti_ss_2c` + the substrate MISP integration |
 | 5 | Alert: malware detected | NG-SIEM rule 100101 alerts the analyst | `ng-siem` 10.0.16.70 | `ng_siem_rules_2c/files/local_rules.xml` |
-| 6 | Correlate logs + confirm | Analyst correlates FIM + firewall drops; 100102 and 100103 confirm | `ng-siem` | `local_decoder.xml.j2` (firewall source) + `training/ng_siem_correlation_guide.md` |
+| 6 | Correlate logs + confirm | Analyst correlates FIM + firewall drops; 100102 and 100103 confirm | `ng-siem` | endpoint `kern.log` → built-in firewall decoding → rule `100102` + `training/ng_siem_correlation_guide.md` |
 | 7 | Open case + attach SIEM context | Auto-created on alert; the NG-SOC Operator also opens one explicitly | `docker-server` 10.0.16.60 | substrate `custom-iris` + `/opt/cicms-assets/open_case.sh` |
 | 8 | Enrich with CTI (IOCs/TTPs) | IRIS pulls from MISP | `docker-server` | `cicms_2c` ↔ `cti_ss_2c`; IRIS MISP module wired by the substrate |
 | 9 | Execute containment playbooks | Rule 100103 (correlated confirmation) fires the AR; the NG-SOAR Operator can also drive the webhook | `ng-siem` / `docker-server` | `<active-response>` + `/opt/NG-SOAR/playbooks/ngsoar_trigger.sh` |

@@ -29,12 +29,16 @@
     src: /var/ossec/etc/lists/cti-malware-hashes
   register: puc2_pf_cdb
 
-- name: Check the compiled CDB list, the firewall decoder and the evidence collector
+# puc2_local_decoder.xml is deliberately NOT checked here. It used to be, and
+# it passed on every run while being unreachable: a prematch-only decoder is
+# never consulted for an event that carries a program_name. Its presence proved
+# nothing about rule 100102 firing, which is what the probe below actually
+# establishes.
+- name: Check the compiled CDB list and the evidence collector
   ansible.builtin.stat:
     path: "{{ item }}"
   loop:
     - /var/ossec/etc/lists/cti-malware-hashes.cdb
-    - /var/ossec/etc/decoders/puc2_local_decoder.xml
     # Level 13 tells the instructor to run this by absolute path.
     - "{{ puc2_eval_root }}/collect_evaluation.sh"
   register: puc2_pf_files
@@ -63,9 +67,11 @@
 # ruleset-test flag at all (`-t` is rejected as an unrecognized argument, rc 2 —
 # a usage error the gate previously read as a broken ruleset and failed a green
 # range on). Feeding it the exact line the endpoint's LOG+DROP rule writes
-# exercises the whole live path: analysisd answering, puc2_local_decoder.xml
-# loaded, local_rules.xml loaded AND accepted. If analysisd refused the rules
-# file, 100102 cannot come back, which is precisely the case being tested for.
+# exercises the whole live path: analysisd answering, the built-in kernel
+# decoder producing the firewall group and fields, local_rules.xml loaded AND
+# accepted. If analysisd refused the rules file, or rule 100102 keys on
+# something the endpoint's log lines never produce, 100102 cannot come back —
+# which is precisely the pair of cases being tested for.
 - name: Ask analysisd to decode a real firewall line and report the rule it matched
   ansible.builtin.shell: |
     set -o pipefail
@@ -109,10 +115,9 @@
       # L8: the CDB list must carry the payload hash or 100101 never fires
       - puc2_payload_md5 in (puc2_pf_cdb.content | b64decode)
       - puc2_pf_files.results[0].stat.exists
-      - puc2_pf_files.results[1].stat.exists
       # L25's evidence pack, named by absolute path in the level text
-      - puc2_pf_files.results[2].stat.exists
-      - puc2_pf_files.results[2].stat.executable
+      - puc2_pf_files.results[1].stat.exists
+      - puc2_pf_files.results[1].stat.executable
       # The ruleset analysisd actually loaded — not the one on disk. No clean
       # skip: without the tester there is no way to tell a loaded ruleset from
       # an unloaded one, and "could not check" must not read as "checked".
@@ -139,10 +144,10 @@
       payload hash on the watchlist:
       {{ puc2_payload_md5 in (puc2_pf_cdb.content | b64decode) }};
       {{ puc2_eval_root }}/collect_evaluation.sh executable:
-      {{ puc2_pf_files.results[2].stat.executable | default(false) }}.
+      {{ puc2_pf_files.results[1].stat.executable | default(false) }}.
       Re-run: ansible-playbook provisioning/playbook.yml --limit ng-siem
     success_msg: >-
-      NG-SIEM OK — analysisd matched the probe line to rule 100102, so the
-      custom decoder and local_rules.xml are loaded; hash watchlist compiled,
-      firewall decoder in place, containment triggered by
+      NG-SIEM OK — analysisd matched the probe line to rule 100102, so
+      local_rules.xml is loaded and the built-in firewall decoding feeds it;
+      hash watchlist compiled, containment triggered by
       rule {{ puc2_pf_ar_rules }} only.

@@ -54,7 +54,8 @@ never actually fire. Resolved as follows:
 | Finding | Was | Now |
 |---|---|---|
 | Rule 100103 unreachable — `frequency="2"` over 100101, but the injection delivered the payload once | UML step 6 had no live trigger, and half the active-response trigger set was dead | `inject_scenario.sh` performs a **4-stage delivery** (Downloads → C2 beacon → /tmp staging → second lure), producing three 100101 hits inside the 600 s window |
-| Rule 100102 unreachable — keyed on `<if_group>firewall</if_group>`, but nothing emitted firewall logs | the "blocked C2/exfil" branch of step 6 never fired | endpoint carries a **pre-staged iptables LOG+DROP** for tcp/4444 (`puc2-fw-baseline.service`), `/var/log/kern.log` is ingested via `<localfile>`, and a **custom decoder** (`puc2-iptables`) parses it; 100102 now keys on `decoded_as` instead of a group nothing populated |
+| Rule 100102 unreachable — keyed on `<if_group>firewall</if_group>`, but nothing emitted firewall logs | the "blocked C2/exfil" branch of step 6 never fired | endpoint carries a **pre-staged iptables LOG+DROP** for tcp/4444 (`puc2-fw-baseline.service`) and `/var/log/kern.log` is ingested via `<localfile>`, so the group is now populated — by Wazuh's own kernel decoder |
+| Rule 100102 unreachable *again* — the fix above keyed it on `<decoded_as>puc2-iptables</decoded_as>`, a custom prematch-only decoder | analysisd matches an event carrying a `program_name` (`kernel`) only against decoders that declare one, so the custom decoder was never consulted and 100102 could not fire in the exercise either. The file existed, so every file-based check passed | 100102 keys on `<if_group>firewall</if_group>` + `<match>PUC2-FW-DROP</match>`, both produced by the built-in decoding; the custom decoder is removed rather than left on disk looking like working detection |
 | NG-SOAR Operator had no touchpoint | step 9's actor was unrepresented | `ngsoar_trigger.sh` POSTs to the real NG-SOAR webhook the substrate wires |
 | NG-SOC Operator had no touchpoint for step 7 | case creation was fully automatic | `open_case.sh` gives the operator an explicit case-opening action alongside the automatic one |
 | CTI Specialist had no touchpoint for step 12 | provisioning created the sharing group; nobody published | `share_intel.sh` scopes the event to the sharing group and publishes it |
@@ -65,11 +66,14 @@ never actually fire. Resolved as follows:
 Ruleset loading is no longer assumed: after the restart, `ng_siem_rules_2c`
 feeds `wazuh-logtest` the exact kernel line the endpoint's `LOG+DROP` rule
 writes and **fails the deployment** unless analysisd answers with rule `100102`
-— an answer only a loaded `puc2_local_decoder.xml` plus a loaded
-`local_rules.xml` can produce. `puc2_preflight` re-runs the same probe as a
-blocking gate. Neither asks the ruleset to describe itself: `wazuh-logtest`
+— an answer that requires `local_rules.xml` to be loaded *and* rule 100102 to
+key on something the endpoint's log lines actually produce. `puc2_preflight`
+re-runs the same probe as a blocking gate, and `validate_training.sh` runs it
+over SSH. None of them asks the ruleset to describe itself: `wazuh-logtest`
 reports the decoder and rule that matched the line it was given and never lists
-what is loaded, so grepping its output for rule ids proves nothing.
+what is loaded, so grepping its output for rule ids proves nothing. Nor does
+any of them check that a rule or decoder *file* exists — that is what let a
+decoder analysisd could never consult pass every check for two rounds.
 
 ## 2. Detection capability mapping (BIPS / UEBA / advanced)
 
@@ -117,7 +121,7 @@ ansible-lint provisioning/
 |---|---|---|---|
 | 1 | Substrate intact | `diff -r /tmp/subs/provisioning/roles/ng-siem provisioning/roles/ng-siem` | no output |
 | 2 | Overlay did not clobber the integrations | `grep -c 'ANSIBLE MANAGED' /var/ossec/etc/ossec.conf` on `ng-siem` | both the `CYBERRANGE INTEGRATIONS` and the `PUC2-2C DETECTION AND RESPONSE` markers present |
-| 3 | Rules loaded | pipe a `PUC2-FW-DROP:` kernel line into `/var/ossec/bin/wazuh-logtest -v` on `ng-siem` | matched by rule `100102` via decoder `puc2-iptables` |
+| 3 | Rules loaded | pipe a `PUC2-FW-DROP:` kernel line into `/var/ossec/bin/wazuh-logtest -v` on `ng-siem` | Phase 3 reports `id: '100102'` (not a built-in id such as `4100`) |
 | 4 | CDB list compiled | `ls -l /var/ossec/etc/lists/cti-malware-hashes*` | `.cdb` present |
 | 5 | AR deployed | `ls -l /var/ossec/active-response/bin/puc2-isolate` on `victim` | `root:wazuh 0750` |
 | 6 | CTI seeded | MISP UI → search md5 `44d88612…` | event *PUC2 … Sub Case 2c* present |

@@ -125,7 +125,7 @@ action library that workflow references.
 | 3 | Telemetry (file hash) | victim → ng-siem | `roles/lab_endpoint_2c/tasks/main.yml` (FIM on `~victim/Downloads`) → rule `100100` |
 | 4 | Enrich hash with CTI | ng-siem ↔ docker-server | `roles/ng_siem_rules_2c` (CDB list `etc/lists/cti-malware-hashes`) + `roles/cti_ss_2c` (same IOCs seeded into MISP) + the substrate's MISP integration |
 | 5 | Alert: malware detected | ng-siem | `roles/ng_siem_rules_2c/files/local_rules.xml` rule `100101` (level 12) |
-| 6 | Correlate logs + confirm attack pattern | ng-siem | rule `100102` (firewall source: `local_decoder.xml.j2` + the endpoint's baseline egress filter) and rule `100103` (fired by the multi-stage delivery) + `training/ng_siem_correlation_guide.md` |
+| 6 | Correlate logs + confirm attack pattern | ng-siem | rule `100102` (firewall source: the endpoint's baseline egress filter, decoded by Wazuh's built-in kernel decoder) and rule `100103` (fired by the multi-stage delivery) + `training/ng_siem_correlation_guide.md` |
 | 7 | Open incident case + attach SIEM context | ng-siem → docker-server | **automatic:** substrate `custom-iris` integration (dedups by `case_soc_id`); **operator-driven:** `roles/cicms_2c/templates/open_case.sh.j2` + the registered case template |
 | 8 | Enrich with CTI (IOCs/TTPs) | docker-server | `roles/cicms_2c` + `roles/cti_ss_2c`; the IRIS↔MISP module is wired by the substrate |
 | 9 | Execute containment playbooks | ng-siem / docker-server | **automatic:** `<active-response>` block injected by `roles/ng_siem_rules_2c` (rule `100103` only — see *Containment*); **operator-driven:** `roles/soar_actions_2c/templates/ngsoar_trigger.sh.j2` → the NG-SOAR webhook |

@@ -143,12 +143,21 @@ done
 cdb=$(ssh_to "${NGSIEM_IP}" "sudo grep -c '44d88612fea8a8f36de82e1278abb02f' /var/ossec/etc/lists/cti-malware-hashes")
 check "L10 payload hash on the CTI watchlist" "1" "${cdb}"
 
-decoder=$(ssh_to "${NGSIEM_IP}" "sudo grep -c 'puc2-iptables' /var/ossec/etc/decoders/puc2_local_decoder.xml")
-if [ "${decoder:-0}" -gt 0 ]; then
-    printf '  \033[32m[ OK ]\033[0m %-58s -> firewall decoder present\n' "L11 puc2-iptables decoder"; PASS=$((PASS+1))
+# Ask analysisd to decode a line shaped exactly like the one the endpoint's
+# iptables LOG+DROP rule writes, and report the rule it matched. This replaced a
+# check that grepped a custom decoder file for its own name: that file passed on
+# every run while being unreachable — analysisd never consults a prematch-only
+# decoder for an event carrying a program_name — so it proved nothing about
+# whether 100102 can fire. Only a live match does.
+PROBE_LINE="Jul 22 08:24:29 victim kernel: [12345.678901] PUC2-FW-DROP: IN= OUT=ens4 SRC=${VICTIM_IP} DST=${C2_IP} LEN=60 TOS=0x00 PREC=0x00 TTL=64 ID=1 DF PROTO=TCP SPT=54321 DPT=4444 WINDOW=64240 RES=0x00 SYN URGP=0"
+probe=$(ssh_to "${NGSIEM_IP}" "printf '%s\n' '${PROBE_LINE}' | sudo /var/ossec/bin/wazuh-logtest -v 2>&1")
+if printf '%s' "${probe}" | grep -q "100102"; then
+    printf '  \033[32m[ OK ]\033[0m %-58s -> analysisd matched rule 100102\n' "L11 blocked-C2 line fires rule 100102"; PASS=$((PASS+1))
 else
-    printf '  \033[31m[FAIL]\033[0m %-58s absent — rule 100102 can never fire\n' "L11 puc2-iptables decoder"
-    FAIL=$((FAIL+1)); FAILURES+=("L11 firewall decoder absent")
+    matched=$(printf '%s' "${probe}" | sed -n "s/.*id: '\([0-9]*\)'.*/\1/p" | tail -1)
+    printf '  \033[31m[FAIL]\033[0m %-58s matched rule %s — 100102 never fires\n' \
+        "L11 blocked-C2 line fires rule 100102" "${matched:-none}"
+    FAIL=$((FAIL+1)); FAILURES+=("L11 firewall line does not reach rule 100102 (matched ${matched:-none})")
 fi
 
 sinkhole=$(ssh_to "${VICTIM_IP}" "getent hosts c2.puc2-training.lab | awk '{print \$1}'")

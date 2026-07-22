@@ -42,20 +42,30 @@
   </rule>
 
   <!-- Outbound C2 / exfiltration attempt, blocked and logged by the endpoint's
-       pre-staged iptables LOG+DROP rule and decoded by puc2-iptables.
-       This deliberately does NOT use <if_group>firewall</if_group>: nothing in
-       this sandbox emits logs that land in that group, so such a rule could
-       never fire. See templates/local_decoder.xml.j2. -->
-  <!-- Deliberately keyed on the decoder ALONE, with no <field> condition. The
-       endpoint's LOG rule carries the {{ puc2_fw_log_prefix }} prefix on
-       tcp/{{ puc2_c2_port }} and nothing else, so every line this decoder sees
-       IS a blocked C2 beacon — the port test added no selectivity while making
-       the rule depend on field extraction succeeding. It previously depended on
-       `dstport`, which a decoder-ordering bug left permanently unset, and the
-       rule could never fire. Evidence for UML step 6 and level L11 must not
-       hinge on that. -->
+       pre-staged iptables LOG+DROP rule for tcp/{{ puc2_c2_port }}.
+
+       Keyed on the BUILT-IN kernel/iptables decoding, not on a custom decoder.
+       This rule used to require <decoded_as>puc2-iptables</decoded_as> and
+       could never fire: analysisd keeps decoders in two lists, one for those
+       declaring <program_name> and one for those that do not, and an event
+       carrying a program_name — `kernel` here, since the endpoint ships
+       /var/log/kern.log as syslog — is only ever matched against the first.
+       A prematch-only custom decoder is not in that list, so it was never
+       reached. Giving it a program_name would not have helped either:
+       etc/decoders loads after ruleset/decoders and the first match wins.
+
+       wazuh-logtest confirms the built-in path already yields everything this
+       rule and the analyst need — group `firewall` plus srcip, dstip, srcport,
+       dstport and protocol, all populated.
+
+       No <dstport> condition on purpose: the endpoint's LOG rule carries the
+       {{ puc2_fw_log_prefix }} prefix on tcp/{{ puc2_c2_port }} and nothing
+       else, so the prefix alone already identifies a blocked C2 beacon. A port
+       test would add no selectivity while making evidence for UML step 6 and
+       level L11 hinge on field extraction succeeding. -->
   <rule id="100102" level="10">
-    <decoded_as>puc2-iptables</decoded_as>
+    <if_group>firewall</if_group>
+    <match>{{ puc2_fw_log_prefix }}</match>
     <description>PUC2: blocked outbound connection from endpoint (possible C2/exfil)</description>
     <mitre>
       <id>T1048</id>

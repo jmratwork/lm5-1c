@@ -132,8 +132,9 @@ puc2_fw_log_prefix: "PUC2-FW-DROP"
 # A syslog line shaped exactly like the one that LOG+DROP rule writes to
 # /var/log/kern.log on the endpoint. Fed through wazuh-logtest it must come back
 # matched by rule 100102: that is how the range proves analysisd LOADED the
-# ruleset rather than proving the files exist on disk. Keep it in sync with
-# roles/ng_siem_rules_2c/templates/local_decoder.xml.j2.
+# ruleset rather than proving the files exist on disk. Keep it in sync with the
+# LOG rule in roles/lab_endpoint_2c and with rule 100102 in
+# roles/ng_siem_rules_2c/templates/local_rules.xml.j2.
 puc2_logtest_probe_line: >-
   Jul 22 08:24:29 victim kernel: [12345.678901] {{ puc2_fw_log_prefix }}: IN= OUT=ens4
   SRC={{ puc2_expected_victim_ip }} DST={{ puc2_expected_c2_ip }} LEN=60 TOS=0x00
