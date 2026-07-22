@@ -44,12 +44,18 @@
   notify: restart wazuh-manager
 
 # ── Detection rules (UML steps 3, 5, 6) ──────────────────────────────────────
-# ── Detection rules go where this image demonstrably loads them ──────────────
-# They lived in etc/rules for five deployments and analysisd never once
-# acknowledged them: not one load warning, not one appearance in a rule
-# traversal, through four different ways of keying rule 100102. ruleset/rules
-# is the directory the 6362 built-in rules come from, including 4100 which
-# rule 100102 hangs off, so it is provably read on this image.
+# They go where this image demonstrably loads them, which is NOT etc/rules.
+# PROOF, from deploying the identical file (md5 a13009d5) to each location:
+# in etc/rules the manager started cleanly and the file had no effect at all,
+# through five deployments and four ways of keying rule 100102; moved to
+# ruleset/rules the manager refused to start, because the same file contains
+# something analysisd rejects. Only a parsed file can break a startup.
+#
+# That also corrected an assumption this work leaned on for two rounds: Wazuh
+# does NOT warn-and-ignore an if_sid naming a signature that does not exist. It
+# treats it as fatal and refuses to start. The 7617/7619 warnings seen on every
+# boot are the degraded path for rules whose PARENT failed to load, which is a
+# different case.
 #
 # This is a deliberate deviation: Wazuh treats ruleset/rules as its own and a
 # manager package upgrade can overwrite it. That is an acceptable trade for a
@@ -65,16 +71,14 @@
     mode: '0660'
   notify: restart wazuh-manager
 
-# The negative half of the controlled pair - see templates/etc_rules_probe.xml.j2.
-# It replaces the copy of the real rules that used to sit here, so there is no
-# second definition of 100100-100103 anywhere and no duplicate-sid risk.
-- name: Deploy the etc/rules control probe
-  ansible.builtin.template:
-    src: etc_rules_probe.xml.j2
-    dest: /var/ossec/etc/rules/local_rules.xml
-    owner: wazuh
-    group: wazuh
-    mode: '0660'
+# The control probe has served its purpose and the copy of the real rules that
+# preceded it is now in ruleset/rules. Leave neither behind: the probe carries a
+# non-existent if_sid, which this image has just shown to be fatal, so it would
+# be a landmine the day a Wazuh version starts honouring etc/rules.
+- name: Remove the superseded etc/rules file
+  ansible.builtin.file:
+    path: /var/ossec/etc/rules/local_rules.xml
+    state: absent
   notify: restart wazuh-manager
 
 # ── CTI hash watchlist (UML step 4) ──────────────────────────────────────────
@@ -164,6 +168,46 @@
     group: wazuh
     mode: '0660'
 
+# ── Never let a bad ruleset take the manager down ────────────────────────────
+# A rule analysisd rejects is not a degraded rule: this deployment proved it
+# stops wazuh-manager from starting at all, which does not cost one training
+# level, it costs the host. Parse the ruleset BEFORE the restart handler runs,
+# and if analysisd refuses it, pull the file back off disk and fail here with
+# the reason. Aborting before flush_handlers means the restart never fires and
+# the manager keeps running on the ruleset it already had.
+#
+# rc alone is not trusted as the verdict - this build's exit codes have already
+# surprised this work once - so a fatal line in the output counts too. WARNING
+# lines do not: this image emits dozens on every boot, from its own ruleset.
+- name: Validate the ruleset before the restart handler can act on it
+  block:
+    - name: Ask analysisd to parse the ruleset exactly as deployed
+      ansible.builtin.command: /var/ossec/bin/wazuh-analysisd -t
+      register: puc2_ruleset_t
+      changed_when: false
+      failed_when:
+        - puc2_ruleset_t.rc != 0
+          or 'ERROR' in (puc2_ruleset_t.stdout | default(''))
+          or 'CRITICAL' in (puc2_ruleset_t.stdout | default(''))
+          or 'ERROR' in (puc2_ruleset_t.stderr | default(''))
+          or 'CRITICAL' in (puc2_ruleset_t.stderr | default(''))
+  rescue:
+    - name: Take the rejected ruleset back off disk
+      ansible.builtin.file:
+        path: /var/ossec/ruleset/rules/9999-puc2-2c.xml
+        state: absent
+
+    - name: FAIL with what analysisd rejected
+      ansible.builtin.fail:
+        msg: >-
+          analysisd REFUSED the PUC2 2c ruleset, so it was removed and
+          wazuh-manager was left running on its previous ruleset. Fix the rule
+          named below and redeploy; nothing restarted, so the range is intact
+          apart from the missing detection. analysisd said:
+          rc={{ puc2_ruleset_t.rc | default('not run') }}
+          {{ puc2_ruleset_t.stdout | default('') }}
+          {{ puc2_ruleset_t.stderr | default('') }}
+
 - name: Apply the PUC2 2c ruleset now
   ansible.builtin.meta: flush_handlers
 
@@ -208,9 +252,8 @@
       ls /var/ossec/bin/
       : > /tmp/puc2_analysisd_t.out
     fi
-    echo "--- CONTROL: 100199 lives in ruleset/rules, 100198 in etc/rules ---"
-    echo "self-test  100199: $(grep -c 100199 /tmp/puc2_analysisd_t.out)  100198: $(grep -c 100198 /tmp/puc2_analysisd_t.out)"
-    echo "ossec.log  100199: $(grep -c 100199 /var/ossec/logs/ossec.log)  100198: $(grep -c 100198 /var/ossec/logs/ossec.log)"
+    echo "--- did the load acknowledge the PUC2 rules? ---"
+    echo "self-test mentions of 1001xx: $(grep -cE '1001[0-9][0-9]' /tmp/puc2_analysisd_t.out)"
     echo "=== last analysisd startup lines ==="
     grep -iE "wazuh-analysisd" /var/ossec/logs/ossec.log | tail -12
     # wazuh-makelists is absent on this image and the compile task swallows the

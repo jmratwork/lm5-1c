@@ -19,29 +19,6 @@
 -->
 <group name="puc2,malware,local,">
 
-  <!-- TEMPORARY CANARY - remove once the question below is answered.
-
-       Rule 100102 has been keyed four ways and analysisd has never once
-       mentioned it, neither as a warning nor in a rule traversal. Two
-       explanations remain and nothing collected so far separates them: this
-       file is not parsed at all, or it is parsed and wazuh-logtest simply does
-       not load etc/rules into its session, in which case the probe can never
-       pass no matter how correct the rule is.
-
-       This rule is designed to be REJECTED loudly. Wazuh warns when if_sid
-       names a signature that does not exist - it does exactly that for the
-       built-in rules 80781 and 80784 on every run - and then ignores the rule.
-       So it cannot fire, cannot alert and cannot affect the exercise.
-
-       If a warning naming 100199 appears in the ruleset load, this file IS
-       parsed and the problem is where 100102 sits in the tree.
-       If no such warning appears, this file is not being read by whatever
-       loaded that ruleset, and the instrument is what is wrong. -->
-  <rule id="100199" level="0">
-    <if_sid>999999</if_sid>
-    <description>PUC2 canary: must be rejected with a warning naming 100199</description>
-  </rule>
-
   <!-- Suspicious payload written to a user-writable path.
        550 = integrity checksum changed, 554 = file added to the system. -->
   <rule id="100100" level="8">
