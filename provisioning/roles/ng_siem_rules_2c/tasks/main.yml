@@ -156,25 +156,36 @@
 # The default ossec.conf <ruleset> already includes etc/decoders and etc/rules,
 # so the files above are picked up without extra wiring. Verify it rather than
 # assume it: a silently unloaded ruleset means no alerts and no containment.
+# wazuh-logtest reports the decoder and rule that matched the line it was given
+# — it never lists the loaded ruleset. Grepping its output for rule ids after
+# feeding it the string 'test' therefore reported all four rules and the decoder
+# MISSING on every single run, whether or not they had loaded, and did it from a
+# debug task nothing blocked on. Feed it the real firewall line instead and
+# require rule 100102 back: an answer only a loaded decoder plus a loaded
+# local_rules.xml can produce.
 - name: Verify the PUC2 2c rules and decoder are loaded
   ansible.builtin.shell: |
     set -o pipefail
-    out=$(echo 'test' | /var/ossec/bin/wazuh-logtest -v 2>&1 || true)
-    for token in 100100 100101 100102 100103 puc2-iptables; do
-      echo "$out" | grep -q "$token" || echo "MISSING:$token"
-    done
-    echo "LOGTEST_DONE"
+    printf '%s\n' {{ puc2_logtest_probe_line | quote }} \
+      | /var/ossec/bin/wazuh-logtest -v 2>&1
   args:
     executable: /bin/bash
   register: puc2_ruleset_check
   changed_when: false
   failed_when: false
 
-- name: Warn if any PUC2 2c ruleset element did not load
-  ansible.builtin.debug:
-    msg: >-
-      wazuh-logtest did not report every PUC2 2c element as loaded:
-      {{ puc2_ruleset_check.stdout_lines | select('match', '^MISSING:') | list }}.
-      Confirm the <ruleset> block in ossec.conf includes etc/decoders and
-      etc/rules before running the exercise.
-  when: puc2_ruleset_check.stdout is search('MISSING:')
+- name: FAIL if analysisd did not load the PUC2 2c ruleset
+  ansible.builtin.assert:
+    that:
+      - "'100102' in (puc2_ruleset_check.stdout | default(''))"
+    fail_msg: >-
+      analysisd did not match the PUC2 2c firewall probe line to rule 100102,
+      so the ruleset it is running is NOT the one just deployed. Rules
+      100100-100103 cannot fire, containment never triggers, and levels L10,
+      L12, L19 and L21 have no evidence to show. Confirm the <ruleset> block in
+      ossec.conf includes etc/decoders and etc/rules, then check ossec.log for a
+      rejected rule or decoder. analysisd said:
+      {{ puc2_ruleset_check.stdout | default('(no output)') }}
+    success_msg: >-
+      analysisd matched the probe line to rule 100102 — puc2_local_decoder.xml
+      and local_rules.xml are loaded.

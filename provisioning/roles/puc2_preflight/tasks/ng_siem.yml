@@ -58,12 +58,31 @@
     path: /var/ossec/bin/wazuh-logtest
   register: puc2_pf_logtest_bin
 
-- name: Ask analysisd to load the ruleset and report
-  ansible.builtin.command: /var/ossec/bin/wazuh-logtest -t
+# Ask by making analysisd DO the work, not by asking it to self-report. This
+# image ships the Python logtest client, which takes a log line on stdin and no
+# ruleset-test flag at all (`-t` is rejected as an unrecognized argument, rc 2 —
+# a usage error the gate previously read as a broken ruleset and failed a green
+# range on). Feeding it the exact line the endpoint's LOG+DROP rule writes
+# exercises the whole live path: analysisd answering, puc2_local_decoder.xml
+# loaded, local_rules.xml loaded AND accepted. If analysisd refused the rules
+# file, 100102 cannot come back, which is precisely the case being tested for.
+- name: Ask analysisd to decode a real firewall line and report the rule it matched
+  ansible.builtin.shell: |
+    set -o pipefail
+    printf '%s\n' {{ puc2_logtest_probe_line | quote }} \
+      | /var/ossec/bin/wazuh-logtest -v 2>&1
+  args:
+    executable: /bin/bash
   register: puc2_pf_logtest
   changed_when: false
   failed_when: false
   when: puc2_pf_logtest_bin.stat.exists
+
+# The full logtest transcript, so a future failure is diagnosable from the
+# deployment log alone instead of costing another sandbox run to reproduce.
+- name: Show what analysisd made of the probe line
+  ansible.builtin.debug:
+    var: puc2_pf_logtest.stdout_lines
 
 # Context for the failure message, NOT a verdict. ossec.log accumulates across
 # the whole life of the image, including benign startup errors from before this
@@ -94,9 +113,11 @@
       # L25's evidence pack, named by absolute path in the level text
       - puc2_pf_files.results[2].stat.exists
       - puc2_pf_files.results[2].stat.executable
-      # The ruleset analysisd actually loaded — not the one on disk. Skips
-      # cleanly (default 0) when the image ships no tester.
-      - puc2_pf_logtest.rc | default(0) == 0
+      # The ruleset analysisd actually loaded — not the one on disk. No clean
+      # skip: without the tester there is no way to tell a loaded ruleset from
+      # an unloaded one, and "could not check" must not read as "checked".
+      - puc2_pf_logtest_bin.stat.exists
+      - "'100102' in (puc2_pf_logtest.stdout | default(''))"
       # L19/L20/L21: containment must fire from the CORRELATION rule only.
       # With 100101 in the set it fires mid-delivery, the C2 beacon never
       # reaches the egress filter, and L12 loses its evidence.
@@ -107,8 +128,10 @@
       active-response trigger set is '{{ puc2_pf_ar_rules }}'
       (expected '{{ puc2_active_response_rules }}');
       wazuh-manager is '{{ puc2_pf_manager.stdout | default("unknown") }}';
-      ruleset test rc {{ puc2_pf_logtest.rc | default('not run') }}
-      {{ puc2_pf_logtest.stderr | default('') }};
+      logtest binary present: {{ puc2_pf_logtest_bin.stat.exists }},
+      probe line matched rule 100102:
+      {{ '100102' in (puc2_pf_logtest.stdout | default('')) }}
+      (analysisd said: {{ puc2_pf_logtest.stdout | default('not run') }});
       analysisd complained about: {{ puc2_pf_ossec_log.stdout | default('(nothing)') }};
       rule 100101 present: {{ 'id="100101"' in (puc2_pf_rules.content | b64decode) }},
       100102: {{ 'id="100102"' in (puc2_pf_rules.content | b64decode) }},
@@ -119,6 +142,7 @@
       {{ puc2_pf_files.results[2].stat.executable | default(false) }}.
       Re-run: ansible-playbook provisioning/playbook.yml --limit ng-siem
     success_msg: >-
-      NG-SIEM OK — rules 100100-100103 loaded, hash watchlist compiled,
+      NG-SIEM OK — analysisd matched the probe line to rule 100102, so the
+      custom decoder and local_rules.xml are loaded; hash watchlist compiled,
       firewall decoder in place, containment triggered by
       rule {{ puc2_pf_ar_rules }} only.

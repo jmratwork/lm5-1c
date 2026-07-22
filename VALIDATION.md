@@ -62,8 +62,14 @@ never actually fire. Resolved as follows:
 | Active response wired to `100101,100103` — 100101 fires on the **first** payload drop, seconds into a delivery that takes ~60 s | containment ran mid-injection: the C2 name was sinkholed to `0.0.0.0` and `OUTPUT` policy set to DROP **before** stage 2 beaconed, so rule 100102 could never fire and UML step 6 lost its firewall evidence; the payload was also quarantined before the analyst could see it | the trigger set is **`100103` only** (`puc2_active_response_rules`). The whole 4-stage delivery completes, 100102 fires on the blocked beacon, and containment follows the *targeted attack confirmed* verdict — the order the UML draws (step 6 → step 9) |
 | `puc2-isolate` set `INPUT/OUTPUT` policy DROP allowing only `10.0.16.0/24` | trainees reach `victim` over the CyberRangeCZ **management** interface, which is outside that CIDR: an already-open SSH session survived on the conntrack rule, but every **reconnect** was refused, leaving training levels L20/L22 ("read the containment markers on victim") unanswerable over SSH | the action explicitly preserves the administrative channel (`tcp/{{ puc2_admin_ssh_port }}`, default 22) before flipping the policy, and records `admin_channel=` in the isolation marker. Malware containment is unaffected — the payload does not listen on 22 |
 
-Ruleset loading is no longer assumed: `ng_siem_rules_2c` runs `wazuh-logtest`
-after the restart and reports any rule or decoder that failed to load.
+Ruleset loading is no longer assumed: after the restart, `ng_siem_rules_2c`
+feeds `wazuh-logtest` the exact kernel line the endpoint's `LOG+DROP` rule
+writes and **fails the deployment** unless analysisd answers with rule `100102`
+— an answer only a loaded `puc2_local_decoder.xml` plus a loaded
+`local_rules.xml` can produce. `puc2_preflight` re-runs the same probe as a
+blocking gate. Neither asks the ruleset to describe itself: `wazuh-logtest`
+reports the decoder and rule that matched the line it was given and never lists
+what is loaded, so grepping its output for rule ids proves nothing.
 
 ## 2. Detection capability mapping (BIPS / UEBA / advanced)
 
@@ -111,7 +117,7 @@ ansible-lint provisioning/
 |---|---|---|---|
 | 1 | Substrate intact | `diff -r /tmp/subs/provisioning/roles/ng-siem provisioning/roles/ng-siem` | no output |
 | 2 | Overlay did not clobber the integrations | `grep -c 'ANSIBLE MANAGED' /var/ossec/etc/ossec.conf` on `ng-siem` | both the `CYBERRANGE INTEGRATIONS` and the `PUC2-2C DETECTION AND RESPONSE` markers present |
-| 3 | Rules loaded | `/var/ossec/bin/wazuh-logtest` on `ng-siem` | rules 100100–100103 known |
+| 3 | Rules loaded | pipe a `PUC2-FW-DROP:` kernel line into `/var/ossec/bin/wazuh-logtest -v` on `ng-siem` | matched by rule `100102` via decoder `puc2-iptables` |
 | 4 | CDB list compiled | `ls -l /var/ossec/etc/lists/cti-malware-hashes*` | `.cdb` present |
 | 5 | AR deployed | `ls -l /var/ossec/active-response/bin/puc2-isolate` on `victim` | `root:wazuh 0750` |
 | 6 | CTI seeded | MISP UI → search md5 `44d88612…` | event *PUC2 … Sub Case 2c* present |
