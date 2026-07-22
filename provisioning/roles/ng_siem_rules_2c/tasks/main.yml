@@ -174,8 +174,15 @@
     echo "=== what is actually deployed ==="
     ls -la /var/ossec/etc/rules/
     md5sum /var/ossec/etc/rules/local_rules.xml
-    echo "--- grep for the rule ids in the deployed file ---"
-    grep -c "rule id=" /var/ossec/etc/rules/local_rules.xml
+    # The md5sum has never matched what this template renders locally, so print
+    # the file itself rather than keep inferring from its size.
+    echo "--- the deployed file, in full ---"
+    cat /var/ossec/etc/rules/local_rules.xml
+    echo "--- did the ruleset load NOTICE this file? ---"
+    # rule 100199 is a canary built to be rejected loudly. A warning naming it
+    # proves the loader read etc/rules; silence proves it did not, which would
+    # make the probe below structurally unable to pass.
+    grep -c "100199" /var/ossec/logs/ossec.log
     echo "=== can the wazuh user read it ==="
     sudo -u wazuh head -1 /var/ossec/etc/rules/local_rules.xml 2>&1 | head -2
     echo "=== analysisd ruleset self-test, if this build ships one ==="
