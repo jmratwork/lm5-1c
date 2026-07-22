@@ -21,7 +21,7 @@
 
 - name: Read the deployed detection rules
   ansible.builtin.slurp:
-    src: /var/ossec/etc/rules/local_rules.xml
+    src: /var/ossec/ruleset/rules/9999-puc2-2c.xml
   register: puc2_pf_rules
 
 - name: Read the CTI hash watchlist

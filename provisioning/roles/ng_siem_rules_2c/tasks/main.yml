@@ -44,9 +44,33 @@
   notify: restart wazuh-manager
 
 # ── Detection rules (UML steps 3, 5, 6) ──────────────────────────────────────
+# ── Detection rules go where this image demonstrably loads them ──────────────
+# They lived in etc/rules for five deployments and analysisd never once
+# acknowledged them: not one load warning, not one appearance in a rule
+# traversal, through four different ways of keying rule 100102. ruleset/rules
+# is the directory the 6362 built-in rules come from, including 4100 which
+# rule 100102 hangs off, so it is provably read on this image.
+#
+# This is a deliberate deviation: Wazuh treats ruleset/rules as its own and a
+# manager package upgrade can overwrite it. That is an acceptable trade for a
+# pinned sandbox image and it is reversible the moment etc/rules is shown to
+# work. The 9999- prefix keeps the file last in load order, so 4100 is defined
+# before anything references it.
 - name: Deploy PUC2 2c correlation rules
   ansible.builtin.template:
     src: local_rules.xml.j2
+    dest: /var/ossec/ruleset/rules/9999-puc2-2c.xml
+    owner: wazuh
+    group: wazuh
+    mode: '0660'
+  notify: restart wazuh-manager
+
+# The negative half of the controlled pair - see templates/etc_rules_probe.xml.j2.
+# It replaces the copy of the real rules that used to sit here, so there is no
+# second definition of 100100-100103 anywhere and no duplicate-sid risk.
+- name: Deploy the etc/rules control probe
+  ansible.builtin.template:
+    src: etc_rules_probe.xml.j2
     dest: /var/ossec/etc/rules/local_rules.xml
     owner: wazuh
     group: wazuh
@@ -166,32 +190,27 @@
     grep -iE "rules enabled|decoders enabled|lists enabled" \
       /var/ossec/logs/ossec.log | tail -5
     echo "=== anything analysisd said about etc/rules ==="
-    grep -iE "local_rules|etc/rules" /var/ossec/logs/ossec.log | tail -5
-    # Four rewrites of rule 100102 produced byte-identical analysisd behaviour,
-    # which points at the file rather than the rule. These answer that directly:
-    # what is on disk, whether analysisd can read it, and what it says when it
-    # parses the ruleset on demand.
+    grep -iE "local_rules|9999-puc2|etc/rules" /var/ossec/logs/ossec.log | tail -5
     echo "=== what is actually deployed ==="
-    ls -la /var/ossec/etc/rules/
-    md5sum /var/ossec/etc/rules/local_rules.xml
-    # The md5sum has never matched what this template renders locally, so print
-    # the file itself rather than keep inferring from its size.
-    echo "--- the deployed file, in full ---"
-    cat /var/ossec/etc/rules/local_rules.xml
-    echo "--- did the ruleset load NOTICE this file? ---"
-    # rule 100199 is a canary built to be rejected loudly. A warning naming it
-    # proves the loader read etc/rules; silence proves it did not, which would
-    # make the probe below structurally unable to pass.
-    grep -c "100199" /var/ossec/logs/ossec.log
-    echo "=== can the wazuh user read it ==="
+    ls -la /var/ossec/etc/rules/ /var/ossec/ruleset/rules/9999-puc2-2c.xml
+    echo "=== can the wazuh user read both ==="
+    sudo -u wazuh head -1 /var/ossec/ruleset/rules/9999-puc2-2c.xml 2>&1 | head -2
     sudo -u wazuh head -1 /var/ossec/etc/rules/local_rules.xml 2>&1 | head -2
-    echo "=== analysisd ruleset self-test, if this build ships one ==="
+    # THE CONTROLLED PAIR. Run the ruleset self-test FIRST and keep its whole
+    # output: last round this grep ran BEFORE the self-test, so it could only
+    # ever see the preceding restart, and the verdict rested on a tail -20.
+    echo "=== analysisd ruleset self-test, in full ==="
     if [ -x /var/ossec/bin/wazuh-analysisd ]; then
-      /var/ossec/bin/wazuh-analysisd -t 2>&1 | tail -20
+      /var/ossec/bin/wazuh-analysisd -t > /tmp/puc2_analysisd_t.out 2>&1
+      cat /tmp/puc2_analysisd_t.out
     else
       echo "no /var/ossec/bin/wazuh-analysisd on this image"
       ls /var/ossec/bin/
+      : > /tmp/puc2_analysisd_t.out
     fi
+    echo "--- CONTROL: 100199 lives in ruleset/rules, 100198 in etc/rules ---"
+    echo "self-test  100199: $(grep -c 100199 /tmp/puc2_analysisd_t.out)  100198: $(grep -c 100198 /tmp/puc2_analysisd_t.out)"
+    echo "ossec.log  100199: $(grep -c 100199 /var/ossec/logs/ossec.log)  100198: $(grep -c 100198 /var/ossec/logs/ossec.log)"
     echo "=== last analysisd startup lines ==="
     grep -iE "wazuh-analysisd" /var/ossec/logs/ossec.log | tail -12
     # wazuh-makelists is absent on this image and the compile task swallows the

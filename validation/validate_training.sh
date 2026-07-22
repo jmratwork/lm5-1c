@@ -135,9 +135,9 @@ check "L8  payload MD5" "44d88612fea8a8f36de82e1278abb02f" "${staged_md5}"
 ar_rules=$(ssh_to "${NGSIEM_IP}" "sudo sed -n '/PUC2-2C DETECTION AND RESPONSE/,/END ANSIBLE/p' /var/ossec/etc/ossec.conf | sed -n 's:.*<rules_id>\(.*\)</rules_id>.*:\1:p' | tr -d ' '")
 check "L18 active response triggers on 100103 only" "100103" "${ar_rules}"
 
-rules=$(ssh_to "${NGSIEM_IP}" "sudo grep -o 'id=\"1001[0-9][0-9]\"' /var/ossec/etc/rules/local_rules.xml | sort -u | tr -d '\n'")
+rules=$(ssh_to "${NGSIEM_IP}" "sudo grep -o 'id=\"1001[0-9][0-9]\"' /var/ossec/ruleset/rules/9999-puc2-2c.xml | sort -u | tr -d '\n'")
 for rid in 100100 100101 100102 100103; do
-    check_contains "L10 rule ${rid} present in local_rules.xml" "${rid}" "${rules}"
+    check_contains "L10 rule ${rid} present in 9999-puc2-2c.xml" "${rid}" "${rules}"
 done
 
 cdb=$(ssh_to "${NGSIEM_IP}" "sudo grep -c '44d88612fea8a8f36de82e1278abb02f' /var/ossec/etc/lists/cti-malware-hashes")
