@@ -8,6 +8,40 @@
 - name: Configuring NG-SIEM
   hosts: ng-siem
   become: yes
+  # A PUC2 ruleset analysisd refuses does not degrade a training level, it stops
+  # wazuh-manager from starting — and then THIS play dies at its own "Restart
+  # wazuh-manager" long before the PUC2 role could deploy a corrected file. The
+  # range deadlocks: the bad file blocks the manager, and the fix cannot reach
+  # the host. ng_siem_rules_2c validates before restarting, but that only helps
+  # when the run gets that far. This is the other half of the guard, and it runs
+  # before anything asks the manager to start.
+  #
+  # No-op on a healthy range: it only acts when analysisd itself rejects the
+  # file, so a working ruleset is never touched.
+  pre_tasks:
+    - name: Look for a previously deployed PUC2 2c ruleset
+      ansible.builtin.stat:
+        path: /var/ossec/ruleset/rules/9999-puc2-2c.xml
+      register: puc2_prior_ruleset
+
+    - name: Ask analysisd whether it still accepts that ruleset
+      ansible.builtin.command: /var/ossec/bin/wazuh-analysisd -t
+      register: puc2_prior_t
+      changed_when: false
+      failed_when: false
+      when: puc2_prior_ruleset.stat.exists
+
+    - name: Remove a ruleset analysisd refuses, so the manager can start
+      ansible.builtin.file:
+        path: /var/ossec/ruleset/rules/9999-puc2-2c.xml
+        state: absent
+      when:
+        - puc2_prior_ruleset.stat.exists
+        - puc2_prior_t.rc | default(0) != 0
+          or 'ERROR' in (puc2_prior_t.stdout | default(''))
+          or 'CRITICAL' in (puc2_prior_t.stdout | default(''))
+          or 'ERROR' in (puc2_prior_t.stderr | default(''))
+          or 'CRITICAL' in (puc2_prior_t.stderr | default(''))
   roles:
     - ng-siem
 
