@@ -111,7 +111,12 @@
   notify: restart wazuh-manager
 
 # ── Validate and apply ───────────────────────────────────────────────────────
-- name: Validate ossec.conf after the PUC2 2c injection
+# NOTE ON WHAT THIS PROVES: `verify-agent-conf` validates the SHARED AGENT
+# configuration (agent.conf) — not ossec.conf, and not the ruleset this role
+# just wrote. It is kept because a broken agent.conf is worth catching here,
+# but it must not be mistaken for a check that the rules load. That check is
+# the ruleset test in the puc2_preflight gate, which asks analysisd directly.
+- name: Validate the shared agent configuration after the PUC2 2c injection
   ansible.builtin.shell: |
     result=$(/var/ossec/bin/verify-agent-conf 2>&1)
     if echo "$result" | grep -qi "error\|critical"; then
@@ -124,9 +129,9 @@
   register: puc2_ossec_check
   changed_when: false
 
-- name: FAIL if the PUC2 2c injection broke ossec.conf
+- name: FAIL if the PUC2 2c injection broke the agent configuration
   ansible.builtin.fail:
-    msg: "ossec.conf failed after the PUC2 2c injection: {{ puc2_ossec_check.stdout }}"
+    msg: "agent.conf failed after the PUC2 2c injection: {{ puc2_ossec_check.stdout }}"
   when: "'CONF_ERROR' in puc2_ossec_check.stdout"
 
 - name: Fix ossec.conf ownership after the injection

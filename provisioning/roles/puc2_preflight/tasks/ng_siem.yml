@@ -45,6 +45,39 @@
   changed_when: false
   failed_when: false
 
+# A rule file on disk is not a loaded rule. Everything above proves the files
+# exist and the service is up; neither notices a ruleset analysisd REFUSED —
+# a duplicate sid, a malformed field, a decoder that does not parse. Wazuh can
+# come up with analysisd degraded, and then rules 100100-100103 never match:
+# L10 has no alert to read, L11 no correlation, and 100103 never fires, so
+# containment never runs and L19 and L21 have no markers to show. One silent
+# ruleset error takes four levels with it, which is why it is worth asking
+# analysisd itself rather than inferring from the files.
+- name: Look for the ruleset tester analysisd ships with
+  ansible.builtin.stat:
+    path: /var/ossec/bin/wazuh-logtest
+  register: puc2_pf_logtest_bin
+
+- name: Ask analysisd to load the ruleset and report
+  ansible.builtin.command: /var/ossec/bin/wazuh-logtest -t
+  register: puc2_pf_logtest
+  changed_when: false
+  failed_when: false
+  when: puc2_pf_logtest_bin.stat.exists
+
+# Context for the failure message, NOT a verdict. ossec.log accumulates across
+# the whole life of the image, including benign startup errors from before this
+# overlay ran, so asserting on it would fail deployments for stale noise — the
+# gate becoming the blocker it exists to prevent. The verdict stays with the
+# ruleset test above, which reflects the ruleset as it is right now.
+- name: Collect what analysisd has said about rules and decoders
+  ansible.builtin.shell: >-
+    grep -iE 'error loading|invalid rule|duplicated? (rule|sid)|error reading xml' \
+      /var/ossec/logs/ossec.log 2>/dev/null | tail -10
+  register: puc2_pf_ossec_log
+  changed_when: false
+  failed_when: false
+
 - name: GATE — NG-SIEM can produce every answer that depends on it
   ansible.builtin.assert:
     that:
@@ -61,6 +94,9 @@
       # L25's evidence pack, named by absolute path in the level text
       - puc2_pf_files.results[2].stat.exists
       - puc2_pf_files.results[2].stat.executable
+      # The ruleset analysisd actually loaded — not the one on disk. Skips
+      # cleanly (default 0) when the image ships no tester.
+      - puc2_pf_logtest.rc | default(0) == 0
       # L19/L20/L21: containment must fire from the CORRELATION rule only.
       # With 100101 in the set it fires mid-delivery, the C2 beacon never
       # reaches the egress filter, and L12 loses its evidence.
@@ -71,6 +107,9 @@
       active-response trigger set is '{{ puc2_pf_ar_rules }}'
       (expected '{{ puc2_active_response_rules }}');
       wazuh-manager is '{{ puc2_pf_manager.stdout | default("unknown") }}';
+      ruleset test rc {{ puc2_pf_logtest.rc | default('not run') }}
+      {{ puc2_pf_logtest.stderr | default('') }};
+      analysisd complained about: {{ puc2_pf_ossec_log.stdout | default('(nothing)') }};
       rule 100101 present: {{ 'id="100101"' in (puc2_pf_rules.content | b64decode) }},
       100102: {{ 'id="100102"' in (puc2_pf_rules.content | b64decode) }},
       100103: {{ 'id="100103"' in (puc2_pf_rules.content | b64decode) }};
