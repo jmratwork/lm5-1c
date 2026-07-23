@@ -372,6 +372,19 @@
           alerts.{% else %}Containment rolled back, sinkhole and baseline
           restored, quarantine emptied, markers removed.{% endif %}
 
+  # ── Report — written once, from the controller, before anything can fail ────
+  # Evidence is split across hosts (alert lines on ng-siem, markers on victim),
+  # so the template reads both out of hostvars. Written before the preflight
+  # re-run so the report survives even if that re-run trips.
+- name: Write the rehearsal report
+  ansible.builtin.template:
+    src: REHEARSAL_REPORT.md.j2
+    dest: "{{ playbook_dir }}/../validation/REHEARSAL_REPORT.md"
+    mode: '0644'
+  delegate_to: localhost
+  become: false
+  run_once: true
+
   # ── Re-prove the range is back to a handover-ready state ────────────────────
   # Criterion (3): cleanup must leave puc2_preflight green again. Running it here
   # rather than trusting the cleanup makes that a verified fact — and if anything
@@ -379,3 +392,22 @@
 - name: Re-prove the preflight gate after the rehearsal
   ansible.builtin.include_role:
     name: puc2_preflight
+
+  # ── Signal the rehearsal's own verdict ──────────────────────────────────────
+  # Cleanup and the report are done; now fail non-zero if any link broke, so a
+  # broken chain is never a silently green run. The report names which link.
+- name: Fail if any link of the chain broke
+  ansible.builtin.assert:
+    that:
+      - hostvars['ng-siem'].puc2_reh_chain_ok | default(false)
+      - hostvars['victim'].puc2_reh_chain_ok | default(false)
+    fail_msg: >-
+      Rehearsal FAILED — a link of the detection/response chain broke. See
+      validation/REHEARSAL_REPORT.md for which one and the overlay to fix. The
+      range was still restored and preflight re-run.
+    success_msg: >-
+      Rehearsal PASSED — 100101 -> 100102 -> 100103 -> active response ->
+      markers -> quarantine all confirmed in runtime, range restored, preflight
+      green.
+  run_once: true
+  delegate_to: localhost
