@@ -167,3 +167,73 @@
       {{ puc2_case_soc_id }} present as id {{ puc2_case_found_id }}
       ({{ puc2_case_lookup }}). NG-SOAR library:
       {{ puc2_pf_books | length }} playbooks.
+
+# ── The CONSOLE path for the three dashboard-only levels, and credentials ─────
+# The GATE above proves the answers exist in the live services (the dashboard
+# path). These prove they are also reachable from a terminal — so a trainee
+# without a desktop is never blocked on L9, L14 or L15 — and that the dashboard
+# credentials were published inside the sandbox rather than left to "ask your
+# instructor". The helpers are read-only; running them here cannot change state.
+- name: Stat the console helpers and the credentials file
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ puc2_misp_seed_dir | default('/opt/cti-ss-seed') }}/cti_lookup.sh"
+    - "{{ puc2_iris_assets_dir | default('/opt/cicms-assets') }}/case_lookup.sh"
+    - "{{ puc2_cred_file | default('/opt/puc2/CREDENTIALS.txt') }}"
+  register: puc2_pf_console_files
+
+- name: Run the CTI-SS console helper (L9, L15)
+  ansible.builtin.command: "{{ puc2_misp_seed_dir | default('/opt/cti-ss-seed') }}/cti_lookup.sh"
+  register: puc2_pf_cti_lookup
+  changed_when: false
+  failed_when: false
+
+- name: Run the CICMS console helper (L14)
+  ansible.builtin.command: "{{ puc2_iris_assets_dir | default('/opt/cicms-assets') }}/case_lookup.sh"
+  register: puc2_pf_case_lookup
+  changed_when: false
+  failed_when: false
+
+- name: GATE — the console path answers L9, L14, L15 and credentials are published
+  ansible.builtin.assert:
+    that:
+      # Both helpers present and executable
+      - puc2_pf_console_files.results[0].stat.exists
+      - puc2_pf_console_files.results[0].stat.executable
+      - puc2_pf_console_files.results[1].stat.exists
+      - puc2_pf_console_files.results[1].stat.executable
+      # L9 + L15: the CTI helper prints the initial-access technique and the C2 IOC
+      - puc2_mitre_initial_access in (puc2_pf_cti_lookup.stdout | default(''))
+      - puc2_mitre_execution in (puc2_pf_cti_lookup.stdout | default(''))
+      - puc2_c2_domain in (puc2_pf_cti_lookup.stdout | default(''))
+      # L14: the CICMS helper identifies the scenario case by its SOC id
+      - puc2_case_soc_id in (puc2_pf_case_lookup.stdout | default(''))
+      # Credentials published inside the sandbox as a 0600 root file
+      - puc2_pf_console_files.results[2].stat.exists
+      - puc2_pf_console_files.results[2].stat.mode == '0600'
+      - puc2_pf_console_files.results[2].stat.pw_name == 'root'
+    fail_msg: >-
+      CONSOLE-PATH preflight FAILED — a trainee without a desktop would be
+      blocked. cti_lookup.sh present:
+      {{ puc2_pf_console_files.results[0].stat.exists | default(false) }},
+      executable:
+      {{ puc2_pf_console_files.results[0].stat.executable | default(false) }};
+      prints {{ puc2_mitre_initial_access }}:
+      {{ puc2_mitre_initial_access in (puc2_pf_cti_lookup.stdout | default('')) }},
+      {{ puc2_c2_domain }}:
+      {{ puc2_c2_domain in (puc2_pf_cti_lookup.stdout | default('')) }}.
+      case_lookup.sh present:
+      {{ puc2_pf_console_files.results[1].stat.exists | default(false) }},
+      prints {{ puc2_case_soc_id }}:
+      {{ puc2_case_soc_id in (puc2_pf_case_lookup.stdout | default('')) }}.
+      Credentials file {{ puc2_cred_file | default('/opt/puc2/CREDENTIALS.txt') }}
+      present: {{ puc2_pf_console_files.results[2].stat.exists | default(false) }},
+      mode: {{ puc2_pf_console_files.results[2].stat.mode | default('?') }}.
+      Re-run: `ansible-playbook provisioning/playbook.yml --limit docker-server`
+    success_msg: >-
+      Console path OK — cti_lookup.sh answers L9 ({{ puc2_mitre_initial_access }})
+      and L15 ({{ puc2_c2_domain }}), case_lookup.sh answers L14
+      ({{ puc2_case_soc_id }}), and the dashboard credentials are published at
+      {{ puc2_cred_file | default('/opt/puc2/CREDENTIALS.txt') }} (0600 root).
+      Every hands-on level is now answerable from a terminal.
