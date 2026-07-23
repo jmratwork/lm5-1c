@@ -209,6 +209,16 @@
     mode: '0750'
   no_log: true
 
+# The console path for L9 (initial-access technique) and L15 (C2 domain IOC),
+# read-only, alongside share_intel.sh. no_log because the rendered file carries
+# the MISP API key.
+- name: Deploy the CTI-SS console lookup helper (L9, L15)
+  ansible.builtin.template:
+    src: cti_lookup.sh.j2
+    dest: "{{ puc2_misp_seed_dir }}/cti_lookup.sh"
+    mode: '0750'
+  no_log: true
+
 - name: Report the CTI-SS seeding outcome
   ansible.builtin.debug:
     msg: >-

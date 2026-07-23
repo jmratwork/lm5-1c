@@ -204,6 +204,16 @@
     mode: '0750'
   no_log: true
 
+# The console path for L14 (scenario case SOC id), read-only, alongside
+# open_case.sh in the same operator-helper directory. no_log because the
+# rendered file carries the IRIS API key.
+- name: Deploy the CICMS console case-lookup helper (L14)
+  ansible.builtin.template:
+    src: case_lookup.sh.j2
+    dest: "{{ puc2_iris_assets_dir }}/case_lookup.sh"
+    mode: '0750'
+  no_log: true
+
 - name: Report the CICMS registration outcome
   ansible.builtin.debug:
     msg: >-

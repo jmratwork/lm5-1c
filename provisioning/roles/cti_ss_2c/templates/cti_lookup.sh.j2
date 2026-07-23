@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# =============================================================================
+# CTI-SS (MISP) lookup helper — the CONSOLE path for training levels L9 and L15.
+#
+# WHY THIS EXISTS: L9 (initial-access technique) and L15 (C2 domain IOC) are
+# otherwise dashboard-only. This gives the analyst the same answers from a
+# terminal, so the training never depends on a graphical desktop being present.
+#
+# READ-ONLY: it searches and prints. It does NOT publish or modify anything —
+# publishing the event remains share_intel.sh's job at L24.
+#
+# The API key is injected from the Ansible facts at render time; it is never
+# printed and never passed on a command line.
+# =============================================================================
+set -euo pipefail
+
+MISP_URL="{{ puc2_misp_url }}"
+MISP_API_KEY="{{ puc2_misp_api_key }}"
+PAYLOAD_MD5="{{ puc2_payload_md5 }}"
+C2_DOMAIN="{{ puc2_c2_domain }}"
+PAYLOAD_URL="{{ puc2_payload_url }}"
+INITIAL_ACCESS="{{ puc2_mitre_initial_access }}"
+EXECUTION="{{ puc2_mitre_execution }}"
+
+command -v jq >/dev/null 2>&1 || { echo "jq is required" >&2; exit 1; }
+
+auth=(-H "Authorization: ${MISP_API_KEY}" -H "Accept: application/json" -H "Content-Type: application/json")
+
+echo "[CTI-SS] Searching the PUC2 2c event by payload hash ${PAYLOAD_MD5}"
+EVENT=$(curl -sk "${auth[@]}" -X POST "${MISP_URL}/events/restSearch" \
+  --data "{\"value\":\"${PAYLOAD_MD5}\",\"returnFormat\":\"json\"}")
+
+EVENT_ID=$(printf '%s' "${EVENT}" | jq -r '.response[0].Event.id // empty')
+if [ -z "${EVENT_ID}" ]; then
+    echo "[CTI-SS] Event not found for that hash. Was CTI-SS seeding skipped?" >&2
+    exit 1
+fi
+EVENT_INFO=$(printf '%s' "${EVENT}" | jq -r '.response[0].Event.info // "(no title)"')
+
+echo
+echo "  Event id    : ${EVENT_ID}"
+echo "  Event title : ${EVENT_INFO}"
+
+# ── ATT&CK techniques, from event tags and galaxy clusters ───────────────────
+echo
+echo "  MITRE ATT&CK techniques on this event:"
+printf '%s' "${EVENT}" \
+  | jq -r '.response[0].Event
+           | ( (.Tag // []) + ( (.Galaxy // []) | map(.GalaxyCluster // []) | add // [] ) )
+           | .[] | (.name // .value // empty)' 2>/dev/null \
+  | grep -oE 'T[0-9]{4}(\.[0-9]{3})?' | sort -u \
+  | while read -r tech; do
+      label=""
+      [ "${tech}" = "${INITIAL_ACCESS}" ] && label="   <-- initial access (L9 answer)"
+      [ "${tech}" = "${EXECUTION}" ] && label="   <-- user execution"
+      printf '    %s%s\n' "${tech}" "${label}"
+    done
+
+echo
+echo "  Answer for L9 (initial access technique): ${INITIAL_ACCESS}"
+
+# ── IOCs the analyst pulls into the case (L15) ───────────────────────────────
+echo
+echo "  IOCs on this event:"
+printf '%s' "${EVENT}" \
+  | jq -r '.response[0].Event.Attribute[]? | "    \(.type): \(.value)"' 2>/dev/null \
+  | sort -u
+echo
+echo "  Key IOCs for the exercise:"
+echo "    payload MD5 : ${PAYLOAD_MD5}"
+echo "    payload URL : ${PAYLOAD_URL}"
+echo "    C2 domain   : ${C2_DOMAIN}   <-- L15 answer"

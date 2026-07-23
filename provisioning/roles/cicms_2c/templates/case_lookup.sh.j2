@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# =============================================================================
+# CICMS (DFIR-IRIS) case lookup helper — the CONSOLE path for training level L14.
+#
+# WHY THIS EXISTS: L14 (the scenario case SOC id) is otherwise dashboard-only.
+# This lists the IRIS cases from a terminal and identifies the scenario case, so
+# the training never depends on a graphical desktop being present.
+#
+# It distinguishes the scenario case (SOC id {{ puc2_case_soc_id }}) from the
+# alert-derived cases the custom-iris integration keeps creating (named
+# WAZUH-...), because L14 asks for the scenario one.
+#
+# The SOC id is not in the /manage/cases/list payload on every IRIS version, so
+# — exactly like the deployment gate's find_case — this reads each case back
+# from /manage/cases/<id> when the list does not carry it.
+#
+# READ-ONLY. The API key is injected at render time; it is never printed.
+# =============================================================================
+set -euo pipefail
+
+IRIS_URL="{{ puc2_iris_url }}"
+IRIS_API_KEY="{{ puc2_iris_api_key }}"
+WANT_SOC_ID="{{ puc2_case_soc_id }}"
+
+command -v jq >/dev/null 2>&1 || { echo "jq is required" >&2; exit 1; }
+
+auth=(-H "Authorization: Bearer ${IRIS_API_KEY}" -H "Content-Type: application/json")
+
+echo "[CICMS] Listing DFIR-IRIS cases"
+LIST=$(curl -sk "${auth[@]}" "${IRIS_URL}/manage/cases/list")
+
+# Rows live at .data.data on some versions, .data on others.
+ROWS=$(printf '%s' "${LIST}" | jq -c '(.data.data // .data // [])')
+COUNT=$(printf '%s' "${ROWS}" | jq 'length')
+if [ "${COUNT}" = "0" ] || [ -z "${COUNT}" ]; then
+    echo "[CICMS] No cases returned. Is provisioning finished?" >&2
+    exit 1
+fi
+
+# Does the list itself carry case_soc_id? If so, match on the field directly.
+HAS_SOC=$(printf '%s' "${ROWS}" | jq '[.[] | select(.case_soc_id != null)] | length')
+
+scenario_id=""
+if [ "${HAS_SOC}" != "0" ]; then
+    scenario_id=$(printf '%s' "${ROWS}" \
+      | jq -r --arg s "${WANT_SOC_ID}" '.[] | select(.case_soc_id==$s) | .case_id' | head -n1)
+else
+    # Fallback: read each case (bounded to 50) and match the field there.
+    echo "[CICMS] The list does not carry the SOC id; reading each case back."
+    for cid in $(printf '%s' "${ROWS}" | jq -r '.[].case_id' | head -n 50); do
+        soc=$(curl -sk "${auth[@]}" "${IRIS_URL}/manage/cases/${cid}" \
+              | jq -r '.data.case_soc_id // empty')
+        if [ "${soc}" = "${WANT_SOC_ID}" ]; then scenario_id="${cid}"; break; fi
+    done
+fi
+
+echo
+echo "  Cases in CICMS (${COUNT} total):"
+printf '%s' "${ROWS}" | jq -r '.[] | "    id=\(.case_id)  name=\(.case_name // .name // "?")"'
+
+echo
+if [ -n "${scenario_id}" ]; then
+    echo "  Scenario case  : ${WANT_SOC_ID}  (case id ${scenario_id})   <-- L14 answer"
+    echo "  The WAZUH-... cases beside it are the custom-iris alert-derived cases."
+else
+    echo "  Scenario case ${WANT_SOC_ID} NOT found. The WAZUH-... cases are the"
+    echo "  auto-created alert cases; the scenario case is seeded at provision time"
+    echo "  — if it is missing, provisioning's CICMS step did not complete." >&2
+    exit 1
+fi
