@@ -1,0 +1,304 @@
+---
+# =============================================================================
+# role: puc2_rehearsal   (hosts: ng-siem, victim, docker-server — opt-in, never)
+#
+#   ansible-playbook provisioning/playbook.yml \
+#     --tags puc2_rehearsal -e puc2_rehearsal_enabled=true \
+#     --limit ng-siem,victim,docker-server
+#
+# WHY THIS EXISTS
+# puc2_preflight proves, statically, that every graded answer is OBTAINABLE: the
+# rules load, the watchlist carries the hash, the markers' script is in place.
+# What it deliberately never does is FIRE the attack — so nothing has confirmed
+# in runtime that rule 100101 actually alerts (L10), that 100103 correlates
+# (L11/L12), or that the active response writes the markers (L19/L20/L21). That
+# is the one place a student could still be blocked. This role closes it: it
+# fires the real scenario, watches every link of
+#   100101 -> 100102 -> 100103 -> active response -> markers -> quarantine
+# and then removes every trace, so the range is handed to the student exactly as
+# provisioning left it — never "already attacked".
+#
+# SAFETY MODEL
+# - `never` tag on the play: absent from every normal run.
+# - puc2_rehearsal_enabled: a second switch that must be set explicitly.
+# - block/rescue/always: cleanup runs whether the chain passes, fails, or errors.
+# - Tasks are guarded by inventory_hostname; the manager-side checks run on
+#   ng-siem, the endpoint side on victim. No task touches docker-server; it is
+#   in the play only so the trailing preflight re-run (added in a later change)
+#   can reprove all three hosts.
+#
+# The full-pristine completion (baseline restart, credential restore, alerts.log
+# purge) and the preflight re-run land in the next change on this branch; the
+# `always` here already performs the essential rollback so the role is safe to
+# run on its own.
+# =============================================================================
+
+- name: Refuse to run unless explicitly enabled
+  ansible.builtin.assert:
+    that:
+      - puc2_rehearsal_enabled | bool
+    fail_msg: >-
+      puc2_rehearsal is a destructive, opt-in drill. Re-run with
+      -e puc2_rehearsal_enabled=true once you understand it fires the attack
+      and then self-cleans.
+    success_msg: "Rehearsal enabled — firing the scenario and watching the chain."
+  run_once: true
+
+- name: PUC2 2c rehearsal — fire the chain, verify it, then undo it
+  block:
+
+    # ── Readiness (victim) ───────────────────────────────────────────────────
+    - name: Confirm the range is armed before firing
+      ansible.builtin.command: "{{ puc2_injection_root }}/inject_scenario.sh --arm"
+      register: puc2_reh_arm
+      changed_when: false
+      failed_when: puc2_arm_token not in puc2_reh_arm.stdout
+      when: inventory_hostname == 'victim'
+
+    # ── Snapshot alerts.log so the rehearsal's own alerts can be purged later ─
+    - name: Record the alerts.log size before the injection
+      ansible.builtin.stat:
+        path: "{{ puc2_rehearsal_alerts_log }}"
+      register: puc2_reh_alerts_before
+      when: inventory_hostname == 'ng-siem'
+
+    - name: Remember the pre-injection alerts.log offset
+      ansible.builtin.set_fact:
+        puc2_reh_alerts_offset: "{{ puc2_reh_alerts_before.stat.size | default(0) }}"
+      when: inventory_hostname == 'ng-siem'
+
+    # ── Fire the scenario (victim) ───────────────────────────────────────────
+    # Synchronous: the script returns after stage 4 (~3 x stage_pause seconds).
+    # Every link is polled AFTER it returns.
+    - name: Fire the malware scenario
+      ansible.builtin.command: "{{ puc2_injection_root }}/inject_scenario.sh"
+      environment:
+        STAGE_PAUSE: "{{ puc2_rehearsal_stage_pause }}"
+      register: puc2_reh_fire
+      changed_when: true
+      when: inventory_hostname == 'victim'
+
+    # ── Link 1-3: detection alerts on the manager (ng-siem) ──────────────────
+    # Poll without failing the loop (failed_when:false), then assert with an
+    # actionable message naming the exact link that never appeared.
+    - name: Wait for rule 100101 (malware detected — L10)
+      ansible.builtin.shell: >-
+        grep -Ew '100101' {{ puc2_rehearsal_alerts_log }} | tail -1
+      register: puc2_reh_100101
+      changed_when: false
+      failed_when: false
+      until: puc2_reh_100101.rc == 0
+      retries: "{{ puc2_rehearsal_alert_retries }}"
+      delay: "{{ puc2_rehearsal_alert_delay }}"
+      when: inventory_hostname == 'ng-siem'
+
+    - name: Assert 100101 alerted
+      ansible.builtin.assert:
+        that: puc2_reh_100101.rc == 0
+        fail_msg: >-
+          LINK 1 BROKEN — rule 100101 never alerted after firing the payload.
+          The hash-match detection (training L10) is not producing an alert.
+          Check ng_siem_rules_2c (rule 100101 / CDB watchlist) and that the
+          victim agent's FIM telemetry is reaching the manager.
+      when: inventory_hostname == 'ng-siem'
+
+    - name: Wait for rule 100102 (blocked C2 beacon)
+      ansible.builtin.shell: >-
+        grep -Ew '100102' {{ puc2_rehearsal_alerts_log }} | tail -1
+      register: puc2_reh_100102
+      changed_when: false
+      failed_when: false
+      until: puc2_reh_100102.rc == 0
+      retries: "{{ puc2_rehearsal_alert_retries }}"
+      delay: "{{ puc2_rehearsal_alert_delay }}"
+      when: inventory_hostname == 'ng-siem'
+
+    - name: Assert 100102 alerted
+      ansible.builtin.assert:
+        that: puc2_reh_100102.rc == 0
+        fail_msg: >-
+          LINK 2 BROKEN — rule 100102 never alerted. The blocked C2 beacon is
+          not being decoded into an alert. Check the baseline egress filter on
+          victim (PUC2-FW-DROP on tcp/{{ puc2_c2_port | default(4444) }}),
+          kern.log ingestion, and rule 100102's if_sid/match.
+      when: inventory_hostname == 'ng-siem'
+
+    - name: Wait for rule 100103 (correlated targeted attack — L11/L12)
+      ansible.builtin.shell: >-
+        grep -Ew '100103' {{ puc2_rehearsal_alerts_log }} | tail -1
+      register: puc2_reh_100103
+      changed_when: false
+      failed_when: false
+      until: puc2_reh_100103.rc == 0
+      retries: "{{ puc2_rehearsal_alert_retries }}"
+      delay: "{{ puc2_rehearsal_alert_delay }}"
+      when: inventory_hostname == 'ng-siem'
+
+    - name: Assert 100103 correlated
+      ansible.builtin.assert:
+        that: puc2_reh_100103.rc == 0
+        fail_msg: >-
+          LINK 3 BROKEN — rule 100103 never correlated (training L11/L12). The
+          repeated-IOC correlation that confirms a targeted attack — and fires
+          containment — did not trigger. Confirm the injection is multi-stage
+          (100101 must fire more than once inside the window) and 100103's
+          frequency/timeframe/if_matched_sid.
+      when: inventory_hostname == 'ng-siem'
+
+    # ── Link 4-7: response on the endpoint (victim) ──────────────────────────
+    - name: Wait for the active response to execute (L19/L20)
+      ansible.builtin.shell: >-
+        grep -F 'puc2-isolate' {{ puc2_rehearsal_ar_log }} | tail -1
+      register: puc2_reh_ar
+      changed_when: false
+      failed_when: false
+      until: puc2_reh_ar.rc == 0
+      retries: "{{ puc2_rehearsal_marker_retries }}"
+      delay: "{{ puc2_rehearsal_marker_delay }}"
+      when: inventory_hostname == 'victim'
+
+    - name: Assert the active response ran
+      ansible.builtin.assert:
+        that: puc2_reh_ar.rc == 0
+        fail_msg: >-
+          LINK 4 BROKEN — the puc2-isolate active response never executed. Rule
+          100103 fired but the manager did not run the containment action on the
+          endpoint. Check the <active-response>/<command> wiring in
+          ng_siem_rules_2c and that puc2-isolate is executable on victim.
+      when: inventory_hostname == 'victim'
+
+    - name: Wait for the isolation marker to read 'isolated' (L19)
+      ansible.builtin.shell: >-
+        head -1 {{ puc2_isolation_marker }}
+      register: puc2_reh_iso
+      changed_when: false
+      failed_when: false
+      until:
+        - puc2_reh_iso.rc == 0
+        - puc2_reh_iso.stdout == puc2_isolation_status
+      retries: "{{ puc2_rehearsal_marker_retries }}"
+      delay: "{{ puc2_rehearsal_marker_delay }}"
+      when: inventory_hostname == 'victim'
+
+    - name: Assert the isolation marker is correct
+      ansible.builtin.assert:
+        that:
+          - puc2_reh_iso.rc == 0
+          - puc2_reh_iso.stdout == puc2_isolation_status
+        fail_msg: >-
+          LINK 5 BROKEN — {{ puc2_isolation_marker }} does not read
+          '{{ puc2_isolation_status }}' on its first line (training L19). Got:
+          '{{ puc2_reh_iso.stdout | default("<absent>") }}'.
+      when: inventory_hostname == 'victim'
+
+    - name: Wait for the eradication marker to read 'eradicated' (L21)
+      ansible.builtin.shell: >-
+        head -1 {{ puc2_eradication_marker }}
+      register: puc2_reh_erad
+      changed_when: false
+      failed_when: false
+      until:
+        - puc2_reh_erad.rc == 0
+        - puc2_reh_erad.stdout == puc2_eradication_status
+      retries: "{{ puc2_rehearsal_marker_retries }}"
+      delay: "{{ puc2_rehearsal_marker_delay }}"
+      when: inventory_hostname == 'victim'
+
+    - name: Assert the eradication marker is correct
+      ansible.builtin.assert:
+        that:
+          - puc2_reh_erad.rc == 0
+          - puc2_reh_erad.stdout == puc2_eradication_status
+        fail_msg: >-
+          LINK 6 BROKEN — {{ puc2_eradication_marker }} does not read
+          '{{ puc2_eradication_status }}' on its first line (training L21). Got:
+          '{{ puc2_reh_erad.stdout | default("<absent>") }}'.
+      when: inventory_hostname == 'victim'
+
+    - name: Confirm the payload was quarantined (L21)
+      ansible.builtin.find:
+        paths: "{{ puc2_quarantine_dir }}"
+        file_type: any
+      register: puc2_reh_quar
+      until: puc2_reh_quar.matched | int > 0
+      retries: "{{ puc2_rehearsal_marker_retries }}"
+      delay: "{{ puc2_rehearsal_marker_delay }}"
+      failed_when: false
+      when: inventory_hostname == 'victim'
+
+    - name: Assert the quarantine holds the payload
+      ansible.builtin.assert:
+        that: puc2_reh_quar.matched | int > 0
+        fail_msg: >-
+          LINK 7 BROKEN — {{ puc2_quarantine_dir }} is empty; the payload was
+          never quarantined (training L21).
+      when: inventory_hostname == 'victim'
+
+    - name: Record that the chain passed on this host
+      ansible.builtin.set_fact:
+        puc2_reh_chain_ok: true
+
+  rescue:
+    - name: Record that the chain failed on this host
+      ansible.builtin.set_fact:
+        puc2_reh_chain_ok: false
+        puc2_reh_failure: "{{ ansible_failed_result.msg | default('unknown failure') }}"
+
+    - name: Surface the broken link
+      ansible.builtin.debug:
+        msg: "REHEARSAL FAILED on {{ inventory_hostname }}: {{ puc2_reh_failure }}"
+
+  always:
+    # ── Essential rollback — runs on pass, fail or error ─────────────────────
+    # This undoes the containment the active response applied. The full-pristine
+    # completion (baseline restart, credential restore, alerts.log purge) and the
+    # preflight re-run are added in the next change on this branch; what is here
+    # already returns the endpoint to a reachable, un-contained state.
+    - name: Roll back containment via the active response's own delete path
+      ansible.builtin.shell:
+        cmd: >-
+          echo '{"version":1,"command":"delete","parameters":{"program":"puc2-isolate"}}'
+          | /var/ossec/active-response/bin/puc2-isolate
+      register: puc2_reh_rollback
+      changed_when: true
+      failed_when: false
+      when: inventory_hostname == 'victim'
+
+    # The AR's delete path removes the 0.0.0.0 sinkhole line but does not restore
+    # the observable one; without it the arm check 'C2 domain resolves' fails.
+    - name: Restore the C2 sinkhole line provisioning seeds
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        regexp: '\s{{ puc2_c2_domain | regex_escape }}$'
+        line: "{{ puc2_c2_ip }} {{ puc2_c2_domain }}"
+      when: inventory_hostname == 'victim'
+
+    - name: Empty the quarantine directory
+      ansible.builtin.shell:
+        cmd: "rm -rf {{ puc2_quarantine_dir }}/* 2>/dev/null; true"
+      changed_when: true
+      when: inventory_hostname == 'victim'
+
+    - name: Remove any payload copies the injection left behind
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop: "{{ puc2_delivery_paths + ['/tmp/payload.sh', '/home/' + puc2_victim_user + '/' + 'invoice.exe'] }}"
+      when: inventory_hostname == 'victim'
+
+    - name: Remove the containment status markers
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ puc2_isolation_marker }}"
+        - "{{ puc2_eradication_marker }}"
+      when: inventory_hostname == 'victim'
+
+    - name: Report the rollback outcome
+      ansible.builtin.debug:
+        msg: >-
+          Essential rollback done on {{ inventory_hostname }}. Full-pristine
+          completion and the preflight re-run run in the next task set on this
+          branch.
+      when: inventory_hostname == 'victim'

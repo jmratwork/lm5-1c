@@ -1,0 +1,53 @@
+---
+# role: puc2_rehearsal
+# Fallbacks only. The authoritative values live in group_vars/puc2_2c.yml.
+#
+# This role NEVER runs in a normal deployment: its play is tagged `never`, so it
+# executes only when the operator asks for it explicitly with
+#   --tags puc2_rehearsal
+# and even then a second, belt-and-braces switch (puc2_rehearsal_enabled) must
+# be true. It fires the real attack, watches the whole detection/response chain
+# in runtime, and then puts the range back exactly as provisioning left it.
+
+# Hard second switch. `never` already keeps this out of every build; this makes
+# an accidental `--tags all` or a stray tag harmless too.
+puc2_rehearsal_enabled: false
+
+# ── Paths and identifiers (mirror group_vars/puc2_2c.yml) ────────────────────
+puc2_injection_root: "/opt/puc2"
+puc2_arm_token: "puc2-2c-armed"
+puc2_victim_user: "victim"
+puc2_quarantine_dir: "/var/quarantine"
+puc2_isolation_marker: "/var/run/ngsoar_isolated"
+puc2_eradication_marker: "/var/run/ngsoar_eradication_status"
+puc2_isolation_status: "isolated"
+puc2_eradication_status: "eradicated"
+puc2_active_response_rules: "100103"
+puc2_c2_ip: "10.0.16.50"
+puc2_c2_domain: "c2.puc2-training.lab"
+puc2_sandbox_cidr: "10.0.16.0/24"
+puc2_admin_ssh_port: 22
+puc2_delivery_paths:
+  - "/home/victim/Downloads/invoice.exe"
+  - "/tmp/invoice.exe"
+  - "/home/victim/Downloads/statement.exe"
+
+# Where the manager writes alerts, and where the endpoint logs active response.
+puc2_rehearsal_alerts_log: "/var/ossec/logs/alerts/alerts.log"
+puc2_rehearsal_ar_log: "/var/ossec/logs/active-responses.log"
+
+# ── Wait budgets ─────────────────────────────────────────────────────────────
+# The injection itself takes ~60 s (three 20 s stage pauses). Each link is
+# polled AFTER that returns. Alerts should already be present; 100103 needs the
+# 4th stage plus manager processing. Marker writes follow the active response.
+# Retries x delay = the ceiling any one link is allowed before it is called
+# broken. Kept generous: a slow manager must not read as a dead rule.
+puc2_rehearsal_alert_retries: 30
+puc2_rehearsal_alert_delay: 10
+puc2_rehearsal_marker_retries: 30
+puc2_rehearsal_marker_delay: 10
+
+# Seconds between injection stages, passed through to inject_scenario.sh. The
+# default (20) is well inside the 600 s correlation window; lowered only if a
+# rehearsal needs to run faster, never raised past ~180.
+puc2_rehearsal_stage_pause: 20

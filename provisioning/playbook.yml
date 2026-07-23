@@ -146,6 +146,32 @@
     - evaluation_reporting
 
 # =============================================================================
+# Rehearsal — OPT-IN, NEVER part of a build (tagged `never`), placed right
+# before the preflight gate so a single command can fire, verify, self-clean,
+# and then re-prove the gate green:
+#
+#   ansible-playbook provisioning/playbook.yml \
+#     --tags puc2_rehearsal,puc2-preflight -e puc2_rehearsal_enabled=true \
+#     --limit ng-siem,victim,docker-server
+#
+# Unlike the preflight gate (which only ARMS the scenario), this fires the real
+# attack and watches the whole chain 100101 -> 100102 -> 100103 -> active
+# response -> markers -> quarantine in runtime, then removes every trace so the
+# range is handed to the student exactly as provisioning left it. No
+# any_errors_fatal: a broken link must still reach the always-cleanup.
+# =============================================================================
+- name: PUC2 2c — rehearsal, fire the chain end to end then self-clean
+  hosts: ng-siem,victim,docker-server
+  become: true
+  gather_facts: true
+  vars_files:
+    - group_vars/puc2_2c.yml
+    - "{{ lookup('first_found', ['group_vars/vault.yml', 'group_vars/vault.yml.example']) }}"
+  roles:
+    - role: puc2_rehearsal
+      tags: [puc2_rehearsal, puc2-rehearsal, never]
+
+# =============================================================================
 # QA gate — runs last, fails the deployment if the range cannot answer its own
 # training. Read-only: it arms the scenario (the script's read-only mode) and
 # reads back the live services; it never fires the attack.
