@@ -245,6 +245,59 @@ obtainable in the built sandbox.
 
 ---
 
+## Access paths — console and dashboard
+
+Every hands-on level is answerable **from a terminal**, so the training never
+depends on a graphical desktop being available. The dashboards remain a valid
+alternative where a desktop is present.
+
+**Where the desktop is.** The SOC dashboards live on internal testnet IPs, so a
+browser must run *inside* the sandbox. Per `diagnostics/ACCESS-MATRIX.md`, the
+only node that can serve as the analyst workstation is **kali (10.0.16.50)** —
+which in this scenario also plays the simulated C2. That the C2 address doubles
+as the analyst desktop is deliberate and stated in L1. Whether the kali image
+actually ships a desktop and browser is not knowable from this repo; run the
+read-only probe to confirm and fill `diagnostics/ACCESS-PROBE-RESULTS.md`:
+
+```bash
+ansible-playbook provisioning/playbook.yml \
+  --tags puc2_access_probe -e puc2_access_probe_enabled=true
+```
+
+**Credentials.** Dashboard logins are published inside the sandbox, never in this
+repo or the training JSON: `sudo cat /opt/puc2/CREDENTIALS.txt` on
+**docker-server** (0600, root). Any password not resolvable from the deployed
+`.env` is named in that file with where to fetch it, rather than guessed.
+
+**Level → console → dashboard.** All 15 hands-on levels, and the gate that
+verifies each is answerable:
+
+| Level | Answer | Console path | Dashboard path | Gated by preflight |
+|------|--------|--------------|----------------|--------------------|
+| L4  | `puc2-2c-armed` | `inject_scenario.sh --arm` on victim | — | yes |
+| L5  | `invoice.exe` | `grep href= /var/mail/victim` | — | yes |
+| L8  | payload MD5 | `md5sum /opt/puc2/invoice.exe` | Wazuh FIM | yes |
+| L9  | `T1566.001` | **`cti_lookup.sh`** on docker-server | MISP event | yes (console gate) |
+| L10 | `100101` | `grep 1001 …/alerts.log` on ng-siem | Wazuh alerts | yes |
+| L11 | `targeted` | `grep PUC2-FW-DROP /var/log/kern.log` | Wazuh correlation | yes |
+| L14 | `CASE-PUC2-2C` | **`case_lookup.sh`** on docker-server | IRIS cases | yes (console gate) |
+| L15 | `c2.puc2-training.lab` | **`cti_lookup.sh`** on docker-server | MISP / IRIS | yes (console gate) |
+| L18 | `isolate_host` | `ls /opt/NG-SOAR/playbooks/` | NG-SOAR | yes |
+| L19 | `isolated` | `cat /var/run/ngsoar_isolated` | — | yes |
+| L20 | `10.0.16.50` | `cti_lookup.sh` (IOC) / firewall log | MISP IOC | yes |
+| L21 | `eradicated` | `cat /var/run/ngsoar_eradication_status` | — | yes |
+| L24 | `NG-SOC-PUC2` | `share_intel.sh` on docker-server | MISP distribution | yes |
+| L25 | `phishing` | `collect_evaluation.sh` on ng-siem | IRIS timeline | yes |
+| L26 | `T1204.002` | `cti_lookup.sh` (execution technique) | MISP tag | yes |
+
+The three levels that were dashboard-only — **L9, L14, L15** — gained the
+`cti_lookup.sh` / `case_lookup.sh` console helpers (read-only, key never printed;
+see Phase 1). `puc2_preflight` fails the deployment if a helper is missing or
+stops returning its expected value, or if the credentials file is not present as
+0600 root.
+
+---
+
 ## Secrets
 
 No credential is committed by this overlay. MISP and DFIR-IRIS API keys are
