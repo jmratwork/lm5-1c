@@ -249,11 +249,10 @@
         msg: "REHEARSAL FAILED on {{ inventory_hostname }}: {{ puc2_reh_failure }}"
 
   always:
-    # ── Essential rollback — runs on pass, fail or error ─────────────────────
-    # This undoes the containment the active response applied. The full-pristine
-    # completion (baseline restart, credential restore, alerts.log purge) and the
-    # preflight re-run are added in the next change on this branch; what is here
-    # already returns the endpoint to a reachable, un-contained state.
+    # ── Cleanup — runs on pass, fail or error; leaves the range pristine ──────
+    # Undoes everything the active response applied and everything the injection
+    # dropped, so puc2_preflight (re-run at the end of this role) goes green again
+    # and the student meets a freshly provisioned range, never an attacked one.
     - name: Roll back containment via the active response's own delete path
       ansible.builtin.shell:
         cmd: >-
@@ -295,10 +294,88 @@
         - "{{ puc2_eradication_marker }}"
       when: inventory_hostname == 'victim'
 
-    - name: Report the rollback outcome
+    # The AR's delete path resets the INPUT/OUTPUT policies to ACCEPT and removes
+    # the C2 drop and the SSH rules, but it does NOT remove the six allow rules
+    # isolate_host inserted (ESTABLISHED/RELATED, loopback, sandbox CIDR). With
+    # policy ACCEPT they are functionally inert, but they are not what
+    # provisioning left, so a pristine restore deletes them explicitly. -D of a
+    # rule that is already gone errors harmlessly, hence `|| true` on each.
+    - name: Delete the allow rules isolate_host left behind
+      ansible.builtin.shell:
+        cmd: |
+          iptables -D INPUT  -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || true
+          iptables -D OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || true
+          iptables -D INPUT  -i lo -j ACCEPT 2>/dev/null || true
+          iptables -D OUTPUT -o lo -j ACCEPT 2>/dev/null || true
+          iptables -D INPUT  -s {{ puc2_sandbox_cidr }} -j ACCEPT 2>/dev/null || true
+          iptables -D OUTPUT -d {{ puc2_sandbox_cidr }} -j ACCEPT 2>/dev/null || true
+          true
+      changed_when: true
+      when: inventory_hostname == 'victim'
+
+    # Reassert the provisioned baseline egress filter. Its unit uses `-C` before
+    # `-I`, so a restart re-adds the tcp/{{ puc2_c2_port | default(4444) }}
+    # LOG+DROP only if it is missing and never stacks — the one firewall state
+    # the range is meant to keep. Never `iptables -F`: that would take out rules
+    # other roles own.
+    - name: Reassert the baseline egress filter
+      ansible.builtin.systemd:
+        name: puc2-fw-baseline
+        state: restarted
+      failed_when: false
+      when: inventory_hostname == 'victim'
+
+    # The AR expired the victim password (chage -d 0) and killed its sessions.
+    # Set the last-change date back to today so the account is not stuck in a
+    # forced-change state the student would trip over.
+    - name: Restore the victim account's password state
+      ansible.builtin.command: "chage -d {{ ansible_date_time.date }} {{ puc2_victim_user }}"
+      changed_when: true
+      failed_when: false
+      when: inventory_hostname == 'victim'
+
+    # Purge the rehearsal's own alerts by truncating alerts.log back to the byte
+    # offset snapshotted before the injection. This is what keeps the manager's
+    # alert view "freshly deployed": the student sees no PUC2 alerts until they
+    # fire the scenario themselves. Trade-off, acceptable pre-student: any alert
+    # any agent wrote during the rehearsal window is dropped too. The byte count
+    # removed is recorded for the report.
+    - name: Measure alerts.log before the purge
+      ansible.builtin.stat:
+        path: "{{ puc2_rehearsal_alerts_log }}"
+      register: puc2_reh_alerts_after
+      when: inventory_hostname == 'ng-siem'
+
+    - name: Truncate alerts.log back to its pre-rehearsal size
+      ansible.builtin.command: >-
+        truncate -s {{ puc2_reh_alerts_offset | default(0) }} {{ puc2_rehearsal_alerts_log }}
+      register: puc2_reh_alerts_purged
+      changed_when: true
+      failed_when: false
+      when:
+        - inventory_hostname == 'ng-siem'
+        - puc2_reh_alerts_after.stat.size | default(0) | int > puc2_reh_alerts_offset | default(0) | int
+
+    - name: Record how many bytes of rehearsal alerts were purged
+      ansible.builtin.set_fact:
+        puc2_reh_alerts_purged_bytes: >-
+          {{ (puc2_reh_alerts_after.stat.size | default(0) | int)
+             - (puc2_reh_alerts_offset | default(0) | int) }}
+      when: inventory_hostname == 'ng-siem'
+
+    - name: Report the cleanup outcome
       ansible.builtin.debug:
         msg: >-
-          Essential rollback done on {{ inventory_hostname }}. Full-pristine
-          completion and the preflight re-run run in the next task set on this
-          branch.
-      when: inventory_hostname == 'victim'
+          Cleanup done on {{ inventory_hostname }}.
+          {% if inventory_hostname == 'ng-siem' %}Purged
+          {{ puc2_reh_alerts_purged_bytes | default(0) }} bytes of rehearsal
+          alerts.{% else %}Containment rolled back, sinkhole and baseline
+          restored, quarantine emptied, markers removed.{% endif %}
+
+  # ── Re-prove the range is back to a handover-ready state ────────────────────
+  # Criterion (3): cleanup must leave puc2_preflight green again. Running it here
+  # rather than trusting the cleanup makes that a verified fact — and if anything
+  # was not restored, this fails loudly, on the host where it is wrong.
+- name: Re-prove the preflight gate after the rehearsal
+  ansible.builtin.include_role:
+    name: puc2_preflight
