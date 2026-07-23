@@ -134,6 +134,7 @@
     - cti_ss_2c
     - cicms_2c
     - soar_actions_2c
+    - puc2_credentials
 
 - name: PUC2 2c — evaluation and reporting collateral (step 13)
   hosts: ng-siem

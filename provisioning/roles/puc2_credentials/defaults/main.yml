@@ -1,0 +1,20 @@
+---
+# role: puc2_credentials
+# Publishes the SOC dashboard credentials INSIDE the sandbox — never in the repo
+# and never in the training JSON. A generator script reads the deployed .env
+# files on this node and writes a 0600 root-owned file; the secret values never
+# pass through an Ansible variable or the log.
+puc2_cred_file: "/opt/puc2/CREDENTIALS.txt"
+puc2_cred_dir: "/opt/puc2"
+
+puc2_misp_env_file: "/opt/misp-docker/.env"
+puc2_iris_env_file: "/opt/dfir-iris-custom/.env"
+
+puc2_misp_admin_user: "admin@admin.test"
+puc2_iris_admin_user: "administrator"
+
+# IRIS container name (IRIS_UPSTREAM_SERVER=iris_app), used only to tell the
+# operator where to read a password the .env does not carry.
+puc2_iris_container: "iris_app"
+
+docker_server_internal_ip: "10.0.16.60"
