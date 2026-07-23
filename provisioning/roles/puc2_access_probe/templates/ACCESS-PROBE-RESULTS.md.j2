@@ -1,0 +1,37 @@
+# PUC2 2c — Access probe results (live)
+
+Produced by the `puc2_access_probe` role against the running sandbox. This is the
+live-data companion to `diagnostics/ACCESS-MATRIX.md`; use it to settle the
+"CONFIRM IN SANDBOX" cells there — especially whether **kali** offers a desktop
+and a browser (the workstation decision depends on it).
+
+{% for node in puc2_access_nodes %}
+## {{ node }}
+
+{% if hostvars[node] is defined and (hostvars[node].puc2_probe is defined) %}
+```
+{{ hostvars[node].puc2_probe.stdout | default('(no output)') }}
+```
+{% else %}
+_Not probed — node absent from this run (limit it in, or it is not in inventory)._
+{% endif %}
+
+{% endfor %}
+## How to read this
+
+- **BROWSERS** — any `found:` line means a browser is installed on that node. No
+  line means none is installed; a desktop without a browser cannot open the
+  dashboards.
+- **DESKTOP** — `systemd default: graphical.target`, a non-empty `xsessions`
+  list, or a running `Xorg`/`Xwayland` each indicate a graphical desktop is
+  available. `multi-user.target` with empty xsessions and no X means terminal
+  only.
+- **DASHBOARDS** — an HTTP code other than `000` means that dashboard answered
+  from this node. `000` means unreachable (wrong network, service down, or the
+  node has no route).
+
+If **kali** shows a browser and a desktop and non-`000` codes for all four
+dashboards, the analyst-workstation decision in ACCESS-MATRIX.md holds. If it
+shows no browser, install one on kali via an overlay role (never the
+integrations substrate) — or fall back to the console path, which is guaranteed
+for every level regardless of this result.

@@ -1,0 +1,53 @@
+---
+# =============================================================================
+# role: puc2_access_probe   (hosts: all — read-only, opt-in, never)
+#
+# Fills the "CONFIRM IN SANDBOX" cells of diagnostics/ACCESS-MATRIX.md with live
+# data: per node, whether a browser is installed, whether a graphical session is
+# available, and which SOC dashboards the node can reach. Installs nothing.
+# =============================================================================
+
+- name: Refuse to run unless explicitly enabled
+  ansible.builtin.assert:
+    that:
+      - puc2_access_probe_enabled | bool
+    fail_msg: >-
+      puc2_access_probe is opt-in. Re-run with -e puc2_access_probe_enabled=true.
+    success_msg: "Access probe enabled — reading each node (read-only)."
+  run_once: true
+
+- name: Probe this node for browser, desktop and dashboard reachability
+  ansible.builtin.shell: |
+    set +e
+    echo "BROWSERS:"
+    for b in {{ puc2_access_browsers | join(' ') }}; do
+      p=$(command -v "$b" 2>/dev/null) && echo "  found: $b ($p)"
+    done
+    echo "DESKTOP:"
+    echo "  systemd default: $(systemctl get-default 2>/dev/null || echo '?')"
+    echo "  xsessions: $(ls -1 /usr/share/xsessions/ 2>/dev/null | tr '\n' ' ' || echo none)"
+    echo "  Xorg/wayland running: $(pgrep -x Xorg >/dev/null 2>&1 && echo Xorg; pgrep -x Xwayland >/dev/null 2>&1 && echo Xwayland; [ -z "$(pgrep -x Xorg)$(pgrep -x Xwayland)" ] && echo no)"
+    echo "DASHBOARDS:"
+    {% for d in puc2_access_dashboards %}
+    lbl="{{ d.split('|')[0] }}"; url="{{ d.split('|')[1] }}"
+    code=$(curl -sk -o /dev/null -m 8 -w '%{http_code}' "$url" 2>/dev/null || echo 000)
+    echo "  $lbl -> HTTP $code"
+    {% endfor %}
+  args:
+    executable: /bin/bash
+  register: puc2_probe
+  changed_when: false
+  failed_when: false
+
+- name: Show this node's probe result
+  ansible.builtin.debug:
+    var: puc2_probe.stdout_lines
+
+- name: Write the aggregated probe results
+  ansible.builtin.template:
+    src: ACCESS-PROBE-RESULTS.md.j2
+    dest: "{{ playbook_dir }}/../diagnostics/ACCESS-PROBE-RESULTS.md"
+    mode: '0644'
+  delegate_to: localhost
+  become: false
+  run_once: true

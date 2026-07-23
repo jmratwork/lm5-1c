@@ -211,3 +211,25 @@
   roles:
     - role: puc2_diag
       tags: [puc2_diag, puc2-diag, never]
+
+# =============================================================================
+# Access probe — read-only, opt-in, NEVER part of a build (tagged `never`).
+#
+#   ansible-playbook provisioning/playbook.yml \
+#     --tags puc2_access_probe -e puc2_access_probe_enabled=true
+#
+# Reports, per node, whether a browser and desktop are present and which SOC
+# dashboards it can reach, and writes diagnostics/ACCESS-PROBE-RESULTS.md. Fills
+# the "CONFIRM IN SANDBOX" cells of ACCESS-MATRIX.md with live data. Installs
+# nothing; cannot fail a build.
+# =============================================================================
+- name: PUC2 2c — probe each node for desktop, browser and dashboard reachability
+  hosts: all
+  become: true
+  gather_facts: true
+  vars_files:
+    - group_vars/puc2_2c.yml
+    - "{{ lookup('first_found', ['group_vars/vault.yml', 'group_vars/vault.yml.example']) }}"
+  roles:
+    - role: puc2_access_probe
+      tags: [puc2_access_probe, puc2-access-probe, never]

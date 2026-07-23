@@ -1,0 +1,37 @@
+---
+# role: puc2_access_probe
+# Read-only, opt-in (never-tagged) probe that answers the one question the repo
+# cannot: which nodes actually offer a graphical desktop with a browser that
+# reaches the SOC dashboards. It installs nothing and changes nothing.
+#
+#   ansible-playbook provisioning/playbook.yml \
+#     --tags puc2_access_probe -e puc2_access_probe_enabled=true
+#
+# Writes diagnostics/ACCESS-PROBE-RESULTS.md from live data, to fill the
+# "CONFIRM IN SANDBOX" cells of diagnostics/ACCESS-MATRIX.md.
+
+puc2_access_probe_enabled: false
+
+# Nodes to report on, in display order.
+puc2_access_nodes:
+  - kali
+  - docker-server
+  - ng-siem
+  - victim
+  - router
+
+# Dashboards the analyst must reach, as "label|url".
+puc2_access_dashboards:
+  - "NG-SIEM (Wazuh)|https://10.0.16.70"
+  - "CTI-SS (MISP)|https://10.0.16.60:8443"
+  - "CICMS (DFIR-IRIS)|https://10.0.16.60:8083"
+  - "NG-SOAR|http://10.0.16.60:8080"
+
+# Browser executables to look for.
+puc2_access_browsers:
+  - firefox
+  - firefox-esr
+  - chromium
+  - chromium-browser
+  - google-chrome
+  - epiphany
