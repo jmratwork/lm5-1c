@@ -339,8 +339,13 @@ publishes; `provisioning/group_vars/vault.yml` (git-ignored, see
 > ⚠️ **Rotation required — inherited from the upstream public repository.**
 > The vendored `integrations` roles contain hardcoded credentials that are
 > public on GitHub and must be rotated at the source:
-> a Docker Hub PAT (`dckr_pat_…`, in `roles/kali` and `roles/docker_server`),
-> a DFIR-IRIS API key (`c-8vTC8nDC…`, in `roles/docker_server`), and a password
-> hash for the `ubuntu` user. They are reproduced here **verbatim and
-> unmodified on purpose**, because the substrate roles must stay byte-identical
-> for the reuse guarantee above to hold. Fix them upstream, not here.
+> a Docker Hub PAT (`dckr_pat_…`, in `roles/docker_server`) and a password hash
+> for the `ubuntu` user. The DFIR-IRIS API key that used to sit beside them has
+> been removed — see `validation/SECURITY_ROTATION.md`; it is still recoverable
+> from git history and must be treated as compromised.
+>
+> These were left verbatim on the argument that the substrate had to stay
+> byte-identical. **That argument no longer holds**: the component trim above
+> edits `docker_server` and `ng-siem`, so divergence is already accepted. The
+> remaining secrets can therefore be moved to `ansible-vault` here as well as
+> fixed upstream — a follow-up, not a constraint.
