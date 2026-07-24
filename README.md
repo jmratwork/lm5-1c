@@ -21,29 +21,60 @@ which is vendored here **byte-identical**:
 |---|---|
 | `topology.yml` | the tested flat `testnet` 10.0.16.0/24 |
 | `provisioning/roles/all/` | `/etc/hosts` wiring, sandbox command logging |
-| `provisioning/roles/docker_server/` | MISP, DFIR-IRIS, NG-SOAR, RITA, MCP servers, SACTI; publishes `misp_api_key`, `iris_api_key`, `docker_server_internal_ip` |
+| `provisioning/roles/docker_server/` | MISP, DFIR-IRIS, NG-SOAR; publishes `misp_api_key`, `iris_api_key`, `docker_server_internal_ip` |
 | `provisioning/roles/ng-siem/` | the `siemng` image (Wazuh + SPHYNX stack); injects the MISP and `custom-iris` integrations into `ossec.conf` |
-| `provisioning/roles/kali/` | Caldera, Metasploit, OpenVAS, Docker |
 | `provisioning/roles/victim/` | Wazuh agent, already enrolled against `ng-siem` |
-| `provisioning/roles/man/` | syslog-ng on the management node |
 
-**These roles are never modified.** Sub Case 2c is layered on top as an
-**additive overlay** of `*_2c` roles that run *after* them and use their own
-`blockinfile` markers, so the substrate's `ossec.conf` integrations are never
-clobbered. Verify with:
+Sub Case 2c is layered on top as an **additive overlay** of `*_2c` roles that run
+*after* them and use their own `blockinfile` markers, so the substrate's
+`ossec.conf` integrations are never clobbered.
+
+### Trimmed to the UML's components
+
+The substrate provisions a broader NG-SOC platform than this sub case uses. The
+UML lifelines are Cyber Range, Lab Hosts/Endpoints, NG-SIEM, CTI-SS, CICMS and
+NG-SOAR, so **Wazuh, MISP, DFIR-IRIS and NG-SOAR stay and the rest is switched
+off** — 43 tasks, by `when:` flag rather than deletion, so the roles stay
+re-syncable and any component returns by flipping one value in
+`group_vars/puc2_2c.yml`:
+
+| Flag (all `false`) | Component | Tasks |
+|---|---|---|
+| `puc2_deploy_rita` | RITA network traffic analysis | 7 |
+| `puc2_deploy_mcp_servers` | MISP/IRIS MCP bridges for AI agents | 14 |
+| `puc2_deploy_sacti` | SACTI + liboqs post-quantum CTI aggregation | 16 |
+| `puc2_deploy_anythingllm` | AnythingLLM local LLM chat UI | 4 |
+| `puc2_deploy_portainer` | Portainer Docker UI | 1 |
+| `puc2_deploy_pandora` | Pandora UI container on `ng-siem` | 1 |
+
+Two tasks inside the MCP block are deliberately **not** gated: those writing
+`/etc/misp-mcp.env` and `/etc/iris-mcp.env`, because `puc2_keys` and `puc2_diag`
+read the API keys from them. They outlive their namesake; only the servers are
+gone, which makes the filenames a misnomer.
+
+The `kali` and `man` **roles are deleted**: kali installed Caldera and offensive
+tooling, and the UML has no attacker host (the Cyber Range injects on the
+endpoint); `man` configured syslog-ng on a management node. The **`kali` node
+remains** — `puc2_c2_ip` derives from its address and it is the candidate
+analyst workstation. `man` and `proxy-jump` are **platform-provided nodes, absent
+from `topology.yml`**, so they still exist; only our configuration of them is
+gone, and the `hostvars["man"]` test that selects the syslog forwarding port is
+left intact on purpose.
+
+So the substrate is **no longer byte-identical**. To see exactly how it differs:
 
 ```bash
 git clone --depth 1 -b integrations https://github.com/NG-SOC-eu/ng-soc-ansible.git /tmp/subs
-for r in all docker_server ng-siem kali victim man; do
+for r in all docker_server ng-siem victim; do
   diff -r /tmp/subs/provisioning/roles/$r provisioning/roles/$r
 done
 diff /tmp/subs/topology.yml topology.yml
 ```
 
-Two documented deltas outside those roles: `provisioning/requirements.yml`
-merges the substrate's `sandbox-logging` role requirement with the collections
-its roles depend on, and one trailing space was stripped from
-`provisioning/playbook.yml` so `yamllint` passes.
+Expect only `when:` lines in `docker_server` and `ng-siem`. Other documented
+deltas: `provisioning/requirements.yml` merges the substrate's `sandbox-logging`
+requirement with the collections its roles need, and one trailing space was
+stripped from `provisioning/playbook.yml` so `yamllint` passes.
 
 ---
 
