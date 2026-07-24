@@ -67,12 +67,19 @@ echo "  Cases in CICMS (${COUNT} total):"
 printf '%s' "${ROWS}" | jq -r '.[] | "    id=\(.case_id)  name=\(.case_name // .name // "?")"'
 
 echo
+# The RESULT line is the machine-readable verdict the deployment gate asserts on.
+# It must be impossible to satisfy from the failure path: a gate that greps the
+# bare SOC id passes on the "NOT found" message too, which is exactly how this
+# helper once reported a missing case as green.
 if [ -n "${scenario_id}" ]; then
     echo "  Scenario case  : ${WANT_SOC_ID}  (case id ${scenario_id})   <-- L14 answer"
     echo "  The WAZUH-... cases beside it are the custom-iris alert-derived cases."
+    echo "RESULT: FOUND ${WANT_SOC_ID} case_id=${scenario_id}"
 else
-    echo "  Scenario case ${WANT_SOC_ID} NOT found. The WAZUH-... cases are the"
-    echo "  auto-created alert cases; the scenario case is seeded at provision time"
-    echo "  — if it is missing, provisioning's CICMS step did not complete." >&2
+    echo "RESULT: NOT_FOUND"
+    echo "  The scenario case is missing. The cases listed above are the initial" >&2
+    echo "  demo case and the custom-iris alert-derived ones; the scenario case is" >&2
+    echo "  seeded at provision time, so provisioning's CICMS step did not create" >&2
+    echo "  it. Training level L14 is unanswerable until it does." >&2
     exit 1
 fi

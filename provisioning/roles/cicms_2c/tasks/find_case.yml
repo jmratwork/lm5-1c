@@ -93,12 +93,16 @@
     - not (puc2_case_found | default(false))
     - puc2_case_rows | selectattr('case_soc_id', 'defined') | list | length == 0
 
-- name: Record a match found by reading the cases
+# Hoisted out of the task below so the match can be TESTED before anything is
+# recorded. It used to live in that task's `vars:` while the `when:` asked only
+# whether the loop had RUN — so a fallback that read every case and matched none
+# still set puc2_case_found: true, with an empty case id as the only tell. That
+# false positive then skipped "Create the PUC2 2c scenario case" (when: not
+# puc2_case_found), so the case was never created, and the confirming lookup
+# repeated the same lie. L14 became unanswerable while three checks reported
+# green. A lookup must never report found without a hit to point at.
+- name: Collect the cases whose SOC id matches
   ansible.builtin.set_fact:
-    puc2_case_found: true
-    puc2_case_found_id: "{{ (puc2_case_hits | first).json.data.case_id | default('') }}"
-    puc2_case_lookup: "case_soc_id read from /manage/cases/<id> (the list does not carry it)"
-  vars:
     puc2_case_hits: >-
       {{ puc2_case_details.results | default([])
          | selectattr('json', 'defined')
@@ -108,6 +112,15 @@
   when:
     - not (puc2_case_found | default(false))
     - puc2_case_details.results is defined
+
+- name: Record a match found by reading the cases
+  ansible.builtin.set_fact:
+    puc2_case_found: true
+    puc2_case_found_id: "{{ (puc2_case_hits | first).json.data.case_id | default('') }}"
+    puc2_case_lookup: "case_soc_id read from /manage/cases/<id> (the list does not carry it)"
+  when:
+    - not (puc2_case_found | default(false))
+    - puc2_case_hits | default([]) | length > 0
 
 - name: Record that the case is absent
   ansible.builtin.set_fact:

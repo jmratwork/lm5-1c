@@ -207,8 +207,15 @@
       - puc2_mitre_initial_access in (puc2_pf_cti_lookup.stdout | default(''))
       - puc2_mitre_execution in (puc2_pf_cti_lookup.stdout | default(''))
       - puc2_c2_domain in (puc2_pf_cti_lookup.stdout | default(''))
-      # L14: the CICMS helper identifies the scenario case by its SOC id
-      - puc2_case_soc_id in (puc2_pf_case_lookup.stdout | default(''))
+      # L14: the CICMS helper identifies the scenario case.
+      #
+      # Asserted on the helper's RESULT line and its exit code — NOT on the bare
+      # SOC id appearing somewhere in stdout. That earlier form passed on a run
+      # where the case did not exist, because the helper's own "CASE-PUC2-2C NOT
+      # found" message contains the string being searched for. A check must not
+      # be satisfiable by the text of its own failure.
+      - puc2_pf_case_lookup.rc == 0
+      - ('RESULT: FOUND ' ~ puc2_case_soc_id) in (puc2_pf_case_lookup.stdout | default(''))
       # Credentials published inside the sandbox as a 0600 root file
       - puc2_pf_console_files.results[2].stat.exists
       - puc2_pf_console_files.results[2].stat.mode == '0600'
@@ -225,8 +232,12 @@
       {{ puc2_c2_domain in (puc2_pf_cti_lookup.stdout | default('')) }}.
       case_lookup.sh present:
       {{ puc2_pf_console_files.results[1].stat.exists | default(false) }},
-      prints {{ puc2_case_soc_id }}:
-      {{ puc2_case_soc_id in (puc2_pf_case_lookup.stdout | default('')) }}.
+      exit code {{ puc2_pf_case_lookup.rc | default('not run') }}, reports the
+      case FOUND:
+      {{ ('RESULT: FOUND ' ~ puc2_case_soc_id) in (puc2_pf_case_lookup.stdout | default('')) }}
+      (if this is false with the helper present, the scenario case is missing
+      from CICMS — check that cicms_2c actually CREATED it rather than skipping
+      creation on a false "already exists").
       Credentials file {{ puc2_cred_file | default('/opt/puc2/CREDENTIALS.txt') }}
       present: {{ puc2_pf_console_files.results[2].stat.exists | default(false) }},
       mode: {{ puc2_pf_console_files.results[2].stat.mode | default('?') }}.
