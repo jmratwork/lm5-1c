@@ -29,8 +29,16 @@ auth=(-H "Authorization: Bearer ${IRIS_API_KEY}" -H "Content-Type: application/j
 echo "[CICMS] Listing DFIR-IRIS cases"
 LIST=$(curl -sk "${auth[@]}" "${IRIS_URL}/manage/cases/list")
 
-# Rows live at .data.data on some versions, .data on others.
-ROWS=$(printf '%s' "${LIST}" | jq -c '(.data.data // .data // [])')
+# Rows live at .data on some IRIS versions and at .data.data on others, so the
+# shape has to be TESTED, not guessed with `//`. jq raises "Cannot index array
+# with string" the moment `.data.data` meets an array `.data` — the error aborts
+# the whole expression and `//` never gets its turn. (The Ansible-side find_case
+# survives the same ambiguity only because Jinja yields undefined there instead
+# of raising, which is why this bug did not show up on that path.)
+ROWS=$(printf '%s' "${LIST}" | jq -c '
+    if   (.data | type) == "array"  then .data
+    elif (.data | type) == "object" and ((.data.data | type) == "array") then .data.data
+    else [] end')
 COUNT=$(printf '%s' "${ROWS}" | jq 'length')
 if [ "${COUNT}" = "0" ] || [ -z "${COUNT}" ]; then
     echo "[CICMS] No cases returned. Is provisioning finished?" >&2
