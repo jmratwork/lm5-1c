@@ -35,8 +35,25 @@ Both are now read from ansible-vault and both degrade safely when unset:
   console prompt**; SSH-key access is unaffected either way. Generate with
   `mkpasswd --method=yescrypt`.
 
-Fill both in `provisioning/group_vars/vault.yml` (git-ignored) and encrypt it —
-see the DFIR-IRIS section below for the exact commands.
+### Getting a secret to the sandbox at all
+
+`vault.yml` is git-ignored, so it **never reaches the deployment**: the range
+clones this repository and receives only `vault.yml.example`, with its empty
+values. Writing a PAT into a local `vault.yml` therefore fixes nothing on the
+sandbox. And this repository is **public**, so committing a plaintext secret is
+not an option either. Two routes actually work:
+
+1. **Extra var at deploy time** — pass it to the run rather than storing it:
+   `ansible-playbook … -e vault_dockerhub_pat=dckr_pat_…`. Nothing lands in the
+   repo. Needs the CyberRangeCZ job to accept extra vars.
+2. **Commit an ansible-vault ENCRYPTED `vault.yml`** — encrypted files are safe
+   in a public repo — and supply the vault password to the job
+   (`--vault-password-file` or `ANSIBLE_VAULT_PASSWORD_FILE`). This needs
+   `vault.yml` removed from `.gitignore`, and it is only safe once the file is
+   confirmed encrypted.
+
+Either way, **rotate first**. The exposed PAT is public in the upstream
+substrate; re-using it just moves a burnt credential around.
 
 ## DFIR-IRIS API key
 
@@ -83,8 +100,10 @@ A secret that has been in git history and in logs must be treated as
 
 4. **Decide on git history.** The old key is still in historical commits. Options,
    in order of increasing disruption:
-   - Accept it, on the strength of step 1 having made the key useless. This is
-     sufficient if the key is truly revoked and the repository is private.
+   - Accept it, on the strength of step 1 having made the key useless. **Note
+     that `jmratwork/lm5-1c` is a PUBLIC repository**, so "nobody will look" is
+     not part of the argument: every historical commit is world-readable and
+     indexable. Accepting is only defensible once the key is genuinely revoked.
    - Purge it from history with `git filter-repo` (or BFG) and force-push. This
      rewrites shared history and must be coordinated with everyone who has a
      clone — do it deliberately, not as a side effect of this change.
