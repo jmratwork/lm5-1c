@@ -43,9 +43,21 @@ values. Writing a PAT into a local `vault.yml` therefore fixes nothing on the
 sandbox. And this repository is **public**, so committing a plaintext secret is
 not an option either. Two routes actually work:
 
-1. **Extra var at deploy time** — pass it to the run rather than storing it:
-   `ansible-playbook … -e vault_dockerhub_pat=dckr_pat_…`. Nothing lands in the
-   repo. Needs the CyberRangeCZ job to accept extra vars.
+1. **Extra var at deploy time — CHOSEN ROUTE.** Pass it to the run rather than
+   storing it anywhere:
+
+   ```bash
+   ansible-playbook provisioning/playbook.yml \
+     -e vault_dockerhub_pat=dckr_pat_NEW... \
+     -e vault_dockerhub_user=demongsoc
+   ```
+
+   Nothing lands in the repo, and no code change was needed: every consumer
+   reads the value with `| default('')`, and Ansible gives `-e` the highest
+   precedence, above `vars_files`. The same mechanism carries
+   `vault_ubuntu_password_hash` if a console password is wanted. It needs the
+   CyberRangeCZ job to accept extra vars — if it turns out it cannot, fall back
+   to route 2.
 2. **Commit an ansible-vault ENCRYPTED `vault.yml`** — encrypted files are safe
    in a public repo — and supply the vault password to the job
    (`--vault-password-file` or `ANSIBLE_VAULT_PASSWORD_FILE`). This needs

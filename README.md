@@ -356,5 +356,17 @@ publishes; `provisioning/group_vars/vault.yml` (git-ignored, see
 > alone rather than blanked.
 >
 > Removing them here does **not** un-publish them: the PAT and the hash are
-> public in the upstream substrate and the IRIS key is in this repo's history.
-> All three must be rotated — `validation/SECURITY_ROTATION.md` has the steps.
+> public in the upstream substrate and the IRIS key is in this repo's history —
+> and **this repository is public**. All three must be rotated;
+> `validation/SECURITY_ROTATION.md` has the steps.
+>
+> **Supplying the Docker Hub PAT.** Authenticated pulls are required in practice:
+> without them the range hits Docker Hub's anonymous rate limit and the DFIR-IRIS
+> images fail to pull with a 429. A local `group_vars/vault.yml` will not do it —
+> it is git-ignored, so the sandbox, which deploys by cloning this repo, never
+> receives it. Pass it on the deployment command instead:
+>
+> ```bash
+> ansible-playbook provisioning/playbook.yml \
+>   -e vault_dockerhub_pat=dckr_pat_NEW... -e vault_dockerhub_user=demongsoc
+> ```

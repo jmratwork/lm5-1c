@@ -34,9 +34,17 @@ vault_victim_new_password_hash: ""
 # --- Docker Hub (REQUIRED in practice) ---------------------------------------
 # Leave empty and the login task is skipped and images pull anonymously — which
 # on this range HITS Docker Hub's anonymous rate limit and fails the deployment
-# with a 429 while pulling DFIR-IRIS's images. Set a working PAT. The one that
-# used to be hardcoded in roles/docker_server is public on GitHub: revoke it and
-# issue a new one, do not reuse it.
+# with a 429 while pulling DFIR-IRIS's images.
+#
+# NOTE: setting it HERE does not reach the sandbox. This file's real counterpart,
+# group_vars/vault.yml, is git-ignored, so the range — which deploys by cloning
+# this repository — never sees it. Pass the PAT on the deployment command
+# instead, where it also stays out of a public repo:
+#
+#   ansible-playbook provisioning/playbook.yml -e vault_dockerhub_pat=dckr_pat_...
+#
+# The PAT that used to be hardcoded in roles/docker_server is public on GitHub:
+# revoke it and issue a new one, do not reuse it.
 vault_dockerhub_user: ""
 vault_dockerhub_pat: ""
 

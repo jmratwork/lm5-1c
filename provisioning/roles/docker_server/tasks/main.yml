@@ -169,9 +169,11 @@
     msg: >-
       No vault_dockerhub_pat is set, so the Docker Hub login was skipped and every
       image will be pulled anonymously. If this run later dies on a '429 Too Many
-      Requests' while pulling an image, THIS is why - put a valid PAT in
-      provisioning/group_vars/vault.yml (see validation/SECURITY_ROTATION.md; the
-      PAT that used to be hardcoded here is public and must not be reused).
+      Requests' while pulling an image, THIS is why. Supply a PAT as an extra var
+      on the deployment command:  -e vault_dockerhub_pat=dckr_pat_...  A local
+      group_vars/vault.yml does NOT work: it is git-ignored, so it never reaches
+      the sandbox. See validation/SECURITY_ROTATION.md - and rotate first, the
+      PAT that used to be hardcoded here is public and must not be reused.
   when: (vault_dockerhub_pat | default('')) | length == 0
 
 - name: Download MISP docker
