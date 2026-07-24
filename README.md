@@ -339,13 +339,15 @@ publishes; `provisioning/group_vars/vault.yml` (git-ignored, see
 > ⚠️ **Rotation required — inherited from the upstream public repository.**
 > The vendored `integrations` roles contain hardcoded credentials that are
 > public on GitHub and must be rotated at the source:
-> a Docker Hub PAT (`dckr_pat_…`, in `roles/docker_server`) and a password hash
-> for the `ubuntu` user. The DFIR-IRIS API key that used to sit beside them has
-> been removed — see `validation/SECURITY_ROTATION.md`; it is still recoverable
-> from git history and must be treated as compromised.
+> a Docker Hub PAT (`dckr_pat_…`) and a password hash for the `ubuntu` user.
 >
-> These were left verbatim on the argument that the substrate had to stay
-> byte-identical. **That argument no longer holds**: the component trim above
-> edits `docker_server` and `ng-siem`, so divergence is already accepted. The
-> remaining secrets can therefore be moved to `ansible-vault` here as well as
-> fixed upstream — a follow-up, not a constraint.
+> **All three are now out of this tree.** The DFIR-IRIS key was deleted with the
+> dead task files that held it; the PAT and the password hash are read from
+> `ansible-vault` (`vault_dockerhub_pat`, `vault_ubuntu_password_hash`) and both
+> degrade safely when unset — the Docker Hub login is skipped and images pull
+> anonymously, and the password task omits the field so the account is left
+> alone rather than blanked.
+>
+> Removing them here does **not** un-publish them: the PAT and the hash are
+> public in the upstream substrate and the IRIS key is in this repo's history.
+> All three must be rotated — `validation/SECURITY_ROTATION.md` has the steps.

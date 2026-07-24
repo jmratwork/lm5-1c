@@ -30,3 +30,18 @@ vault_iris_bootstrap_key: ""
 # --- containment action (UML step 10). Empty = only expire the password.  ----
 #   mkpasswd --method=sha-512
 vault_victim_new_password_hash: ""
+
+# --- Docker Hub (optional) ---------------------------------------------------
+# Authenticated pulls only raise the rate limit. Leave empty and the login task
+# is skipped entirely; images are pulled anonymously. The PAT that used to be
+# hardcoded in roles/docker_server is public on GitHub and must be revoked.
+vault_dockerhub_user: ""
+vault_dockerhub_pat: ""
+
+# --- Console password for the `ubuntu` account -------------------------------
+# Applied by roles/docker_server and roles/victim. Leave empty and the password
+# is LEFT UNTOUCHED (the task omits it) — set one if trainees need to log in at
+# the graphical console prompt rather than over SSH keys.
+#   mkpasswd --method=yescrypt
+# The hash that used to be hardcoded is public on GitHub and must be replaced.
+vault_ubuntu_password_hash: ""

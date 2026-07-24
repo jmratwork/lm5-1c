@@ -148,15 +148,15 @@ ansible-lint provisioning/
   renders a key.
 - **Inherited exposure — rotation required at the source.** The vendored
   substrate roles contain hardcoded credentials that are public on GitHub: a
-  Docker Hub PAT (`dckr_pat_…` in `roles/docker_server`) and a password hash for
-  the `ubuntu` user in `roles/docker_server` and `roles/victim`. The DFIR-IRIS
-  API key has since been removed from the tree (`validation/SECURITY_ROTATION.md`),
-  and the copy of the PAT in `roles/kali` went with that role when the component
-  trim deleted it.
-  They were reproduced verbatim on the argument that byte-identity is what makes
-  the substrate reuse auditable. **That argument has expired**: the component
-  trim edits `docker_server` and `ng-siem`, so the substrate already diverges and
-  the diff is documented in README instead. Moving the remaining two secrets to
-  `ansible-vault` here no longer hides anything — it is now the right fix, on top
-  of rotating them upstream.
+  Docker Hub PAT (`dckr_pat_…`) and a password hash for the `ubuntu` user.
+  **None of the three remains in the tree.** The DFIR-IRIS key went with the dead
+  task files that held it; the PAT and the hash are now read from `ansible-vault`
+  and both degrade safely when unset (the Docker Hub login is skipped, and the
+  password field is omitted rather than blanked).
+  They had been kept verbatim on the argument that byte-identity is what makes
+  the substrate reuse auditable. That argument expired with the component trim,
+  which already edits `docker_server` and `ng-siem` — the divergence is documented
+  in README instead. Scrubbing them here does not un-publish them: the PAT and
+  the hash are public upstream and the IRIS key is in this repo's history, so all
+  three still need rotating (`validation/SECURITY_ROTATION.md`).
   **Rotate them upstream in `ng-soc-ansible`, then re-vendor.**

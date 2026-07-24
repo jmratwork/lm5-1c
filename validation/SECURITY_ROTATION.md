@@ -1,6 +1,39 @@
-# Security follow-up — DFIR-IRIS API key rotation
+# Security follow-up — credential rotation
 
 **Status: action required from an operator with access to the running sandbox.**
+
+Three secrets are covered here. All three were committed in cleartext and must
+be treated as compromised; removing them from the tree does not un-publish them.
+
+| Secret | Was in | Now | Exposure |
+|---|---|---|---|
+| DFIR-IRIS API key | 3 dead task files of `docker_server` | removed | this repo's git history, build logs |
+| Docker Hub PAT | `roles/docker_server` (and the deleted `roles/kali`) | `vault_dockerhub_pat` | **public on GitHub** in the upstream substrate |
+| `ubuntu` password hash | `roles/docker_server`, `roles/victim` | `vault_ubuntu_password_hash` | **public on GitHub** in the upstream substrate |
+
+The last two are worse than the first: they are public in
+`NG-SOC-eu/ng-soc-ansible@integrations`, so rotating them here is not enough —
+they must also be fixed upstream, or every sandbox built from that substrate
+keeps shipping them.
+
+## Docker Hub PAT and the ubuntu password hash
+
+Both are now read from ansible-vault and both degrade safely when unset:
+
+- **Docker Hub** — the login task is skipped when `vault_dockerhub_pat` is empty.
+  Images are then pulled anonymously, subject to Docker Hub's rate limit. Revoke
+  the exposed PAT (`dckr_pat_OzOR…`) in the `demongsoc` account; issue a new one
+  only if the rate limit actually bites.
+- **`ubuntu` password** — the task omits the password when
+  `vault_ubuntu_password_hash` is empty, so the account's existing password is
+  left alone rather than blanked. **Set one if trainees log in at the graphical
+  console prompt**; SSH-key access is unaffected either way. Generate with
+  `mkpasswd --method=yescrypt`.
+
+Fill both in `provisioning/group_vars/vault.yml` (git-ignored) and encrypt it —
+see the DFIR-IRIS section below for the exact commands.
+
+## DFIR-IRIS API key
 
 ## What happened
 

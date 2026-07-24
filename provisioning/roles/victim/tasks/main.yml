@@ -2,8 +2,12 @@
 - name: Set password on User ubuntu
   ansible.builtin.user:
     name: ubuntu
-    password: "$y$j9T$r1LaddN0V6MPqFmZl5U7C/$4xbYJL5zi/YFU85SL/gXz5UXs3JAXV5dU5CUvTN/WN9"
+    # Sourced from ansible-vault. omit = leave the account password alone when
+    # none is provided, rather than setting an empty one. The literal that used
+    # to be here is public on GitHub: see validation/SECURITY_ROTATION.md.
+    password: "{{ vault_ubuntu_password_hash | default(omit) }}"
     update_password: always
+  no_log: true
 
 - name: Set sequential hostname
   hostname:

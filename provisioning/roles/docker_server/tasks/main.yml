@@ -2,8 +2,12 @@
 - name: Set password on User ubuntu
   ansible.builtin.user:
     name: ubuntu
-    password: "$y$j9T$r1LaddN0V6MPqFmZl5U7C/$4xbYJL5zi/YFU85SL/gXz5UXs3JAXV5dU5CUvTN/WN9"
+    # Sourced from ansible-vault. omit = leave the account password alone when
+    # none is provided, rather than setting an empty one. The literal that used
+    # to be here is public on GitHub: see validation/SECURITY_ROTATION.md.
+    password: "{{ vault_ubuntu_password_hash | default(omit) }}"
     update_password: always
+  no_log: true
 
 - name: Save docker-server internal (topology) IP fact
   ansible.builtin.set_fact:
@@ -144,10 +148,16 @@
 #    name: db-net
 #    state: present
 
+# Authenticated pulls only raise the Docker Hub rate limit; they are not required.
+# With no PAT in vault this is skipped and images are pulled anonymously, which is
+# why it is guarded rather than left to fail on an empty password. The literal PAT
+# that used to be here is public on GitHub: see validation/SECURITY_ROTATION.md.
 - name: Login to Docker Hub
   community.docker.docker_login:
-    username: demongsoc
-    password: "dckr_pat_OzOR3rfLKW3QcFAFUfAi_Je_5_Q"
+    username: "{{ vault_dockerhub_user | default('') }}"
+    password: "{{ vault_dockerhub_pat | default('') }}"
+  when: (vault_dockerhub_pat | default('')) | length > 0
+  no_log: true
 
 - name: Download MISP docker
   git:
