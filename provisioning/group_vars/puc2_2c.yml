@@ -148,3 +148,21 @@ puc2_delivery_paths:
   - "/home/victim/Downloads/invoice.exe"
   - "/tmp/invoice.exe"
   - "/home/victim/Downloads/statement.exe"
+
+# ---- Component trim: deploy only what the PUC2 2c UML actually uses ---------
+# The integrations substrate provisions a broader NG-SOC platform than this sub
+# case needs. The UML lifelines are Cyber Range, Lab Hosts/Endpoints, NG-SIEM,
+# CTI-SS, CICMS and NG-SOAR — so Wazuh, MISP, DFIR-IRIS and NG-SOAR stay and
+# everything below is switched off. These are flags rather than deletions so the
+# substrate roles remain re-syncable with ng-soc-ansible@integrations and any of
+# them can be brought back by flipping one value.
+#
+# NOTE: the two tasks that write /etc/misp-mcp.env and /etc/iris-mcp.env are
+# deliberately NOT gated. They survive their namesake because puc2_keys and
+# puc2_diag read the API keys from those files; only the MCP servers are gone.
+puc2_deploy_rita: false          # network traffic analysis — no UML lifeline
+puc2_deploy_mcp_servers: false   # MISP/IRIS MCP bridges for AI agents
+puc2_deploy_portainer: false     # Docker management UI
+puc2_deploy_anythingllm: false   # local LLM chat UI
+puc2_deploy_sacti: false         # post-quantum CTI aggregation (liboqs)
+puc2_deploy_pandora: false       # Pandora UI container on ng-siem

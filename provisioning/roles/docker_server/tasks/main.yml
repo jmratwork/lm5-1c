@@ -82,6 +82,7 @@
     dest: "/opt/rita-docker.zip"
     remote_src: true
     mode: "0644"
+  when: puc2_deploy_rita | default(false) | bool
 
 - name: Copy DFIR-IRIS zip from SMB to destination
   copy:
@@ -115,6 +116,7 @@
     dest: "/opt/"
     remote_src: true
     extra_opts: ["-o"]
+  when: puc2_deploy_rita | default(false) | bool
 
 - name: Unzip rita frontend dist.zip
   ansible.builtin.unarchive:
@@ -122,6 +124,7 @@
     dest: "/opt/rita-docker/frontend-container/rita-frontend"
     remote_src: true
     extra_opts: ["-o"]
+  when: puc2_deploy_rita | default(false) | bool
 
 - name: Unzip DFIR-IRIS Docker
   unarchive:
@@ -134,6 +137,7 @@
   community.docker.docker_network:
     name: rita-network
     state: present
+  when: puc2_deploy_rita | default(false) | bool
 
 #- name: Ensure NG-SOAR network exists
 #  community.docker.docker_network:
@@ -199,6 +203,7 @@
       - "/var/run/docker.sock:/var/run/docker.sock"
       - "portainer_data:/data"
   register: portainer_output
+  when: puc2_deploy_portainer | default(false) | bool
 
 - name: Build and run RITA backend services
   community.docker.docker_compose_v2:
@@ -206,6 +211,7 @@
     state: present
     build: always
   register: backend_compose_output
+  when: puc2_deploy_rita | default(false) | bool
 
 - name: Build and run RITA frontend services
   community.docker.docker_compose_v2:
@@ -214,12 +220,14 @@
     build: always
   register: frontend_compose_output
     
+  when: puc2_deploy_rita | default(false) | bool
 - name: Build and run RITA tools services
   community.docker.docker_compose_v2:
     project_src: "/opt/rita-docker/tools-containers"
     state: present
     build: always
   register: tools_compose_output
+  when: puc2_deploy_rita | default(false) | bool
 
 # Add it later
 #- name: Build and run DFIR-IRIS
@@ -586,12 +594,14 @@
   ansible.builtin.apt:
     name: python3-pip
     state: present
+  when: puc2_deploy_mcp_servers | default(false) | bool
 
 - name: Install misp-mcp Python package from GitHub
   ansible.builtin.pip:
     name: "git+https://github.com/misp/misp-mcp.git"
     executable: pip3
     extra_args: --break-system-packages --ignore-installed
+  when: puc2_deploy_mcp_servers | default(false) | bool
 
 - name: Write MISP MCP credentials file
   ansible.builtin.copy:
@@ -624,6 +634,7 @@
               enable_dns_rebinding_protection=False,
           )
           mcp.run(transport="streamable-http")
+  when: puc2_deploy_mcp_servers | default(false) | bool
 
 - name: Create misp-mcp systemd service
   ansible.builtin.copy:
@@ -642,16 +653,19 @@
 
       [Install]
       WantedBy=multi-user.target
+  when: puc2_deploy_mcp_servers | default(false) | bool
 
 - name: Reload systemd after creating misp-mcp service
   ansible.builtin.systemd:
     daemon_reload: yes
+  when: puc2_deploy_mcp_servers | default(false) | bool
 
 - name: Enable and start misp-mcp service
   ansible.builtin.service:
     name: misp-mcp
     enabled: yes
     state: started
+  when: puc2_deploy_mcp_servers | default(false) | bool
 
 ######################## DFIR-IRIS MCP Server (iris-mcp, HTTP mode) ###########
 
@@ -659,16 +673,19 @@
   ansible.builtin.apt:
     name: python3-venv
     state: present
+  when: puc2_deploy_mcp_servers | default(false) | bool
 
 - name: Clone iris-mcp repository
   git:
     repo: "https://github.com/srozb/iris-mcp.git"
     dest: /opt/iris-mcp
+  when: puc2_deploy_mcp_servers | default(false) | bool
 
 - name: Create iris-mcp Python virtual environment
   command:
     cmd: python3 -m venv /opt/iris-mcp/venv
     creates: /opt/iris-mcp/venv/bin/python3
+  when: puc2_deploy_mcp_servers | default(false) | bool
 
 - name: Install iris-mcp Python dependencies
   ansible.builtin.pip:
@@ -676,6 +693,7 @@
       - "dfir-iris-client>=2.0.4"
       - "fastmcp>=2.13.2"
     virtualenv: /opt/iris-mcp/venv
+  when: puc2_deploy_mcp_servers | default(false) | bool
 
 - name: Write DFIR-IRIS MCP credentials file
   ansible.builtin.copy:
@@ -707,6 +725,7 @@
 
       server = next(v for v in vars(mod).values() if isinstance(v, FastMCP))
       server.run(transport="http", host="0.0.0.0", port=9000)
+  when: puc2_deploy_mcp_servers | default(false) | bool
 
 - name: Create iris-mcp systemd service
   ansible.builtin.copy:
@@ -726,16 +745,19 @@
 
       [Install]
       WantedBy=multi-user.target
+  when: puc2_deploy_mcp_servers | default(false) | bool
 
 - name: Reload systemd after creating iris-mcp service
   ansible.builtin.systemd:
     daemon_reload: yes
+  when: puc2_deploy_mcp_servers | default(false) | bool
 
 - name: Enable and start iris-mcp service
   ansible.builtin.service:
     name: iris-mcp
     enabled: yes
     state: started
+  when: puc2_deploy_mcp_servers | default(false) | bool
 
 ######################## AnythingLLM (chat UI + native MCP client) ###########
 # Talks to the MCP servers DIRECTLY over streamable-HTTP (misp :9001, iris :9000)
@@ -746,6 +768,7 @@
     path: /opt/anythingllm/plugins
     state: directory
     mode: '0755'
+  when: puc2_deploy_anythingllm | default(false) | bool
 
 - name: Write AnythingLLM MCP servers config (MISP + DFIR-IRIS)
   ansible.builtin.copy:
@@ -758,6 +781,7 @@
           "dfir-iris": { "type": "streamable", "url": "http://host.docker.internal:9000/mcp" }
         }
       }
+  when: puc2_deploy_anythingllm | default(false) | bool
 
 - name: Ensure AnythingLLM storage is owned by the container user (uid 1000)
   ansible.builtin.file:
@@ -766,6 +790,7 @@
     owner: "1000"
     group: "1000"
     recurse: yes
+  when: puc2_deploy_anythingllm | default(false) | bool
 
 - name: Run AnythingLLM container (host port 4000)
   community.docker.docker_container:
@@ -785,6 +810,7 @@
       STORAGE_DIR: "/app/server/storage"
     volumes:
       - "/opt/anythingllm:/app/server/storage"
+  when: puc2_deploy_anythingllm | default(false) | bool
 
 ######################## SACTI (Secure Aggregated CTI) ########################
 
@@ -797,6 +823,7 @@
       - python3-venv
     state: present
     update_cache: yes
+  when: puc2_deploy_sacti | default(false) | bool
 
 - name: Clone liboqs (Open Quantum Safe C library)
   git:
@@ -804,6 +831,7 @@
     dest: /opt/liboqs
     version: main
     force: yes
+  when: puc2_deploy_sacti | default(false) | bool
 
 - name: Build and install liboqs shared library
   ansible.builtin.shell: |
@@ -817,17 +845,20 @@
     touch /opt/liboqs/.build_complete
   args:
     creates: /opt/liboqs/.build_complete
+  when: puc2_deploy_sacti | default(false) | bool
 
 - name: Clone SACTI repository
   git:
     repo: "https://github.com/COSSAS/SACTI.git"
     dest: /opt/sacti
     force: yes
+  when: puc2_deploy_sacti | default(false) | bool
 
 - name: Create SACTI Python virtual environment
   command:
     cmd: python3 -m venv /opt/sacti/venv
     creates: /opt/sacti/venv/bin/python3
+  when: puc2_deploy_sacti | default(false) | bool
 
 - name: Install SACTI Python dependencies
   ansible.builtin.pip:
@@ -836,6 +867,7 @@
     virtualenv_python: python3
   environment:
     LD_LIBRARY_PATH: /usr/local/lib
+  when: puc2_deploy_sacti | default(false) | bool
 
 - name: Patch SACTI config.py — set MISP_KEY
   ansible.builtin.lineinfile:
@@ -843,6 +875,7 @@
     regexp: '^MISP_KEY\s*='
     line: "MISP_KEY = '{{ misp_api_key }}'"
     state: present
+  when: puc2_deploy_sacti | default(false) | bool
 
 - name: Patch SACTI config.py — set MISP_URL
   ansible.builtin.lineinfile:
@@ -850,6 +883,7 @@
     regexp: '^MISP_URL\s*='
     line: "MISP_URL = 'https://{{ docker_server_internal_ip }}:8443'"
     state: present
+  when: puc2_deploy_sacti | default(false) | bool
 
 - name: Patch SACTI config.py — update Sig_Alg for liboqs 0.10+ (Dilithium2 → ML-DSA-44)
   ansible.builtin.lineinfile:
@@ -857,6 +891,7 @@
     regexp: '^Sig_Alg\s*='
     line: "Sig_Alg = 'ML-DSA-44'"
     state: present
+  when: puc2_deploy_sacti | default(false) | bool
 
 - name: Patch SACTI config.py — update Kem_Alg for liboqs 0.10+ (Kyber512 → ML-KEM-512)
   ansible.builtin.lineinfile:
@@ -864,6 +899,7 @@
     regexp: '^Kem_Alg\s*='
     line: "Kem_Alg = 'ML-KEM-512'"
     state: present
+  when: puc2_deploy_sacti | default(false) | bool
 
 - name: Run SACTI PKI setup (post-quantum key generation, one-time)
   ansible.builtin.shell: |
@@ -874,6 +910,7 @@
   environment:
     LD_LIBRARY_PATH: /usr/local/lib
     PYTHONPATH: /opt/sacti
+  when: puc2_deploy_sacti | default(false) | bool
 
 - name: Create SACTI aggregator systemd service
   ansible.builtin.copy:
@@ -894,6 +931,7 @@
 
       [Install]
       WantedBy=multi-user.target
+  when: puc2_deploy_sacti | default(false) | bool
 
 - name: Create SACTI party systemd template service
   ansible.builtin.copy:
@@ -914,16 +952,19 @@
 
       [Install]
       WantedBy=multi-user.target
+  when: puc2_deploy_sacti | default(false) | bool
 
 - name: Reload systemd after creating SACTI services
   ansible.builtin.systemd:
     daemon_reload: yes
+  when: puc2_deploy_sacti | default(false) | bool
 
 - name: Enable and start SACTI aggregator
   ansible.builtin.service:
     name: sacti-aggregator
     enabled: yes
     state: started
+  when: puc2_deploy_sacti | default(false) | bool
 
 - name: Enable and start SACTI parties 1-3
   ansible.builtin.service:
@@ -934,6 +975,7 @@
     - 1
     - 2
     - 3
+  when: puc2_deploy_sacti | default(false) | bool
 
 # ── Unmount ───────────────────────────────────────────────────────────────────
 

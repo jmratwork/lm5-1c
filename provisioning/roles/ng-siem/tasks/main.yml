@@ -81,6 +81,7 @@
     name: ui
     state: started
   register: ui_status
+  when: puc2_deploy_pandora | default(false) | bool
 
 - name: Start SIEM Backend Engine
   docker_container:
