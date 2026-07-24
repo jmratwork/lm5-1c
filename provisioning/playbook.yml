@@ -45,11 +45,12 @@
   roles:
     - ng-siem
 
-- name: Configure Kali
-  hosts: kali
-  become: yes
-  roles:
-    - kali
+# The `kali` NODE stays: its address is the scenario's C2 (puc2_c2_ip derives
+# from it) and it is the candidate analyst workstation for the dashboards. Its
+# ROLE is gone — it installed Caldera and offensive tooling, and the PUC2 2c UML
+# has no attacker host at all; the Cyber Range performs the injection directly
+# on the endpoint. The node still gets the `all` role and sandbox-logging, which
+# is where its rsyslog fix lives.
 
 - name: Configuring victim PC
   hosts: victim
@@ -63,11 +64,9 @@
   roles:
     - all
 
-- name: Changing syslog-ng on man
-  hosts: man
-  become: yes
-  roles:
-    - man
+# The `man` node and its syslog-ng role are removed entirely: neither appears in
+# the PUC2 2c UML. The node is gone from topology.yml too, so this play would
+# have no hosts to run against.
 
 - name: set up command logging
   hosts:
