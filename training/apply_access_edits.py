@@ -34,8 +34,10 @@ NEW_CONTENT = {
         "things, and both are valid throughout this training:\n"
         "- a **console** (a command-line terminal), or\n"
         "- a **graphical desktop**, when the image ships one.\n\n"
-        "**Console (SSH) alternative.** Use **`Get SSH Access`** to download "
-        "`ssh-access.zip`, then:\n"
+        "Both the console and the desktop are opened *through* the GUI — they are "
+        "the two ways it can attach you to a node, not alternatives to it.\n\n"
+        "**Direct SSH (without the GUI).** If you would rather use your own "
+        "terminal, **`Get SSH Access`** downloads `ssh-access.zip`:\n"
         "```bash\n"
         "unzip ssh-access.zip -d ~/.ssh/\n"
         "chmod 600 ~/.ssh/pool-id-*-sandbox-id-*-user-key\n"
@@ -62,9 +64,10 @@ NEW_CONTENT = {
         "dashboard step also has a console command, so you are never blocked if a "
         "desktop is unavailable.\n\n"
         "> **Important - keep a console open on `victim`.** Later in the exercise "
-        "the endpoint is placed under network isolation. An SSH session opened "
-        "beforehand, or the out-of-band GUI console, keeps working; a *new* SSH "
-        "connection to `victim` may be refused while containment is in force."
+        "the endpoint is placed under network isolation. A console opened from the "
+        "GUI is out-of-band and keeps working, and an SSH session opened "
+        "beforehand survives; a *new* SSH connection to `victim` may be refused "
+        "while containment is in force."
     ),
     # L9 — Enrich the hash with CTI
     9: None,  # filled below by appending a console block to the existing content

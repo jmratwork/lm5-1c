@@ -278,9 +278,16 @@ obtainable in the built sandbox.
 
 ## Access paths — console and dashboard
 
-Every hands-on level is answerable **from a terminal**, so the training never
+**Terminology.** The **GUI** is the CyberRangeCZ web platform. From it
+(*Topology* → `Generate console URL`) you attach to a node and get either a
+**console** — a command-line terminal in a new window — or a **graphical
+desktop**, depending on what that node's image ships and what the tooling needs.
+Console and desktop are both reached *through* the GUI; they are not alternatives
+to it. Direct SSH (`Get SSH Access`) is a separate route that bypasses the GUI.
+
+Every hands-on level is answerable **from a console**, so the training never
 depends on a graphical desktop being available. The dashboards remain a valid
-alternative where a desktop is present.
+route where a desktop is present.
 
 **Where the desktop is.** The SOC dashboards live on internal testnet IPs, so a
 browser must run *inside* the sandbox. Per `diagnostics/ACCESS-MATRIX.md`, the

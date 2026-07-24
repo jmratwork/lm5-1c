@@ -1,8 +1,16 @@
 # PUC2 2c — Access matrix (Phase 0)
 
-Which sandbox nodes give a **terminal**, which give a **graphical desktop with a
-browser** that can reach the SOC dashboards on testnet, and where that leaves the
-training's access instructions.
+Which sandbox nodes give a **console** and which give a **graphical desktop with
+a browser** that can reach the SOC dashboards on testnet, and where that leaves
+the training's access instructions.
+
+**Terminology, as the platform uses it.** The **GUI** is the CyberRangeCZ web
+platform — the way in. From it (*Topology* → `Generate console URL`) you attach
+to a node and get, depending on that node's image, either a **console** (a
+command-line terminal in a new window) or a **graphical desktop**, where the
+tooling needs one. Console and desktop are therefore two things the GUI gives
+you, **not alternatives to the GUI**. Direct SSH with `Get SSH Access` is a
+separate route that bypasses the GUI entirely.
 
 ## Scope of this document — read first
 
@@ -38,7 +46,7 @@ desktop/browser present comes from the base image alone.
 
 ## The access matrix
 
-| Node | Terminal (console) | Graphical desktop | Browser present | Reaches the 4 dashboards |
+| Node | Console (via GUI) | Graphical desktop (via GUI) | Browser present | Reaches the 4 dashboards |
 |------|--------------------|-------------------|-----------------|--------------------------|
 | kali | Yes | **CONFIRM IN SANDBOX** (Kali images commonly ship XFCE) | **CONFIRM IN SANDBOX** (not from repo) | Yes — on testnet, all 4 IPs routable |
 | docker-server | Yes | No (server image, none installed) | No | Yes — it *hosts* MISP/IRIS/NG-SOAR |
@@ -71,7 +79,7 @@ candidate collides with the C2 narrative, do not hinge the training on the
 desktop at all. Two independent tracks:
 
 - **Guarantee the console path (Phases 1-2).** Every hands-on level must be
-  completable from a terminal, with no desktop required. This is the real fix
+  completable from a console, with no desktop required. This is the real fix
   and the one fully under the repo's control. The three dashboard-only levels
   (L9, L14, L15) get console helpers on `docker-server`, following the existing
   `share_intel.sh` pattern.
