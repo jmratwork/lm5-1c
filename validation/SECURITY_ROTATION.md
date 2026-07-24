@@ -20,10 +20,15 @@ keeps shipping them.
 
 Both are now read from ansible-vault and both degrade safely when unset:
 
-- **Docker Hub** — the login task is skipped when `vault_dockerhub_pat` is empty.
-  Images are then pulled anonymously, subject to Docker Hub's rate limit. Revoke
-  the exposed PAT (`dckr_pat_OzOR…`) in the `demongsoc` account; issue a new one
-  only if the rate limit actually bites.
+- **Docker Hub** — the login task is skipped when `vault_dockerhub_pat` is empty,
+  and images are then pulled anonymously. **On this range that is not merely
+  slower — it fails the build.** A deployment run with no PAT died pulling
+  `rabbitmq:3.8-management` for DFIR-IRIS with `429 Too Many Requests`; the
+  anonymous limit is reached here in practice. So: revoke the exposed PAT
+  (`dckr_pat_OzOR…`) on the `demongsoc` account **and issue a replacement**, then
+  put it in `vault_dockerhub_pat`. Treat it as required, not optional. The role
+  now warns explicitly when it is missing, because the 429 surfaces deep inside a
+  compose task and says nothing about the skipped login.
 - **`ubuntu` password** — the task omits the password when
   `vault_ubuntu_password_hash` is empty, so the account's existing password is
   left alone rather than blanked. **Set one if trainees log in at the graphical

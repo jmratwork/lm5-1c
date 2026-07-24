@@ -159,6 +159,21 @@
   when: (vault_dockerhub_pat | default('')) | length > 0
   no_log: true
 
+# Anonymous pulls are rate-limited, and on this range that limit is reached: a
+# deployment with no PAT fails later, deep inside a docker compose task, with a
+# raw 429 on an image like rabbitmq that says nothing about the skipped login.
+# This says it up front. It warns rather than fails because anonymous pulls do
+# succeed when the limit has not been hit (cached images, a fresh egress IP).
+- name: WARN that Docker Hub pulls will be anonymous and rate-limited
+  ansible.builtin.debug:
+    msg: >-
+      No vault_dockerhub_pat is set, so the Docker Hub login was skipped and every
+      image will be pulled anonymously. If this run later dies on a '429 Too Many
+      Requests' while pulling an image, THIS is why - put a valid PAT in
+      provisioning/group_vars/vault.yml (see validation/SECURITY_ROTATION.md; the
+      PAT that used to be hardcoded here is public and must not be reused).
+  when: (vault_dockerhub_pat | default('')) | length == 0
+
 - name: Download MISP docker
   git:
     repo: "https://github.com/MISP/misp-docker.git"
