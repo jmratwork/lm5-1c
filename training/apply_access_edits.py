@@ -13,6 +13,10 @@ not. It makes exactly two kinds of change:
     link" statement pointed at T1566.002 (attachment) instead of T1566.001
     (link), contradicting L9. This is a `correct_option_order`, never an
     `answer` field. Idempotent — a no-op once corrected.
+  * appends a node-access note to every training level that runs something on a
+    node, so the login credentials are visible IN that level and a trainee is
+    never blocked on a credential that only appears in the level-1 primer.
+    Idempotent, and it changes only `content`.
 
 It asserts every `answer` in the file is byte-identical before and after, and
 that no field other than those changed (only L6's `questions`, and only when the
@@ -125,6 +129,26 @@ CONSOLE_APPEND = {
     ),
 }
 
+# Every hands-on level that tells the trainee to run something on a node must
+# show, IN THAT LEVEL, how to get onto the node — otherwise a trainee who lands
+# straight on it (levels are not always read in order) is blocked on a
+# credential that only appears in the level-1 primer. This note is appended to
+# each training level that carries a shell step. It repeats the published range
+# credentials on purpose: seeing them beats a cross-reference. The sentinel in
+# the first line keeps the append idempotent.
+NODE_ACCESS_SENTINEL = "Node access for this step:"
+NODE_ACCESS_NOTE = (
+    "\n\n> **" + NODE_ACCESS_SENTINEL + "** open the node from the GUI (console "
+    "or desktop) or over SSH, and log in as `ubuntu` (or `debian` on kali) with "
+    "the range password `PUC2-2c-training`. `sudo` needs no password. (Same "
+    "credentials as the level-1 access primer and `/opt/puc2/CREDENTIALS.txt`.)"
+)
+
+
+def touches_a_node(content):
+    """A level has a node step if it shows a shell block or a sudo command."""
+    return "```bash" in content or "sudo " in content
+
 
 def levels_by_order(doc):
     return {lvl.get("order"): lvl for lvl in doc.get("levels", [])}
@@ -151,8 +175,27 @@ def main():
         if order == 1:
             lvl["content"] = NEW_CONTENT[1]
         else:
-            lvl["content"] = lvl.get("content", "") + CONSOLE_APPEND[order]
+            # Append the console block only if it is not already there, so
+            # re-running the tool on its own output does not double it.
+            block = CONSOLE_APPEND[order]
+            if block not in lvl.get("content", ""):
+                lvl["content"] = lvl.get("content", "") + block
         edited_orders.append(order)
+
+    # ── Show the node credentials on every level that runs something on a node ─
+    # Done AFTER the console blocks above, so L9/L14/L15 get the note too. Skips
+    # level 1 (which IS the access primer) and any level already carrying it.
+    noted_orders = []
+    for lvl in doc.get("levels", []):
+        if lvl.get("level_type") != "TRAINING_LEVEL":
+            continue
+        content = lvl.get("content", "")
+        if lvl.get("order") == 1 or not touches_a_node(content):
+            continue
+        if NODE_ACCESS_SENTINEL in content:
+            continue
+        lvl["content"] = content + NODE_ACCESS_NOTE
+        noted_orders.append(lvl.get("order"))
 
     # ── Correct the L6 checkpoint answer key (idempotent) ─────────────────────
     # The EMI statement "Spearphishing link" pointed at T1566.002 (spearphishing
@@ -196,15 +239,18 @@ def main():
                 changed_fields.append((o, k))
 
     print("Levels edited (content only):", edited_orders)
+    print("Node-access note added to    :", noted_orders or "none (already present)")
     print("L6 key fix     :", "Spearphishing link -> T1566.001" if l6_fixed
           else "already correct (no change)")
     print("Answers changed:", changed_answers if changed_answers else "NONE")
     print("Fields changed :", changed_fields)
 
-    # Allowed: `content` on L1/L9/L14/L15, and — only when the L6 fix actually
-    # fired — `questions` on L6. Anything else is a bug and blocks the write.
+    # Allowed content changes: L1/L9/L14/L15 (the rewrites) and every level the
+    # node-access note was appended to. Allowed non-content change: L6 questions,
+    # only when the key fix fired. Anything else is a bug and blocks the write.
+    content_ok = set((1, 9, 14, 15)) | set(noted_orders)
     unexpected = [(o, k) for (o, k) in changed_fields
-                  if not ((k == "content" and o in (1, 9, 14, 15))
+                  if not ((k == "content" and o in content_ok)
                           or (o == 6 and k == "questions" and l6_fixed))]
     if changed_answers or unexpected:
         sys.exit("REFUSING TO WRITE: an answer or an unexpected field changed.")
@@ -232,8 +278,9 @@ def main():
     with open(out, "w", encoding="utf-8") as fh:
         json.dump(doc, fh, ensure_ascii=False, indent=2)
         fh.write("\n")
-    print(f"\nOK — wrote {out}. Only L1/L9/L14/L15 `content` changed; every "
-          f"answer is identical.")
+    print(f"\nOK - wrote {out}. Changed only `content` (the L1/L9/L14/L15 "
+          f"rewrites and the node-access note) plus the L6 key; every answer is "
+          f"identical.")
 
 
 if __name__ == "__main__":
