@@ -39,11 +39,21 @@
 # for modf() requires libm to be present in DT_NEEDED at load time — without it,
 # rsyslogd segfaults before reading any config. patchelf adds libm.so.6 to the
 # library's DT_NEEDED entries, which is exactly what the linker warning asks for.
+# update_cache: true is load-bearing on Kali. Kali is a rolling distro whose
+# kali-last-snapshot pool rotates: a stale apt index resolves `patchelf` to a
+# candidate whose .deb has already been removed from the mirror, and the install
+# 404s ("Failed to fetch …/patchelf_0.18.0-1.1_amd64.deb 404 Not Found"). A
+# cache refresh points the candidate at a .deb that still exists. Retried
+# because the mirror is occasionally flaky mid-refresh.
 - name: Install patchelf on Kali
   ansible.builtin.apt:
     name: patchelf
     state: present
-    update_cache: false
+    update_cache: true
+  register: puc2_patchelf_install
+  until: puc2_patchelf_install is succeeded
+  retries: 3
+  delay: 10
   when:
     - ansible_distribution == "Kali"
 
