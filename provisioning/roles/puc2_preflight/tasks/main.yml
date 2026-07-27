@@ -35,6 +35,13 @@
   ansible.builtin.include_tasks: training_contract.yml
   when: inventory_hostname == 'docker-server'
 
+# The training runs `sudo` on every node with a shell step; without passwordless
+# sudo and a known login, the trainee is blocked before answering anything. Prove
+# both on the three nodes they touch.
+- name: Preflight — node login and passwordless sudo are in place
+  ansible.builtin.include_tasks: node_access.yml
+  when: inventory_hostname in ['victim', 'ng-siem', 'docker-server']
+
 - name: Report which graded levels this host just proved
   ansible.builtin.debug:
     msg: >-

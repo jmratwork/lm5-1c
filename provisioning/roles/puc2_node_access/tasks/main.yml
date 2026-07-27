@@ -1,0 +1,38 @@
+---
+# =============================================================================
+# role: puc2_node_access   (victim, ng-siem, docker-server, kali)
+#
+# The training tells trainees to open a node and run `sudo ...`. On the base
+# images that blocks twice: the graphical console asks for a password the
+# trainee was never given, and sudo then asks again. This removes both blocks:
+#   * a known password on the management user, so console/password login works;
+#   * passwordless sudo for that user, so every `sudo` step just runs.
+# Both are then published (L1 and CREDENTIALS.txt). Additive and idempotent.
+# =============================================================================
+
+# chpasswd reads user:password from stdin, so the password never appears in the
+# process arguments; no_log keeps it out of the Ansible log as well.
+- name: Set a known password on the management user
+  ansible.builtin.command:
+    cmd: chpasswd
+    stdin: "{{ puc2_node_mgmt_user }}:{{ puc2_node_password }}"
+  changed_when: true
+  no_log: true
+
+# NOPASSWD sudo for the management user, validated before it is installed so a
+# malformed drop-in can never lock sudo out.
+- name: Grant passwordless sudo to the management user
+  ansible.builtin.copy:
+    dest: /etc/sudoers.d/puc2-training
+    content: "{{ puc2_node_mgmt_user }} ALL=(ALL) NOPASSWD:ALL\n"
+    owner: root
+    group: root
+    mode: "0440"
+    validate: "visudo -cf %s"
+
+- name: Report node access is set
+  ansible.builtin.debug:
+    msg: >-
+      Node access ready on {{ inventory_hostname }}: user
+      '{{ puc2_node_mgmt_user }}', password published to trainees, sudo requires
+      no password.

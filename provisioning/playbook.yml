@@ -146,6 +146,25 @@
     - evaluation_reporting
 
 # =============================================================================
+# Node access — the training runs `sudo` on the nodes and opens their consoles;
+# the base images ask for credentials the trainee was never given. Give the
+# management user a known password and passwordless sudo, on every node the
+# trainee touches (kali is here for its analyst desktop). The management user is
+# `debian` on kali and `ubuntu` elsewhere.
+# =============================================================================
+- name: PUC2 2c — node login and sudo for the trainee
+  hosts: victim,ng-siem,docker-server,kali
+  become: true
+  gather_facts: true
+  vars_files:
+    - group_vars/puc2_2c.yml
+    - "{{ lookup('first_found', ['group_vars/vault.yml', 'group_vars/vault.yml.example']) }}"
+  roles:
+    - role: puc2_node_access
+      vars:
+        puc2_node_mgmt_user: "{{ 'debian' if inventory_hostname in ['kali', 'router'] else 'ubuntu' }}"
+
+# =============================================================================
 # Rehearsal — OPT-IN, NEVER part of a build (tagged `never`), placed right
 # before the preflight gate so a single command can fire, verify, self-clean,
 # and then re-prove the gate green:

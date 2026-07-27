@@ -119,6 +119,13 @@ puc2_soar_playbook_dir: "/opt/NG-SOAR/playbooks"
 # ---- Endpoint access (used by the step-13 evidence collector) ---------------
 puc2_victim_mgmt_user: "ubuntu"     # topology base_box mgmt_user of `victim`
 
+# ---- Node login for the trainee (published; see puc2_node_access) ----------
+# The training runs `sudo` on the nodes and opens their consoles. The mgmt
+# user gets this known password and passwordless sudo so no level is blocked
+# on an undocumented credential. Not a secret: it is printed to trainees in L1
+# and CREDENTIALS.txt. Isolated, ephemeral training range.
+puc2_node_password: "PUC2-2c-training"
+
 # ---- CTI-SS sharing (UML step 12) -------------------------------------------
 puc2_misp_sharing_group_name: "NG-SOC-PUC2"   # training L24 expects this exact name
 

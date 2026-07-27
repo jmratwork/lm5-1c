@@ -1,0 +1,17 @@
+---
+# role: puc2_node_access
+# Makes the training's `sudo` steps and the node logins actually work, which the
+# base images do not guarantee: it gives the management user passwordless sudo
+# and a known password. Both are published to the trainee (L1 access primer and
+# /opt/puc2/CREDENTIALS.txt) because the levels need shell + sudo on the nodes.
+#
+# This is a training range on an isolated testnet; a shared, published node
+# credential is expected here and is not the kind of secret the repo keeps out
+# of git.
+
+# The management user differs by image; the play overrides this per host.
+puc2_node_mgmt_user: "ubuntu"
+
+# Shared range password for graphical-console / password login to the nodes.
+# Not a secret: it is printed to trainees. Keep it simple and memorable.
+puc2_node_password: "PUC2-2c-training"

@@ -1,0 +1,41 @@
+---
+# Prove the trainee can get a shell and run sudo on this node without a
+# credential the training never gave them. Both are set by puc2_node_access.
+
+- name: Read the NOPASSWD sudoers drop-in
+  ansible.builtin.slurp:
+    src: /etc/sudoers.d/puc2-training
+  register: puc2_pf_sudoers
+  failed_when: false
+
+- name: Check the management user actually has passwordless sudo
+  ansible.builtin.command: "sudo -n -l -U ubuntu"
+  register: puc2_pf_sudo_l
+  changed_when: false
+  failed_when: false
+
+- name: Check the management user's password is set (usable console login)
+  ansible.builtin.command: "passwd -S ubuntu"
+  register: puc2_pf_passwd
+  changed_when: false
+  failed_when: false
+
+- name: GATE — node login and sudo will not block a trainee
+  ansible.builtin.assert:
+    that:
+      - "'NOPASSWD' in (puc2_pf_sudoers.content | default('') | b64decode)"
+      - "'NOPASSWD' in (puc2_pf_sudo_l.stdout | default(''))"
+      - puc2_pf_passwd.stdout.split() | length > 1
+      - puc2_pf_passwd.stdout.split()[1] == 'P'
+    fail_msg: >-
+      NODE-ACCESS preflight FAILED on {{ inventory_hostname }} — a trainee would
+      be blocked before answering. /etc/sudoers.d/puc2-training carries NOPASSWD:
+      {{ 'NOPASSWD' in (puc2_pf_sudoers.content | default('') | b64decode) }};
+      `sudo -l` for ubuntu shows NOPASSWD:
+      {{ 'NOPASSWD' in (puc2_pf_sudo_l.stdout | default('')) }};
+      ubuntu password status:
+      {{ puc2_pf_passwd.stdout.split()[1] | default('?') }} (want 'P').
+      Re-run the puc2_node_access play against this host.
+    success_msg: >-
+      Node access OK on {{ inventory_hostname }} — ubuntu has a set password and
+      passwordless sudo; the console and every `sudo` step are unblocked.
