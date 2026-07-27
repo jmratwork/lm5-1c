@@ -16,7 +16,9 @@ not. It makes exactly two kinds of change:
 
 It asserts every `answer` in the file is byte-identical before and after, and
 that no field other than those changed (only L6's `questions`, and only when the
-key fix actually fires).
+key fix actually fires). It also refuses to write if any level's `content` still
+contains the word "placeholder" or any non-ASCII character — two ways a broken
+file has reached the platform before.
 
     python3 training/apply_access_edits.py \
         puc2-cynet-2c-malware-detection-response_linear-training-definition.json
@@ -46,7 +48,7 @@ NEW_CONTENT = {
         "The **console** is what you get after acting on the GUI: a new terminal "
         "attached to the node for its command line. The **desktop** is the other "
         "thing the GUI can attach, when a node's image ships one. Both are reached "
-        "through the GUI — neither is an alternative to it.\n\n"
+        "through the GUI - neither is an alternative to it.\n\n"
         "**Your own terminal (optional).** The platform's **`Get SSH Access`** "
         "button also hands you keys to connect from your own machine, if you "
         "prefer that to the in-GUI console:\n"
@@ -57,11 +59,11 @@ NEW_CONTENT = {
         "```\n\n"
         "## The SOC dashboards\n"
         "The dashboards live on **internal testnet addresses**, so a browser must "
-        "run *inside* the sandbox — open the **graphical desktop on `kali` "
+        "run *inside* the sandbox - open the **graphical desktop on `kali` "
         "(10.0.16.50)** and use its browser. In this scenario 10.0.16.50 plays two "
         "roles: it is the simulated **C2** the payload beacons to, and it is also "
         "the node whose desktop you use as the analyst workstation. You never need "
-        "to \"log into the C2\" as an attacker — you are just using that node's "
+        "to \"log into the C2\" as an attacker - you are just using that node's "
         "desktop to reach the dashboards:\n"
         "- NG-SIEM (Wazuh) dashboard: `https://10.0.16.70`\n"
         "- CTI-SS (MISP): `https://10.0.16.60:8443`\n"
@@ -199,6 +201,25 @@ def main():
                           or (o == 6 and k == "questions" and l6_fixed))]
     if changed_answers or unexpected:
         sys.exit("REFUSING TO WRITE: an answer or an unexpected field changed.")
+
+    # A build-scaffold string must never survive to a shippable file. The last
+    # round shipped a level whose content was literally "placeholder-0" because
+    # the input carried it and nothing here objected. Now it does — for EVERY
+    # level's content, not just the four this tool rewrites, because the failure
+    # was a placeholder in a level the tool does not touch (L0).
+    placeholders = [lvl.get("order") for lvl in doc.get("levels", [])
+                    if "placeholder" in (lvl.get("content") or "").lower()]
+    if placeholders:
+        sys.exit(f"REFUSING TO WRITE: 'placeholder' text left in level(s) "
+                 f"{placeholders}. Supply the real content for those levels.")
+
+    # The training UI mangles non-ASCII (an em-dash rendered as mojibake once).
+    # Keep the output plain ASCII so nothing depends on the platform's encoding.
+    non_ascii = sorted({c for lvl in doc.get("levels", [])
+                        for c in (lvl.get("content") or "") if ord(c) > 127})
+    if non_ascii:
+        sys.exit(f"REFUSING TO WRITE: non-ASCII character(s) in content: "
+                 f"{non_ascii}. Replace them (e.g. an em-dash with ' - ').")
 
     out = args.json_path if args.in_place else args.json_path + ".edited.json"
     with open(out, "w", encoding="utf-8") as fh:
