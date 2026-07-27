@@ -9,8 +9,9 @@ platform — the way in. From it (*Topology* → `Generate console URL`) you att
 to a node and get, depending on that node's image, either a **console** (a
 command-line terminal in a new window) or a **graphical desktop**, where the
 tooling needs one. Console and desktop are therefore two things the GUI gives
-you, **not alternatives to the GUI**. Direct SSH with `Get SSH Access` is a
-separate route that bypasses the GUI entirely.
+you, **not alternatives to the GUI**. `Get SSH Access` is also a platform
+button — it hands you keys to connect from your own terminal — so it too is
+something the GUI provides, not a way around it.
 
 ## Scope of this document — read first
 

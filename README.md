@@ -283,7 +283,9 @@ obtainable in the built sandbox.
 **console** — a command-line terminal in a new window — or a **graphical
 desktop**, depending on what that node's image ships and what the tooling needs.
 Console and desktop are both reached *through* the GUI; they are not alternatives
-to it. Direct SSH (`Get SSH Access`) is a separate route that bypasses the GUI.
+to it. `Get SSH Access` is also a platform button; it hands you keys to connect
+from your own terminal, so it is another thing the GUI gives you, not a way
+around it.
 
 Every hands-on level is answerable **from a console**, so the training never
 depends on a graphical desktop being available. The dashboards remain a valid
