@@ -5,9 +5,18 @@ Apply the PUC2 2c access-path text edits to the training definition — TEXT ONL
 The training definition JSON is deliberately kept OUT of this repository
 (git-ignored, uploaded to CyberRangeCZ by hand). So this tool edits *your* copy
 in place rather than shipping a fork of it, and proves it changed nothing it must
-not: it rewrites only the `content` field of levels L1, L9, L14 and L15, and
-asserts every `answer` in the file — and every other field of every level — is
-byte-identical before and after.
+not. It makes exactly two kinds of change:
+
+  * rewrites the `content` field of levels L1, L9, L14 and L15 (the access-path
+    text and the console helpers), and
+  * corrects one wrong answer KEY in the L6 checkpoint: the EMI "Spearphishing
+    link" statement pointed at T1566.002 (attachment) instead of T1566.001
+    (link), contradicting L9. This is a `correct_option_order`, never an
+    `answer` field. Idempotent — a no-op once corrected.
+
+It asserts every `answer` in the file is byte-identical before and after, and
+that no field other than those changed (only L6's `questions`, and only when the
+key fix actually fires).
 
     python3 training/apply_access_edits.py \
         puc2-cynet-2c-malware-detection-response_linear-training-definition.json
@@ -136,6 +145,32 @@ def main():
             lvl["content"] = lvl.get("content", "") + CONSOLE_APPEND[order]
         edited_orders.append(order)
 
+    # ── Correct the L6 checkpoint answer key (idempotent) ─────────────────────
+    # The EMI statement "Spearphishing link" pointed at T1566.002 (spearphishing
+    # ATTACHMENT); a link is T1566.001 — which is also L9's graded answer, so the
+    # original contradicted it and marked a correct trainee wrong. This is a
+    # `correct_option_order`, not an `answer` field, so it is fixed here. No-op
+    # when already correct (e.g. a file that has already been through this tool).
+    l6_fixed = False
+    lvl6 = by_order.get(6)
+    if lvl6:
+        for q in lvl6.get("questions", []):
+            if q.get("question_type") != "EMI":
+                continue
+            opts = {o.get("order"): o.get("text")
+                    for o in q.get("extended_matching_options", [])}
+            for s in q.get("extended_matching_statements", []):
+                if s.get("text") != "Spearphishing link":
+                    continue
+                if opts.get(s.get("correct_option_order")) == "T1566.001":
+                    continue  # already correct
+                target = [o for o, t in opts.items() if t == "T1566.001"]
+                if not target:
+                    sys.exit("ERROR: L6 EMI has no T1566.001 option to map "
+                             "'Spearphishing link' onto")
+                s["correct_option_order"] = target[0]
+                l6_fixed = True
+
     # ── Prove no answer changed, anywhere ────────────────────────────────────
     before_answers = {o: l.get("answer") for o, l in levels_by_order(before).items()}
     after_answers = {o: l.get("answer") for o, l in levels_by_order(doc).items()}
@@ -152,11 +187,16 @@ def main():
                 changed_fields.append((o, k))
 
     print("Levels edited (content only):", edited_orders)
+    print("L6 key fix     :", "Spearphishing link -> T1566.001" if l6_fixed
+          else "already correct (no change)")
     print("Answers changed:", changed_answers if changed_answers else "NONE")
     print("Fields changed :", changed_fields)
 
+    # Allowed: `content` on L1/L9/L14/L15, and — only when the L6 fix actually
+    # fired — `questions` on L6. Anything else is a bug and blocks the write.
     unexpected = [(o, k) for (o, k) in changed_fields
-                  if not (k == "content" and o in (1, 9, 14, 15))]
+                  if not ((k == "content" and o in (1, 9, 14, 15))
+                          or (o == 6 and k == "questions" and l6_fixed))]
     if changed_answers or unexpected:
         sys.exit("REFUSING TO WRITE: an answer or an unexpected field changed.")
 
