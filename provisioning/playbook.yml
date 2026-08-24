@@ -68,15 +68,15 @@
 # the PUC2 2c UML. The node is gone from topology.yml too, so this play would
 # have no hosts to run against.
 
-- name: set up command logging
-  hosts:
-    - routers
-    - hosts
-  become: yes
-  roles:
-    - role: sandbox-logging
-      slf_destination_port: '{% if hostvars["man"] is defined -%} 514 {%- else -%} 515 {%- endif %}'
-      when: ansible_system == "Linux"
+#- name: set up command logging
+#  hosts:
+#    - routers
+#    - hosts
+#  become: yes
+#  roles:
+#    - role: sandbox-logging
+#      slf_destination_port: '{% if hostvars["man"] is defined -%} 514 {%- else -%} 515 {%- endif %}'
+#      when: ansible_system == "Linux"
 
 # =============================================================================
 # PUC2 (CYNET) — Sub Case 2c overlay
