@@ -52,14 +52,22 @@ Two tasks inside the MCP block are deliberately **not** gated: those writing
 read the API keys from them. They outlive their namesake; only the servers are
 gone, which makes the filenames a misnomer.
 
-The `kali` and `man` **roles are deleted**: kali installed Caldera and offensive
-tooling, and the UML has no attacker host (the Cyber Range injects on the
-endpoint); `man` configured syslog-ng on a management node. The **`kali` node
-remains** — `puc2_c2_ip` derives from its address and it is the candidate
-analyst workstation. `man` and `proxy-jump` are **platform-provided nodes, absent
-from `topology.yml`**, so they still exist; only our configuration of them is
-gone, and the `hostvars["man"]` test that selects the syslog forwarding port is
-left intact on purpose.
+The `kali` **role is deleted**: it installed Caldera and offensive tooling, and
+the UML has no attacker host (the Cyber Range injects on the endpoint). The
+**`kali` node remains** — `puc2_c2_ip` derives from its address and it is the
+candidate analyst workstation.
+
+The `man` role and the substrate's command-logging play are **kept as platform
+plumbing, not scenario components**. `man` configures syslog-ng on the
+CyberRangeCZ management node so sandbox event logs reach the platform's central
+collector (`10.250.232.186:515`), and `sandbox-logging` records the in-sandbox
+command trail on `routers` and `hosts`. Both run *after* the overlay, appended at
+the tail of `provisioning/playbook.yml` (the substrate's original inline
+command-logging play is commented out where it stood); the `hostvars["man"]` test
+still selects the forwarding port — 514 when a `man` node is present, else 515.
+`man` and `proxy-jump` are **platform-provided nodes, absent from
+`topology.yml`**, so a play targeting `man` simply has no hosts when the platform
+does not supply it.
 
 So the substrate is **no longer byte-identical**. To see exactly how it differs:
 
@@ -73,8 +81,10 @@ diff /tmp/subs/topology.yml topology.yml
 
 Expect only `when:` lines in `docker_server` and `ng-siem`. Other documented
 deltas: `provisioning/requirements.yml` merges the substrate's `sandbox-logging`
-requirement with the collections its roles need, and one trailing space was
-stripped from `provisioning/playbook.yml` so `yamllint` passes.
+requirement with the collections its roles need, and `provisioning/playbook.yml`
+carries the overlay plays plus the `man` syslog-ng and command-logging plays at
+its tail (with the substrate's original inline command-logging play commented out
+where it stood).
 
 ---
 
