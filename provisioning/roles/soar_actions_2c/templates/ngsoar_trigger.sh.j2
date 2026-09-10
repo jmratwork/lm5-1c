@@ -60,8 +60,12 @@ cat /tmp/ngsoar_trigger_response.json 2>/dev/null; echo
 
 case "${HTTP_CODE}" in
   2*) echo "[NG-SOAR] Accepted. Verify the effect on ${TARGET} (UML steps 10-11):"
-      echo "          cat {{ puc2_isolation_marker }} {{ puc2_eradication_marker }}" ;;
+      echo "          cat {{ puc2_isolation_marker }} {{ puc2_eradication_marker }}"
+      echo "[NG-SOAR] If the markers are not there yet, containment has not landed"
+      echo "          on the endpoint. Enforce it deterministically ON ${TARGET}:"
+      echo "          sudo /var/ossec/active-response/bin/puc2-isolate --now" ;;
   000) echo "[NG-SOAR] Webhook unreachable. The active-response path remains the"
-       echo "          authoritative containment route — check it on the endpoint." ; exit 1 ;;
+       echo "          authoritative containment route. Enforce it ON ${TARGET}:"
+       echo "          sudo /var/ossec/active-response/bin/puc2-isolate --now" ; exit 1 ;;
   *)  echo "[NG-SOAR] Webhook rejected the request; inspect the NG-SOAR workflow." ; exit 1 ;;
 esac

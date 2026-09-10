@@ -147,13 +147,26 @@ of the C2 domain, payload quarantine, and credential expiry. It writes
 what UML step 11 reports. This path is provisioned end to end by
 `ng_siem_rules_2c` + `lab_endpoint_2c`, and it is what `VALIDATION.md` exercises.
 
+The same script also takes a **manual operator invocation** — `puc2-isolate
+--now` (isolate) and `puc2-isolate --lift` (roll back) — which reads no stdin and
+runs exactly the automatic containment. It exists as a deterministic console
+fallback for the NG-SOAR containment of level L18: the automatic response is the
+authoritative path, but a trainee who reaches L19/L21 before it has landed can
+run `--now` on `victim` to guarantee the two status markers rather than face a
+`cat` on a missing file. It is safe and idempotent, and preserves the same
+sandbox-subnet + tcp/22 allow-list as the automatic path.
+
 **Orchestration — NG-SOAR.**
 DFIR-IRIS already POSTs to `http://<docker-server>:8080/trigger/playbook` (the
 `SOARCA` webhook the substrate's `docker_server` role configures in
 `iris_webhooks_module`). The NG-SOAR workflow itself lives in the `NG-SOAR.yml`
 compose file copied off the SMB share at build time — **it is deliberately not
 reimplemented here**. `soar_actions_2c` only deploys the four playbooks as the
-action library that workflow references.
+action library that workflow references. Its `ngsoar_trigger.sh` drives that
+webhook from `docker-server`; because the webhook path does not itself write the
+endpoint markers, on success (and when the webhook is unreachable) it prints the
+endpoint-local enforce command (`puc2-isolate --now` on the target) so the
+operator can guarantee the L19/L21 markers without cross-node plumbing.
 
 ---
 

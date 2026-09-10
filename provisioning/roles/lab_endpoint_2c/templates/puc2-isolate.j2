@@ -34,14 +34,34 @@ log() {
     echo "$(date '+%Y/%m/%d %H:%M:%S') active-response/bin/puc2-isolate: $*" >>"${LOG_FILE}"
 }
 
-# ---- Read the alert and extract the AR command ------------------------------
-read -r INPUT_JSON
-COMMAND=$(printf '%s' "${INPUT_JSON}" \
-    | python3 -c 'import sys,json; print(json.load(sys.stdin).get("command",""))' 2>/dev/null)
-if [ -z "${COMMAND}" ]; then
-    # Fallback parse when python3 is unavailable.
-    COMMAND=$(printf '%s' "${INPUT_JSON}" | sed -n 's/.*"command"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p')
-fi
+# ---- Determine the AR command ----------------------------------------------
+# Two entry points, one containment:
+#   * Wazuh manager (rule {{ puc2_active_response_rules }}, UML steps 9-10): the
+#     alert arrives as one JSON object on stdin with a "command" of "add"/"delete".
+#     This is the automatic path and stays the authoritative one.
+#   * Operator, on the endpoint: `puc2-isolate --now` isolates, `--lift` rolls
+#     back. This gives the NG-SOAR containment of training level L18 a
+#     deterministic console fallback, so the L19/L21 status markers are
+#     guaranteed to exist without waiting on the automatic trigger. It reads no
+#     stdin, so it never hangs a terminal.
+case "${1:-}" in
+    --now|--manual|--isolate)
+        COMMAND="add"
+        log "manual containment requested from the endpoint (operator fallback for L18)"
+        ;;
+    --lift|--rollback|--delete)
+        COMMAND="delete"
+        ;;
+    *)
+        read -r INPUT_JSON
+        COMMAND=$(printf '%s' "${INPUT_JSON}" \
+            | python3 -c 'import sys,json; print(json.load(sys.stdin).get("command",""))' 2>/dev/null)
+        if [ -z "${COMMAND}" ]; then
+            # Fallback parse when python3 is unavailable.
+            COMMAND=$(printf '%s' "${INPUT_JSON}" | sed -n 's/.*"command"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p')
+        fi
+        ;;
+esac
 
 # =============================================================================
 # ROLLBACK (command = delete)
