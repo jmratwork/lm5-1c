@@ -39,6 +39,17 @@ puc2_delivery_paths:
 
 # Where the manager writes alerts, and where the endpoint logs active response.
 puc2_rehearsal_alerts_log: "/var/ossec/logs/alerts/alerts.log"
+
+# The JSON alert stream, which the link checks below read INSTEAD of alerts.log.
+# alerts.log is prose: a rule id appears in it as a bare number anywhere in the
+# text, including inside a file-diff that a FIM alert carries when a monitored
+# file changes. On 2026-09-10 that is exactly what happened - grepping for
+# "100101" matched
+#     > <!-- CTI-SS hash watchlist consumed by rule 100101 (UML step 4) -->
+# a line this role's own ossec.conf edit had put into a syscheck diff, in an
+# alert that had nothing to do with rule 100101. In JSON the id is a field,
+# "id":"100101", and a config diff cannot forge it.
+puc2_rehearsal_alerts_json: "/var/ossec/logs/alerts/alerts.json"
 puc2_rehearsal_ar_log: "/var/ossec/logs/active-responses.log"
 
 # ── Wait budgets ─────────────────────────────────────────────────────────────
