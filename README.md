@@ -79,12 +79,20 @@ done
 diff /tmp/subs/topology.yml topology.yml
 ```
 
-Expect only `when:` lines in `docker_server` and `ng-siem`. Other documented
-deltas: `provisioning/requirements.yml` merges the substrate's `sandbox-logging`
-requirement with the collections its roles need, and `provisioning/playbook.yml`
-carries the overlay plays plus the `man` syslog-ng and command-logging plays at
-its tail (with the substrate's original inline command-logging play commented out
-where it stood).
+Expect mostly `when:` lines in `docker_server` and `ng-siem`, plus one
+functional deviation in `docker_server`: its DFIR-IRIS step now comments out the
+`evtx2splunk` / `iris_evtx` requirement chain before the image build and retries
+the build on transient network resets. That chain pulls `splunk-hec` from
+`git+https://github.com/...` during `pip3 install`, and the sandbox's git clone
+to github.com is reset ("Connection reset by peer"), which failed the
+`iris_app`/`worker` build and aborted the whole deployment on this first play.
+PUC2 2c does not use the IRIS EVTX import pipeline, so dropping it makes the build
+independent of GitHub egress; the retry hardens it against other transient
+fetches. Other documented deltas: `provisioning/requirements.yml` merges the
+substrate's `sandbox-logging` requirement with the collections its roles need,
+and `provisioning/playbook.yml` carries the overlay plays plus the `man`
+syslog-ng and command-logging plays at its tail (with the substrate's original
+inline command-logging play commented out where it stood).
 
 ---
 

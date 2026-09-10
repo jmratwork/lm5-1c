@@ -397,7 +397,46 @@
   register: compose_patch
   changed_when: "'patched' in compose_patch.stdout"
 
-# ── Build and run ─────────────────────────────────────────────────────────────
+# ── Make the image build independent of github.com egress (Option 2) ─────────
+# evtx2splunk pulls splunk-hec from git+https://github.com/... during
+# `pip3 install -r requirements.txt`. The sandbox's git clone to github.com is
+# reset ("Recv failure: Connection reset by peer", exit 128), which fails the
+# iris_app/worker image build and aborts the whole deployment on this first
+# play. PUC2 2c does not use the IRIS EVTX import pipeline, so comment out that
+# dependency chain (evtx2splunk + iris_evtx) to remove the git clone entirely.
+# Idempotent; every other requirement is left untouched.
+
+- name: Drop the git-backed EVTX dependency from DFIR-IRIS requirements
+  ansible.builtin.shell: |
+    python3 <<'PYEOF'
+    import re
+    path = '/opt/dfir-iris-custom/source/requirements.txt'
+    try:
+        with open(path) as f:
+            lines = f.readlines()
+    except FileNotFoundError:
+        print('no_requirements')
+        raise SystemExit(0)
+    changed = False
+    out = []
+    for ln in lines:
+        s = ln.strip()
+        if s and not s.startswith('#') and re.search(r'evtx2splunk|iris_evtx', s):
+            out.append('# PUC2-2c disabled (github egress): ' + ln.rstrip('\n') + '\n')
+            changed = True
+        else:
+            out.append(ln)
+    if changed:
+        with open(path, 'w') as f:
+            f.writelines(out)
+        print('patched')
+    else:
+        print('already_patched')
+    PYEOF
+  register: iris_reqs_patch
+  changed_when: "'patched' in iris_reqs_patch.stdout"
+
+# ── Build and run — retried against transient network resets (Option 1) ──────
 
 - name: Build and run DFIR-IRIS
   community.docker.docker_compose_v2:
@@ -405,6 +444,9 @@
     state: present
     build: always
   register: dfir_iris_output
+  until: dfir_iris_output is succeeded
+  retries: 5
+  delay: 30
 
 # ── Wait for iris_app healthy ─────────────────────────────────────────────────
 
