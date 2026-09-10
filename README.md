@@ -336,12 +336,33 @@ from Docker Hub (`mariadb`, `valkey`, `mongo`, `soarca`, `cacao-roaster`,
 on the platform**, so consecutive deploys exhaust it. On 2026-09-10 five images
 pulled and the sixth returned 429, taking the deployment with it.
 
-The three compose tasks that pull from Docker Hub now recognise a 429 and say
-so by name instead of letting it read as a flaky network. DFIR-IRIS in
-particular no longer burns its five retries on it: the retry exists for a
-genuine mid-build network reset, and a rate limit whose window is hours is not
-that — retrying only issued four more requests against the limit that was
-already the problem. It stops after one attempt and names the PAT as the fix.
+Three things now stand between that and a twenty-minute wasted build:
+
+1. **A preflight.** Before the first pull, the role asks Docker Hub how much
+   headroom is left (a HEAD on the probe repository, which does not itself
+   consume a pull) and refuses to start a build the quota cannot finish. It
+   blocks only on a *measured* shortfall: an unreachable probe, or an account
+   whose limit the registry does not publish, proceeds — "could not measure"
+   must never read as "empty".
+2. **Fewer pulls to begin with.** Three of the six are Docker Official Images,
+   and AWS mirrors those outside Docker Hub's per-IP limit. They are pulled
+   from the mirror and re-tagged under their original names, so compose finds
+   them in the local cache and never asks Docker Hub. Re-tagging rather than
+   editing the three upstream compose files: those are cloned, unzipped and
+   copied off an SMB share, so an edit would have to be re-done every time
+   upstream moves. A tag the mirror does not carry falls back to Docker Hub and
+   is reported, never fatal.
+3. **An honest failure when it still happens.** The three compose tasks
+   recognise a 429 and say so by name. DFIR-IRIS no longer burns its five
+   retries on it: the retry exists for a genuine mid-build network reset, and a
+   rate limit whose window is hours is not that — retrying only issued four more
+   requests against the limit that was already the problem. It stops after one
+   attempt and names the PAT as the fix.
+
+The mirror in (2) was **not** verifiable from the machine this was written on,
+which is why it degrades to the old behaviour rather than assuming. The first
+deploy to run it will print one `SEEDED` / `MISS` line per image, and that is
+the answer.
 
 The last two plays of the file are diagnostics (`puc2_diag`,
 `puc2_access_probe`), tagged `never` and absent from a normal deploy:

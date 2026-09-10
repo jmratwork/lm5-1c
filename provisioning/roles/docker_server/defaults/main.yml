@@ -46,3 +46,39 @@ docker_hub_rate_limit_help: >-
   reaches the sandbox; the PAT has to be an extra var on the deployment command.
   Rotate before reusing: the PAT that used to be hardcoded in this role is
   public (see validation/SECURITY_ROTATION.md).
+
+# ── Spending less of the quota in the first place ────────────────────────────
+# Three of the six Docker Hub images this role needs are Docker OFFICIAL images
+# (the `library/` namespace), and AWS mirrors those in its public ECR gallery,
+# which does not share Docker Hub's per-IP limit. Pulling them from the mirror
+# and re-tagging under the original name leaves compose finding them already in
+# the local image cache, so it never asks Docker Hub at all.
+#
+# Re-tagging rather than rewriting the compose files is deliberate: all three
+# files are upstream artefacts (misp-docker cloned at master, NG-SOAR off the
+# SMB share, dfir-iris-custom unzipped), and editing them means re-doing the
+# edit every time upstream moves. The local image cache is a supported way to
+# say "already have it" and needs no edit at all.
+#
+# NOT verified against the live mirror from the workstation this was written on
+# (no network to it), so the task treats a missing mirror tag as normal and
+# falls straight back to Docker Hub. A mirror that is wrong or gone costs the
+# old behaviour, never a broken deploy.
+#
+# The three non-official images (valkey/valkey, cossas/soarca,
+# cyentific/cacao-roaster) have no such mirror and still come from Docker Hub.
+docker_hub_mirror_prefix: "public.ecr.aws/docker/library"
+docker_hub_official_images:
+  - mariadb:10.11              # MISP
+  - rabbitmq:3.8-management    # DFIR-IRIS - the image the 2026-09-10 build died on
+  - mongo:latest               # NG-SOAR
+
+# ── Failing in ten seconds instead of twenty minutes ─────────────────────────
+# How many Docker Hub pulls a cold deploy needs. Six images, minus whatever the
+# mirror above manages to seed. Used only to decide whether the measured
+# headroom is enough to be worth starting: it is a preflight, not an accountant.
+docker_hub_required_pulls: 6
+
+# Set false to skip the preflight entirely (an air-gapped mirror, a registry
+# proxy, or any setup where reaching auth.docker.io is not meaningful).
+docker_hub_preflight_enabled: true

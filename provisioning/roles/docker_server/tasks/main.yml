@@ -176,6 +176,140 @@
       PAT that used to be hardcoded here is public and must not be reused.
   when: (vault_dockerhub_pat | default('')) | length == 0
 
+# ═════════════════════════════════════════════════════════════════════════════
+# PREFLIGHT: is there enough Docker Hub quota to be worth starting?
+#
+# The 2026-09-10 09:37 build spent twenty minutes cloning MISP, building it,
+# starting NG-SOAR and patching DFIR-IRIS before discovering, on the sixth
+# image, that the quota was gone. The information needed to stop was available
+# before the first pull. Ask for it there.
+#
+# Docker publishes the headroom on a dedicated probe repository, and a HEAD on
+# a manifest is documented as not consuming a pull - so measuring costs nothing.
+# ═════════════════════════════════════════════════════════════════════════════
+- name: Preflight the Docker Hub rate limit before pulling anything
+  when: docker_hub_preflight_enabled | bool
+  block:
+    # With a PAT the token is issued against the account and reports the
+    # (higher) authenticated limit; without one it reports the anonymous
+    # per-IP limit, which is the case that actually fails here.
+    - name: Get a registry token for the rate-limit probe
+      ansible.builtin.uri:
+        url: >-
+          https://auth.docker.io/token?service=registry.docker.io&scope=repository:ratelimitpreview/test:pull
+        method: GET
+        return_content: true
+        url_username: "{{ vault_dockerhub_user | default(omit, true) }}"
+        url_password: "{{ vault_dockerhub_pat | default(omit, true) }}"
+        force_basic_auth: "{{ (vault_dockerhub_pat | default('')) | length > 0 }}"
+        timeout: 20
+      register: hub_token
+      failed_when: false
+      no_log: true
+
+    # HEAD, not GET: a GET here would spend one of the very pulls being counted.
+    - name: Read the rate-limit headers
+      ansible.builtin.uri:
+        url: https://registry-1.docker.io/v2/ratelimitpreview/test/manifests/latest
+        method: HEAD
+        headers:
+          Authorization: "Bearer {{ hub_token.json.token | default('') }}"
+          Accept: application/vnd.docker.distribution.manifest.v2+json
+        status_code: [200, 401, 429]
+        timeout: 20
+      register: hub_limit
+      failed_when: false
+
+    # Headers look like "100;w=21600" - the count is everything before the ';'.
+    # They are ABSENT for accounts with no limit at all, which is a pass, not a
+    # failure: `remaining` stays -1 and means "unmeasurable", never "empty".
+    - name: Work out how much headroom there is
+      ansible.builtin.set_fact:
+        hub_remaining: >-
+          {{ ((hub_limit.ratelimit_remaining | default('')) | string).split(';')[0]
+             | default('', true) | int(-1) }}
+        hub_limit_total: >-
+          {{ ((hub_limit.ratelimit_limit | default('')) | string).split(';')[0]
+             | default('', true) | int(-1) }}
+
+    - name: Report the Docker Hub headroom
+      ansible.builtin.debug:
+        msg: >-
+          Docker Hub rate limit:
+          {% if hub_limit.status | default(0) == 429 %}
+          ALREADY EXHAUSTED - the registry answered 429 to the probe itself.
+          {% elif (hub_remaining | int) < 0 %}
+          not reported by the registry (an unlimited account, or the probe could
+          not be reached). Proceeding; a 429 later will still be named by the
+          compose tasks.
+          {% else %}
+          {{ hub_remaining }} of {{ hub_limit_total }} pulls remaining; this
+          deploy needs about {{ docker_hub_required_pulls }}.
+          {% endif %}
+          {{ 'Authenticated.' if (vault_dockerhub_pat | default('')) | length > 0
+             else 'Anonymous - the quota is shared by every sandbox on this egress IP.' }}
+
+    # Blocking, but only on a MEASURED shortfall. An unreachable probe or an
+    # account with no published limit must never be the thing that stops a
+    # deploy that would have worked - the same reason the NG-SIEM gate does not
+    # fail when agent_control is missing from the image.
+    - name: GATE - do not start a build the quota cannot finish
+      ansible.builtin.assert:
+        that:
+          - hub_limit.status | default(0) != 429
+          - (hub_remaining | int) < 0 or (hub_remaining | int) >= (docker_hub_required_pulls | int)
+        fail_msg: >-
+          Stopping before the first pull: Docker Hub has
+          {{ 'already returned 429 to the probe'
+             if hub_limit.status | default(0) == 429
+             else hub_remaining ~ ' pulls left and this deploy needs about '
+                  ~ docker_hub_required_pulls }}.
+          Starting now would clone MISP, build it, start NG-SOAR and then die on
+          an image twenty minutes in - which is exactly what the 2026-09-10
+          build did. {{ docker_hub_rate_limit_help }}
+        success_msg: >-
+          Docker Hub headroom is sufficient
+          ({{ 'unmeasured' if (hub_remaining | int) < 0 else hub_remaining ~ ' pulls' }}).
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Spend less of that quota: pull the Docker OFFICIAL images from AWS's mirror,
+# which does not share Docker Hub's per-IP limit, and re-tag them under their
+# original names so compose finds them in the local cache and never asks Docker
+# Hub. See defaults/main.yml for why this re-tags instead of editing the three
+# upstream compose files.
+#
+# NEVER FATAL. If the mirror does not carry a tag - and this was written without
+# network access to verify that it does - the image is simply left to Docker Hub,
+# which is the behaviour that existed before this task. The report says which.
+# ═════════════════════════════════════════════════════════════════════════════
+- name: Seed Docker Official Images from the mirror instead of Docker Hub
+  ansible.builtin.shell: |
+    set -u
+    for img in {{ docker_hub_official_images | join(' ') }}; do
+      if docker image inspect "$img" >/dev/null 2>&1; then
+        echo "CACHED  $img (already local, no pull needed)"
+        continue
+      fi
+      mirror="{{ docker_hub_mirror_prefix }}/$img"
+      if docker pull "$mirror" >/dev/null 2>&1; then
+        docker tag "$mirror" "$img"
+        echo "SEEDED  $img (from the mirror, Docker Hub not touched)"
+      else
+        echo "MISS    $img (not on the mirror - will come from Docker Hub)"
+      fi
+    done
+  args:
+    executable: /bin/bash
+  register: hub_seed
+  changed_when: "'SEEDED' in hub_seed.stdout"
+  failed_when: false
+
+- name: Report what the mirror covered
+  ansible.builtin.debug:
+    msg: >-
+      {{ hub_seed.stdout_lines | default(['(seeding did not run)']) }}
+      Every SEEDED line is one Docker Hub pull this deploy no longer makes.
+
 - name: Download MISP docker
   git:
     repo: "https://github.com/MISP/misp-docker.git"
