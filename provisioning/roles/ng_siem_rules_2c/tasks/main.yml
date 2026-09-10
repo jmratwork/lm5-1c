@@ -104,11 +104,46 @@
       {{ puc2_payload_sha256 }}:puc2-2c-training-payload
   notify: restart wazuh-manager
 
-- name: Compile the CDB lists
-  ansible.builtin.command: /var/ossec/bin/wazuh-makelists
-  register: puc2_makelists
-  changed_when: puc2_makelists.rc == 0
-  failed_when: false
+# ── The stock CDB lists this image declares but does not ship ────────────────
+# ossec.conf's default <ruleset> block declares etc/lists/audit-keys and
+# etc/lists/amazon/*, and analysisd cannot find them. It does not shrug: it
+# DISCARDS every rule that looks them up, and then every rule keyed on those —
+#   WARNING: (7616): List 'etc/lists/audit-keys' could not be loaded. Rule '80780' will be ignored.
+#   WARNING: (7617): Signature ID '80780' was not found ... rule '80781'
+# — about thirty rules (80202-80255, 80780-80792) on every single boot, and the
+# same thirty-three warning lines at the top of every wazuh-logtest run.
+#
+# No training level depends on those rules. The reason to fix it is that the
+# preflight gate now reads exactly this class of message to decide whether
+# analysisd discarded a PUC2 rule, and a wall of known-benign noise is where an
+# unknown malignant line goes to hide.
+#
+# A placeholder entry rather than an empty file: a populated list is
+# unambiguously compilable, and this image has already been caught being
+# particular. `force: false` writes ONLY when the file is absent, so a real list
+# — should a later image ship one — is never clobbered.
+- name: Ensure the stock CDB lists the image declares actually exist
+  ansible.builtin.file:
+    path: /var/ossec/etc/lists/amazon
+    state: directory
+    owner: wazuh
+    group: wazuh
+    mode: '0750'
+
+- name: Seed the missing stock CDB lists so their rules stop being discarded
+  ansible.builtin.copy:
+    dest: "/var/ossec/etc/lists/{{ item }}"
+    force: false
+    owner: wazuh
+    group: wazuh
+    mode: '0660'
+    content: |
+      puc2-placeholder:unused
+  loop:
+    - audit-keys
+    - amazon/aws-sources
+    - amazon/aws-eventnames
+  notify: restart wazuh-manager
 
 # ── Active response wiring (UML steps 9-10) ──────────────────────────────────
 # Distinct marker: must never collide with the substrate's integration block.
@@ -168,6 +203,46 @@
     group: wazuh
     mode: '0660'
 
+# ── Compile ──────────────────────────────────────────────────────────────────
+# This used to run /var/ossec/bin/wazuh-makelists unconditionally with
+# `failed_when: false`. That binary is NOT on this image: it returned rc 2, "No
+# such file or directory", the task reported `ok`, and it compiled nothing —
+# for the whole life of this role.
+#
+# What actually compiles the lists is analysisd itself, when it parses the
+# ruleset. That is not a guess: in the 2026-09-10 build, cti-malware-hashes.cdb
+# was written at 07:14:23.176, inside the 07:14:23.157-.334 window of the
+# `wazuh-analysisd -t` run further down this file. The manager does the same on
+# every start.
+#
+# So the tool is an implementation detail and this task only has to pick one
+# that exists. The CRITERION is the artefact, asserted after the restart — a
+# compile step that reports success while producing nothing is precisely the
+# failure being corrected here.
+- name: Compile the CDB lists with whichever tool this image ships
+  ansible.builtin.shell: |
+    set -u
+    if [ -x /var/ossec/bin/wazuh-makelists ]; then
+      /var/ossec/bin/wazuh-makelists
+      echo "COMPILED_BY=wazuh-makelists rc=$?"
+    elif [ -x /var/ossec/bin/wazuh-analysisd ]; then
+      # Parsing the ruleset builds the lists as a side effect. rc is NOT judged
+      # here: a ruleset analysisd refuses is caught, reverted and reported by
+      # the validation block below, which owns that verdict.
+      /var/ossec/bin/wazuh-analysisd -t >/dev/null 2>&1
+      echo "COMPILED_BY=wazuh-analysisd-t rc=$?"
+    else
+      echo "COMPILED_BY=none"
+    fi
+  args:
+    executable: /bin/bash
+  register: puc2_makelists
+  changed_when: "'COMPILED_BY=none' not in puc2_makelists.stdout"
+
+- name: Show which tool compiled the lists
+  ansible.builtin.debug:
+    var: puc2_makelists.stdout_lines
+
 # ── Never let a bad ruleset take the manager down ────────────────────────────
 # A rule analysisd rejects is not a degraded rule: this deployment proved it
 # stops wazuh-manager from starting at all, which does not cost one training
@@ -196,6 +271,27 @@
       ansible.builtin.file:
         path: /var/ossec/ruleset/rules/9999-puc2-2c.xml
         state: absent
+
+    # The placeholder stock lists seeded above are part of what analysisd just
+    # parsed, so they are equally suspect and equally revertible. Removing them
+    # returns the manager to exactly the config it came up on — noisy warnings
+    # and all — which is a working manager. Only the files this role created can
+    # be removed: `force: false` means a pre-existing list was never touched, and
+    # a list with real content is not ours to delete.
+    - name: Take the seeded placeholder lists back off disk
+      ansible.builtin.shell: |
+        for f in audit-keys amazon/aws-sources amazon/aws-eventnames; do
+          p="/var/ossec/etc/lists/$f"
+          if [ -f "$p" ] && grep -qx 'puc2-placeholder:unused' "$p" 2>/dev/null; then
+            rm -f "$p" "$p.cdb"
+            echo "reverted $p"
+          fi
+        done
+      args:
+        executable: /bin/bash
+      register: puc2_lists_reverted
+      changed_when: puc2_lists_reverted.stdout | length > 0
+      failed_when: false
 
     # If analysisd rejects a rule, the shortest way to the right syntax is the
     # ruleset it already accepts. Show how the built-in FIM rules express the
@@ -240,6 +336,65 @@
   delay: 5
   changed_when: false
 
+# ── The compile step's actual criterion ──────────────────────────────────────
+# Assert the ARTEFACT, not the exit code of whatever tool produced it. Rule
+# 100101 reads the .cdb, never the plain list, so a .cdb that is missing, stale,
+# or built before the hash was added is a rule that loads and never matches —
+# L10 with no alert behind it, and no containment, from a role that reported
+# every task green. That is exactly what `failed_when: false` on wazuh-makelists
+# was hiding.
+#
+# The preflight gate checks this too. It belongs in both places: the gate reports
+# that the range is broken, this reports WHICH ROLE broke it, at the moment it
+# did.
+- name: Stat the CTI watchlist and the .cdb rule 100101 actually reads
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - /var/ossec/etc/lists/cti-malware-hashes
+    - /var/ossec/etc/lists/cti-malware-hashes.cdb
+  register: puc2_cdb_stat
+
+# grep -a: the .cdb is binary, and without it grep answers "Binary file matches"
+# and exits 0 without ever having looked for the hash.
+- name: Look for the payload hash inside the compiled CDB
+  ansible.builtin.command:
+    argv:
+      - grep
+      - -a
+      - -c
+      - -F
+      - "{{ puc2_payload_md5 }}"
+      - /var/ossec/etc/lists/cti-malware-hashes.cdb
+  register: puc2_cdb_hash
+  changed_when: false
+  failed_when: false
+
+- name: FAIL if the CTI watchlist did not compile into something rule 100101 can use
+  ansible.builtin.assert:
+    that:
+      - puc2_cdb_stat.results[1].stat.exists
+      - >-
+        puc2_cdb_stat.results[1].stat.mtime | float
+        >= puc2_cdb_stat.results[0].stat.mtime | float
+      - puc2_cdb_hash.rc == 0
+    fail_msg: >-
+      The CTI hash watchlist did not compile. Rule 100101 looks up
+      etc/lists/cti-malware-hashes.cdb, so training level L10 has no alert behind
+      it and rule 100103 never correlates, so containment never fires either.
+      Compiled .cdb exists: {{ puc2_cdb_stat.results[1].stat.exists }};
+      newer than its source list:
+      {{ (puc2_cdb_stat.results[1].stat.mtime | default(0) | float)
+         >= (puc2_cdb_stat.results[0].stat.mtime | default(0) | float) }};
+      carries {{ puc2_payload_md5 }}: {{ puc2_cdb_hash.rc == 0 }}.
+      The compile step reported: {{ puc2_makelists.stdout | default('(not run)') }}.
+      If it says COMPILED_BY=none, this image ships neither wazuh-makelists nor
+      wazuh-analysisd and the compile has no tool to use at all.
+    success_msg: >-
+      CTI watchlist compiled — cti-malware-hashes.cdb is newer than its source
+      and carries {{ puc2_payload_md5 }};
+      {{ puc2_makelists.stdout | default('') | trim }}.
+
 # ── Prove the ruleset actually loaded ────────────────────────────────────────
 # Context for the probe below, gathered BEFORE it so a failure is diagnosable
 # from the deployment log alone. Two very different faults produce the same
@@ -249,18 +404,34 @@
 # never a verdict; the assert stays with the live probe.
 - name: Collect the ruleset wiring analysisd is running with
   ansible.builtin.shell: |
+    # ossec.log carries non-UTF-8 bytes, so grep classifies it as BINARY and
+    # answers "Binary file /var/ossec/logs/ossec.log matches" INSTEAD of the
+    # matching lines. Every grep below therefore needs -a. Without it the
+    # 2026-09-10 build printed a bare "Binary file ... matches" where the rule
+    # counts should have been, and the startup section fell back to lines dated
+    # 2026-02-21 — the image's build date, not this deployment's.
+    #
+    # TODAY is also why the startup section is date-scoped: ossec.log is never
+    # rotated on this image, so an unscoped `tail` reads whatever the image was
+    # doing months ago and presents it as the state of this run.
+    TODAY="$(date '+%Y/%m/%d')"
     echo "=== <ruleset> block in ossec.conf ==="
     sed -n '/<ruleset>/,/<\/ruleset>/p' /var/ossec/etc/ossec.conf
-    echo "=== rule counts analysisd reported at startup ==="
-    grep -iE "rules enabled|decoders enabled|lists enabled" \
-      /var/ossec/logs/ossec.log | tail -5
-    echo "=== anything analysisd said about etc/rules ==="
-    grep -iE "local_rules|9999-puc2|etc/rules" /var/ossec/logs/ossec.log | tail -5
+    echo "=== rule counts analysisd reported at startup (today only) ==="
+    grep -a -iE "rules enabled|decoders enabled|lists enabled" \
+      /var/ossec/logs/ossec.log | grep -a -F "$TODAY" | tail -5
+    echo "=== anything analysisd said about the PUC2 ruleset (today only) ==="
+    grep -a -iE "local_rules|9999-puc2|etc/rules" \
+      /var/ossec/logs/ossec.log | grep -a -F "$TODAY" | tail -5
     echo "=== what is actually deployed ==="
+    # etc/rules/ is listed because the role empties it deliberately: the rules
+    # live in ruleset/rules on this image. local_rules.xml is NOT read back —
+    # "Remove the superseded etc/rules file" above deletes it, so the old
+    # readability check could only ever print "No such file or directory" and
+    # read as a fault.
     ls -la /var/ossec/etc/rules/ /var/ossec/ruleset/rules/9999-puc2-2c.xml
-    echo "=== can the wazuh user read both ==="
+    echo "=== can the wazuh user read the deployed ruleset ==="
     sudo -u wazuh head -1 /var/ossec/ruleset/rules/9999-puc2-2c.xml 2>&1 | head -2
-    sudo -u wazuh head -1 /var/ossec/etc/rules/local_rules.xml 2>&1 | head -2
     # THE CONTROLLED PAIR. Run the ruleset self-test FIRST and keep its whole
     # output: last round this grep ran BEFORE the self-test, so it could only
     # ever see the preceding restart, and the verdict rested on a tail -20.
@@ -274,9 +445,10 @@
       : > /tmp/puc2_analysisd_t.out
     fi
     echo "--- did the load acknowledge the PUC2 rules? ---"
-    echo "self-test mentions of 1001xx: $(grep -cE '1001[0-9][0-9]' /tmp/puc2_analysisd_t.out)"
-    echo "=== last analysisd startup lines ==="
-    grep -iE "wazuh-analysisd" /var/ossec/logs/ossec.log | tail -12
+    echo "self-test mentions of 1001xx: $(grep -acE '1001[0-9][0-9]' /tmp/puc2_analysisd_t.out)"
+    echo "=== analysisd startup lines from TODAY ==="
+    grep -a -iE "wazuh-analysisd" /var/ossec/logs/ossec.log \
+      | grep -a -F "$TODAY" | tail -12
     # wazuh-makelists is absent on this image and the compile task swallows the
     # error, so the .cdb rule 100101 looks up could silently be older than the
     # hash list it is built from. Surface both timestamps rather than assume.

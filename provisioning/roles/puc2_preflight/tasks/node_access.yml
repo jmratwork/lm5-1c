@@ -1,6 +1,14 @@
 ---
 # Prove the trainee can get a shell and run sudo on this node without a
 # credential the training never gave them. Both are set by puc2_node_access.
+#
+# The user is NOT 'ubuntu' everywhere: kali's mgmt_user is 'debian' (topology.yml),
+# and puc2_node_access already accounts for that. This file used to hardcode
+# 'ubuntu', which is half of why kali was left out of the gate entirely — and
+# kali is the node the access primer sends every trainee to for the dashboards.
+- name: Name the management user this node was provisioned with
+  ansible.builtin.set_fact:
+    puc2_pf_mgmt_user: "{{ 'debian' if inventory_hostname in ['kali', 'router'] else 'ubuntu' }}"
 
 - name: Read the NOPASSWD sudoers drop-in
   ansible.builtin.slurp:
@@ -9,13 +17,13 @@
   failed_when: false
 
 - name: Check the management user actually has passwordless sudo
-  ansible.builtin.command: "sudo -n -l -U ubuntu"
+  ansible.builtin.command: "sudo -n -l -U {{ puc2_pf_mgmt_user }}"
   register: puc2_pf_sudo_l
   changed_when: false
   failed_when: false
 
 - name: Check the management user's password is set (usable console login)
-  ansible.builtin.command: "passwd -S ubuntu"
+  ansible.builtin.command: "passwd -S {{ puc2_pf_mgmt_user }}"
   register: puc2_pf_passwd
   changed_when: false
   failed_when: false
@@ -31,11 +39,12 @@
       NODE-ACCESS preflight FAILED on {{ inventory_hostname }} — a trainee would
       be blocked before answering. /etc/sudoers.d/puc2-training carries NOPASSWD:
       {{ 'NOPASSWD' in (puc2_pf_sudoers.content | default('') | b64decode) }};
-      `sudo -l` for ubuntu shows NOPASSWD:
+      `sudo -l` for {{ puc2_pf_mgmt_user }} shows NOPASSWD:
       {{ 'NOPASSWD' in (puc2_pf_sudo_l.stdout | default('')) }};
-      ubuntu password status:
+      {{ puc2_pf_mgmt_user }} password status:
       {{ puc2_pf_passwd.stdout.split()[1] | default('?') }} (want 'P').
       Re-run the puc2_node_access play against this host.
     success_msg: >-
-      Node access OK on {{ inventory_hostname }} — ubuntu has a set password and
-      passwordless sudo; the console and every `sudo` step are unblocked.
+      Node access OK on {{ inventory_hostname }} — {{ puc2_pf_mgmt_user }} has a
+      set password and passwordless sudo; the console and every `sudo` step are
+      unblocked.

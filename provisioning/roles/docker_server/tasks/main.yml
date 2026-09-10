@@ -211,6 +211,56 @@
     insertafter: EOF
     backup: yes
 
+# ── Silence the 130-odd "variable is not set" warnings from MISP compose ─────
+# misp-docker's compose file references a large optional surface (LDAP, OIDC,
+# Azure AD, S3, SES, proxy, PyPI pins) that template.env ships commented out. On
+# every deploy compose emits one warning per unset variable — about 130 of them,
+# which is the overwhelming majority of the warnings in the build log and the
+# noise a real problem has to be spotted against.
+#
+# The names are DERIVED from the compose file rather than listed here: this repo
+# clones misp-docker at `master`, so any hardcoded list would silently rot the
+# first time upstream adds a variable.
+#
+# Only BARE `${VAR}` references are touched — the exact set compose warns about.
+# For those, compose already substitutes an empty string, so writing `VAR=`
+# makes explicit what is happening anyway and cannot change behaviour. A
+# reference carrying a default (`${VAR:-x}`) is skipped: it never warns, and
+# leaving it alone keeps its default intact.
+#
+# `grep -qE "^[[:space:]]*VAR="` matches only UNCOMMENTED definitions, so a
+# variable template.env or the tasks above actually set is never overwritten.
+- name: Pin every unset MISP compose variable to an explicit empty value
+  ansible.builtin.shell: |
+    set -u
+    cd /opt/misp-docker || { echo "ADDED=0 (no /opt/misp-docker)"; exit 0; }
+    compose=""
+    for f in docker-compose.yml compose.yml docker-compose.yaml; do
+      [ -f "$f" ] && compose="$compose $f"
+    done
+    [ -n "$compose" ] || { echo "ADDED=0 (no compose file found)"; exit 0; }
+    added=0
+    for v in $(grep -ohE '\$\{[A-Za-z_][A-Za-z0-9_]*\}' $compose \
+               | tr -d '${}' | sort -u); do
+      if ! grep -qE "^[[:space:]]*${v}=" .env; then
+        echo "${v}=" >> .env
+        added=$((added+1))
+      fi
+    done
+    echo "ADDED=$added"
+  args:
+    executable: /bin/bash
+  register: misp_env_pinned
+  changed_when: "'ADDED=0' not in misp_env_pinned.stdout"
+
+- name: Report how many MISP variables were pinned
+  ansible.builtin.debug:
+    msg: >-
+      MISP .env: {{ misp_env_pinned.stdout | trim }} previously-unset compose
+      variables pinned to empty. Behaviour is unchanged — compose was already
+      substituting a blank string for each of them; the deploy log just stops
+      saying so 130 times.
+
 - name: Deployment of MISP Docker
   community.docker.docker_compose_v2:
     project_src: "/opt/misp-docker"
@@ -435,6 +485,17 @@
     PYEOF
   register: iris_reqs_patch
   changed_when: "'patched' in iris_reqs_patch.stdout"
+
+# Compose v2 warns once per run that the top-level `version:` key is obsolete
+# and ignored. It is: the Compose Specification dropped it. Removing the key is
+# exactly what the warning asks for and changes nothing about the deployment.
+# Anchored to the start of the line so a `version:` nested inside a service
+# definition is never touched.
+- name: Drop the obsolete top-level version key from the DFIR-IRIS compose file
+  ansible.builtin.lineinfile:
+    path: /opt/dfir-iris-custom/docker-compose.yml
+    regexp: '^version:'
+    state: absent
 
 # ── Build and run — retried against transient network resets (Option 1) ──────
 

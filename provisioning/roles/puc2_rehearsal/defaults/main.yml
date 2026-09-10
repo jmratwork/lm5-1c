@@ -2,16 +2,21 @@
 # role: puc2_rehearsal
 # Fallbacks only. The authoritative values live in group_vars/puc2_2c.yml.
 #
-# This role NEVER runs in a normal deployment: its play is tagged `never`, so it
-# executes only when the operator asks for it explicitly with
-#   --tags puc2_rehearsal
-# and even then a second, belt-and-braces switch (puc2_rehearsal_enabled) must
-# be true. It fires the real attack, watches the whole detection/response chain
-# in runtime, and then puts the range back exactly as provisioning left it.
+# This role runs in EVERY deployment. It fires the real attack, watches the whole
+# detection/response chain in runtime, and then puts the range back exactly as
+# provisioning left it.
+#
+# It was opt-in until 2026-09-10, when a build shipped green with the entire
+# 100100 -> 100101 -> 100103 -> containment chain never once exercised: the
+# preflight gate had only ever asked analysisd about rule 100102. The static gate
+# cannot see a CDB lookup that does not resolve or a correlation that never
+# accumulates, so the only honest proof is to fire the thing.
 
-# Hard second switch. `never` already keeps this out of every build; this makes
-# an accidental `--tags all` or a stray tag harmless too.
-puc2_rehearsal_enabled: false
+# Kill switch, for a smoke deploy or a re-run against a range already in use:
+#   -e puc2_rehearsal_enabled=false
+# Setting it false SKIPS the drill cleanly (it is not an error), and the role
+# says out loud that the range is shipping with the runtime chain unproven.
+puc2_rehearsal_enabled: true
 
 # ── Paths and identifiers (mirror group_vars/puc2_2c.yml) ────────────────────
 puc2_injection_root: "/opt/puc2"

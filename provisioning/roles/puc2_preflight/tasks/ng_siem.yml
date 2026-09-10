@@ -43,6 +43,40 @@
     - "{{ puc2_eval_root }}/collect_evaluation.sh"
   register: puc2_pf_files
 
+# A `.cdb` that EXISTS is not a `.cdb` that is CURRENT. The 2026-09-10 build
+# ran "Compile the CDB lists" against /var/ossec/bin/wazuh-makelists, which this
+# image does not ship: rc 2, masked by failed_when:false, so the task reported
+# ok and compiled nothing. The list happened to be compiled anyway, by the
+# manager restart that followed — pure luck of ordering. Change the restart
+# order, or hand the manager a list it refuses, and the .cdb goes stale while
+# every check above still passes: rule 100101 then looks up hashes from a
+# previous run and L10's alert never fires.
+#
+# So: the compiled artefact has to be newer than its source AND has to contain
+# the hash the trainee's payload actually has.
+- name: Stat the CTI watchlist and its compiled form
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - /var/ossec/etc/lists/cti-malware-hashes
+    - /var/ossec/etc/lists/cti-malware-hashes.cdb
+  register: puc2_pf_cdb_stat
+
+# grep -a: the .cdb is binary, and without it grep prints "Binary file matches"
+# and exits 0 without having told us anything about the hash.
+- name: Look for the payload hash inside the compiled CDB
+  ansible.builtin.command:
+    argv:
+      - grep
+      - -a
+      - -c
+      - -F
+      - "{{ puc2_payload_md5 }}"
+      - /var/ossec/etc/lists/cti-malware-hashes.cdb
+  register: puc2_pf_cdb_hash
+  changed_when: false
+  failed_when: false
+
 - name: Check wazuh-manager is running
   ansible.builtin.command: systemctl is-active wazuh-manager
   register: puc2_pf_manager
@@ -90,14 +124,105 @@
   ansible.builtin.debug:
     var: puc2_pf_logtest.stdout_lines
 
+# The probe line above can only ever exercise 100102 — it is a firewall log line,
+# and 100100/100101 key on syscheck events, which the FIM daemon raises
+# internally and no log line can synthesise. That asymmetry is exactly how the
+# 2026-09-10 build shipped: 100102 proven live, 100100/100101/100103 proven only
+# to be TEXT IN A FILE. The runtime proof for those three is the rehearsal.
+#
+# What this DOES decide is the other half: analysisd announces every rule it
+# refused, and it refuses them by number. A CDB list that fails to load takes its
+# dependent rule with it —
+#   WARNING: (7616): List 'etc/lists/x' could not be loaded. Rule 'N' will be ignored.
+# — which is precisely how rule 100101 would die if the watchlist ever stopped
+# compiling, and it would die SILENTLY: the file is still on disk, the manager is
+# still active, and the 100102 probe still passes. Thirty-odd stock rules
+# (80202-80255, 80780-80792) are already being discarded this way on this image.
+# Any such warning naming 1001xx is a broken level, so it is a failed gate.
+#
+# Joined into a STRING deliberately: a folded-scalar `set_fact` is not guaranteed
+# to hand back a native list, and `"[]" | length` is 2, not 0 — an assert that
+# could never pass. An empty string is 0 either way, and it is what the failure
+# message needs to print anyway.
+- name: Collect every analysisd warning that names a PUC2 rule
+  ansible.builtin.set_fact:
+    puc2_pf_rule_warnings: >-
+      {{ puc2_pf_logtest.stdout_lines | default([])
+         | select('search', 'WARNING')
+         | select('search', '1001(00|01|02|03)')
+         | join(' / ') }}
+
+# ── The agent side of the same blind spot ───────────────────────────────────
+# Rules 100100 -> 100101 -> 100103 are fed by the victim agent's FIM telemetry.
+# Nothing in the 2026-09-10 build asked the MANAGER whether that agent had ever
+# arrived: `--arm` checks `systemctl is-active wazuh-agent` on the endpoint, which
+# a never-enrolled agent passes happily. An agent that installed, started, and
+# failed to register produces exactly the range that was shipped — green
+# everywhere, and no alert for L10 to read.
+#
+# The agent's NAME is not assertable here: roles/victim sets a sequential
+# hostname, so it is not necessarily 'victim'. Its IP is not assertable either —
+# enrolment via WAZUH_MANAGER commonly registers the address as `any`. What is
+# assertable is the shape of a working manager: at least one enrolled agent that
+# is not the server itself, and at least one of those reporting Active.
+- name: Ask the manager which agents are enrolled and active
+  ansible.builtin.shell: |
+    set +e
+    echo "CLIENT_KEYS:"
+    if [ -r /var/ossec/etc/client.keys ]; then
+      grep -av '^#' /var/ossec/etc/client.keys | grep -v '^[[:space:]]*$' \
+        | awk '{print "  id="$1" name="$2" ip="$3}'
+    else
+      echo "  (client.keys unreadable)"
+    fi
+    echo "AGENT_CONTROL:"
+    if [ -x /var/ossec/bin/agent_control ]; then
+      /var/ossec/bin/agent_control -l 2>&1 | sed 's/^/  /'
+    else
+      echo "  (agent_control not shipped by this image)"
+    fi
+  args:
+    executable: /bin/bash
+  register: puc2_pf_agents
+  changed_when: false
+  failed_when: false
+
+- name: Show the manager's view of its agents
+  ansible.builtin.debug:
+    var: puc2_pf_agents.stdout_lines
+
+- name: Reduce the agent listing to the two facts the gate needs
+  ansible.builtin.set_fact:
+    # An enrolled agent other than the manager's own id 000.
+    puc2_pf_agent_enrolled: >-
+      {{ puc2_pf_agents.stdout_lines | default([])
+         | select('search', '^\s+id=')
+         | reject('search', 'id=000')
+         | list | length > 0 }}
+    # agent_control marks the manager's own entry '(server)'; a real endpoint
+    # reporting in is any other line that says Active.
+    puc2_pf_agent_active: >-
+      {{ puc2_pf_agents.stdout_lines | default([])
+         | select('search', 'Active')
+         | reject('search', '\(server\)')
+         | list | length > 0 }}
+    # Distinguishes "no active agent" from "this image cannot tell us", so the
+    # fail message names the right problem.
+    puc2_pf_agent_control_present: >-
+      {{ 'agent_control not shipped' not in (puc2_pf_agents.stdout | default('')) }}
+
 # Context for the failure message, NOT a verdict. ossec.log accumulates across
 # the whole life of the image, including benign startup errors from before this
 # overlay ran, so asserting on it would fail deployments for stale noise — the
 # gate becoming the blocker it exists to prevent. The verdict stays with the
 # ruleset test above, which reflects the ruleset as it is right now.
+#
+# -a is not optional: ossec.log holds non-UTF-8 bytes, so without it grep answers
+# "Binary file ... matches" and suppresses the very lines this task exists to
+# collect — turning the context behind a failure message into one useless line.
 - name: Collect what analysisd has said about rules and decoders
   ansible.builtin.shell: >-
-    grep -iE 'error loading|invalid rule|duplicated? (rule|sid)|error reading xml' \
+    grep -a -iE 'error loading|invalid rule|duplicated? (rule|sid)|error reading xml' \
       /var/ossec/logs/ossec.log 2>/dev/null | tail -10
   register: puc2_pf_ossec_log
   changed_when: false
@@ -115,6 +240,16 @@
       # L8: the CDB list must carry the payload hash or 100101 never fires
       - puc2_payload_md5 in (puc2_pf_cdb.content | b64decode)
       - puc2_pf_files.results[0].stat.exists
+      # ...and the COMPILED form is what analysisd reads, so it must exist, be
+      # at least as new as the source list, and contain the hash itself
+      - puc2_pf_cdb_stat.results[1].stat.exists
+      - >-
+        puc2_pf_cdb_stat.results[1].stat.mtime | float
+        >= puc2_pf_cdb_stat.results[0].stat.mtime | float
+      - puc2_pf_cdb_hash.rc == 0
+      # 100101's lookup resolves through this registration; without it the rule
+      # loads and never matches
+      - "'etc/lists/cti-malware-hashes' in (puc2_pf_ossec.content | b64decode)"
       # L25's evidence pack, named by absolute path in the level text
       - puc2_pf_files.results[1].stat.exists
       - puc2_pf_files.results[1].stat.executable
@@ -123,6 +258,23 @@
       # an unloaded one, and "could not check" must not read as "checked".
       - puc2_pf_logtest_bin.stat.exists
       - "'100102' in (puc2_pf_logtest.stdout | default(''))"
+      # ...and it must not have QUIETLY DISCARDED any of the four. A rule
+      # analysisd refused is a level with no evidence behind it.
+      - puc2_pf_rule_warnings | length == 0
+      # The FIM telemetry 100100/100101/100103 are built on has to be arriving:
+      # an agent that never enrolled leaves L10 with no alert to read. Enrolment
+      # is decidable from client.keys, which always exists.
+      - puc2_pf_agent_enrolled | bool
+      # Liveness needs agent_control, and this image has already been caught
+      # shipping without a binary the roles assumed (wazuh-makelists). Asserting
+      # on a tool that is not there would fail a healthy range for the crime of
+      # being unmeasurable — the mistake that once read logtest's "unrecognized
+      # argument" as a broken ruleset. So: blocking when the tool can answer,
+      # skipped when it cannot, and the gap is named in the report below. The
+      # rehearsal is what proves liveness either way, by firing the chain.
+      - >-
+        (puc2_pf_agent_active | bool)
+        or not (puc2_pf_agent_control_present | bool)
       # L19/L20/L21: containment must fire from the CORRELATION rule only.
       # With 100101 in the set it fires mid-delivery, the C2 beacon never
       # reaches the egress filter, and L12 loses its evidence.
@@ -143,11 +295,34 @@
       100103: {{ 'id="100103"' in (puc2_pf_rules.content | b64decode) }};
       payload hash on the watchlist:
       {{ puc2_payload_md5 in (puc2_pf_cdb.content | b64decode) }};
+      compiled .cdb present:
+      {{ puc2_pf_cdb_stat.results[1].stat.exists | default(false) }},
+      newer than its source list:
+      {{ (puc2_pf_cdb_stat.results[1].stat.mtime | default(0) | float)
+         >= (puc2_pf_cdb_stat.results[0].stat.mtime | default(0) | float) }},
+      carrying the payload hash: {{ puc2_pf_cdb_hash.rc | default(1) == 0 }}
+      (a stale or hash-less .cdb means rule 100101 never matches and L10 has no
+      alert — check that the list compile step actually compiled something);
+      list registered in ossec.conf:
+      {{ 'etc/lists/cti-malware-hashes' in (puc2_pf_ossec.content | b64decode) }};
+      analysisd warnings naming a PUC2 rule:
+      {{ puc2_pf_rule_warnings if (puc2_pf_rule_warnings | default('') | length > 0)
+         else '(none)' }}
+      (any of these means analysisd DISCARDED that rule — the level behind it has
+      no evidence);
+      an agent other than the manager is enrolled:
+      {{ puc2_pf_agent_enrolled | default(false) }},
+      reporting Active: {{ puc2_pf_agent_active | default(false) }}
+      (agent_control available to ask: {{ puc2_pf_agent_control_present | default(false) }});
+      the manager sees: {{ puc2_pf_agents.stdout | default('(not read)') }};
       {{ puc2_eval_root }}/collect_evaluation.sh executable:
       {{ puc2_pf_files.results[1].stat.executable | default(false) }}.
       Re-run: ansible-playbook provisioning/playbook.yml --limit ng-siem
     success_msg: >-
       NG-SIEM OK — analysisd matched the probe line to rule 100102, so
       local_rules.xml is loaded and the built-in firewall decoding feeds it;
-      hash watchlist compiled, containment triggered by
-      rule {{ puc2_pf_ar_rules }} only.
+      it discarded none of 100100-100103; the hash watchlist is compiled, fresh
+      and carries {{ puc2_payload_md5 }}; an endpoint agent is enrolled
+      {{ 'and reporting Active' if (puc2_pf_agent_active | bool)
+         else '(liveness unmeasurable on this image — the rehearsal proves it)' }};
+      containment triggered by rule {{ puc2_pf_ar_rules }} only.

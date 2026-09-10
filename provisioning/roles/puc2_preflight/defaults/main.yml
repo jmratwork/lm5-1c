@@ -30,3 +30,37 @@ puc2_logtest_probe_line: >-
   SRC={{ puc2_expected_victim_ip }} DST={{ puc2_expected_c2_ip }} LEN=60 TOS=0x00
   PREC=0x00 TTL=64 ID=1 DF PROTO=TCP SPT=54321 DPT={{ puc2_c2_port }} WINDOW=64240
   RES=0x00 SYN URGP=0
+
+# ---- Analyst workstation (kali) --------------------------------------------
+# The four dashboards exactly as the training's access primer prints them. They
+# are checked by host:port rather than by URL: the gate is asking whether a
+# trainee's browser can get there at all, and the services answer with different
+# HTTP statuses depending on session state. Deliberately the `puc2_expected_*`
+# literals, not the resolved facts — these are the addresses the LEVEL TEXT
+# hardcodes, so they are what has to be reachable.
+puc2_pf_dashboards:
+  - name: "NG-SIEM (Wazuh) https://{{ puc2_expected_ng_siem_ip }}"
+    host: "{{ puc2_expected_ng_siem_ip }}"
+    port: 443
+  - name: "CTI-SS (MISP) https://{{ puc2_expected_docker_server_ip }}:8443"
+    host: "{{ puc2_expected_docker_server_ip }}"
+    port: 8443
+  - name: "CICMS (DFIR-IRIS) https://{{ puc2_expected_docker_server_ip }}:8083"
+    host: "{{ puc2_expected_docker_server_ip }}"
+    port: 8083
+  - name: "NG-SOAR http://{{ puc2_expected_docker_server_ip }}:8080"
+    host: "{{ puc2_expected_docker_server_ip }}"
+    port: "{{ puc2_soar_webhook_port }}"
+
+# Generous: these run right after the containers came up, and a dashboard that
+# needs a few seconds more is not a dashboard a trainee cannot reach.
+puc2_pf_dashboard_timeout: 30
+
+# Browser executables that would satisfy "use its browser" in level 1.
+puc2_pf_browsers:
+  - firefox
+  - firefox-esr
+  - chromium
+  - chromium-browser
+  - google-chrome
+  - epiphany

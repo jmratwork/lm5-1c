@@ -14,6 +14,19 @@ Read-only. It arms the scenario — `--arm` is the injection script's read-only
 mode — and reads back the live services. It never fires the attack and never
 contains the endpoint.
 
+**What this gate can and cannot decide.** It proves statically that every graded
+answer is *obtainable*. It cannot prove that a rule *fires*: rules 100100 and
+100101 key on syscheck events, which the FIM daemon raises internally and no log
+line can synthesise, so `wazuh-logtest` can only ever exercise 100102. The
+runtime half — 100101 alerting, 100103 correlating, containment writing the
+markers — belongs to `puc2_rehearsal`, which fires the real scenario and
+self-cleans immediately before this gate runs. Neither is optional; a build that
+skips the rehearsal ships with that half unproven and says so in the log.
+
+Hosts: `ng-siem`, `victim`, `docker-server` **and `kali`** — the analyst
+workstation is in the gate because the access primer sends every trainee there
+for the four SOC dashboards, and it is the only node whose image ships a desktop.
+
 ## Coverage of the 15 hands-on levels
 
 Of the 30 levels, 15 are hands-on and 8 informational + 7 assessment do not
@@ -22,11 +35,12 @@ dashboard.**
 
 | Level | Answer | Proven by | Where |
 |---|---|---|---|
+| L1 | (no answer — access primer) | kali has a browser, a graphical session, and a live TCP route to all four dashboards; every node's login user has a set password and passwordless sudo | `kali_access.yml`, `node_access.yml` |
 | L4 | `puc2-2c-armed` | token printed by an `--arm` run in which every check passed | `victim.yml` |
 | L5 | `invoice.exe` | `--arm` verifies the lure is staged and the mail delivered, **and** the mail really carries an `href=` naming the payload — which is the route the level prescribes | `victim.yml` |
 | L8 | `44d88612…abb02f` | hash on the NG-SIEM CDB watchlist **and** on the MISP event | `ng_siem.yml`, `docker_server.yml` |
 | L9 | `T1566.001` | tag read back off the live MISP event | `docker_server.yml` |
-| L10 | `100101` | rule loaded in `local_rules.xml` | `ng_siem.yml` |
+| L10 | `100101` | rule present in `local_rules.xml`, analysisd reports having discarded none of 100100-100103, the CDB watchlist is compiled fresh and carries the payload hash, and an endpoint agent is enrolled to feed it — **fired for real by `puc2_rehearsal`** | `ng_siem.yml` + rehearsal |
 | L11 | `targeted` | derivable from the level text — no environment dependency | — |
 | L14 | `CASE-PUC2-2C` | case matched on its `case_soc_id` **field** in DFIR-IRIS | `docker_server.yml` → `cicms_2c/find_case.yml` |
 | L15 | `c2.puc2-training.lab` | domain IOC on the live MISP event | `docker_server.yml` |

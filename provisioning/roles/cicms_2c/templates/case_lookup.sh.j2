@@ -7,8 +7,16 @@
 # the training never depends on a graphical desktop being present.
 #
 # It distinguishes the scenario case (SOC id {{ puc2_case_soc_id }}) from the
-# alert-derived cases the custom-iris integration keeps creating (named
-# WAZUH-...), because L14 asks for the scenario one.
+# alert-derived cases the custom-iris integration keeps creating, because L14
+# asks for the scenario one.
+#
+# NOTE ON NAMING — this helper used to tell trainees the other cases were
+# "named WAZUH-...". They are not. custom-iris puts that prefix on the
+# case_soc_id FIELD; the case NAME it generates reads
+#   #4 - [550] Integrity checksum changed. on ng-siem
+# so the word WAZUH appears nowhere in the listing below and anyone who went
+# looking for it found nothing. The listing now prints the SOC id alongside the
+# name, so the distinction the text draws is one the output actually shows.
 #
 # The SOC id is not in the /manage/cases/list payload on every IRIS version, so
 # — exactly like the deployment gate's find_case — this reads each case back
@@ -64,7 +72,11 @@ fi
 
 echo
 echo "  Cases in CICMS (${COUNT} total):"
-printf '%s' "${ROWS}" | jq -r '.[] | "    id=\(.case_id)  name=\(.case_name // .name // "?")"'
+# soc_id is printed because it is the field L14 actually grades and the only
+# place the WAZUH- prefix appears. Older IRIS versions omit it from the list
+# payload, hence the "-" fallback rather than an empty column.
+printf '%s' "${ROWS}" | jq -r '.[] |
+    "    id=\(.case_id)  soc_id=\(.case_soc_id // "-")  name=\(.case_name // .name // "?")"'
 
 echo
 # The RESULT line is the machine-readable verdict the deployment gate asserts on.
@@ -73,7 +85,9 @@ echo
 # helper once reported a missing case as green.
 if [ -n "${scenario_id}" ]; then
     echo "  Scenario case  : ${WANT_SOC_ID}  (case id ${scenario_id})   <-- L14 answer"
-    echo "  The WAZUH-... cases beside it are the custom-iris alert-derived cases."
+    echo "  The other cases are auto-created by the custom-iris integration, one"
+    echo "  per NG-SIEM alert. Their names read '#N - [rule] ... on ng-siem' and"
+    echo "  their soc_id carries a WAZUH- prefix. L14 wants the scenario case."
     echo "RESULT: FOUND ${WANT_SOC_ID} case_id=${scenario_id}"
 else
     echo "RESULT: NOT_FOUND"

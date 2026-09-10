@@ -1,10 +1,10 @@
 ---
 # =============================================================================
-# role: puc2_rehearsal   (hosts: ng-siem, victim, docker-server — opt-in, never)
+# role: puc2_rehearsal   (hosts: ng-siem, victim, docker-server — every build)
 #
+# On its own, against an already-provisioned sandbox:
 #   ansible-playbook provisioning/playbook.yml \
-#     --tags puc2_rehearsal -e puc2_rehearsal_enabled=true \
-#     --limit ng-siem,victim,docker-server
+#     --tags puc2_rehearsal --limit ng-siem,victim,docker-server
 #
 # WHY THIS EXISTS
 # puc2_preflight proves, statically, that every graded answer is OBTAINABLE: the
@@ -19,8 +19,8 @@
 # provisioning left it — never "already attacked".
 #
 # SAFETY MODEL
-# - `never` tag on the play: absent from every normal run.
-# - puc2_rehearsal_enabled: a second switch that must be set explicitly.
+# - It runs BEFORE handover, never against a range in use by students.
+# - puc2_rehearsal_enabled=false skips it cleanly, for a smoke deploy.
 # - block/rescue/always: cleanup runs whether the chain passes, fails, or errors.
 # - Tasks are guarded by inventory_hostname; the manager-side checks run on
 #   ng-siem, the endpoint side on victim. No task touches docker-server; it is
@@ -33,18 +33,26 @@
 # run on its own.
 # =============================================================================
 
-- name: Refuse to run unless explicitly enabled
-  ansible.builtin.assert:
-    that:
-      - puc2_rehearsal_enabled | bool
-    fail_msg: >-
-      puc2_rehearsal is a destructive, opt-in drill. Re-run with
-      -e puc2_rehearsal_enabled=true once you understand it fires the attack
-      and then self-cleans.
-    success_msg: "Rehearsal enabled — firing the scenario and watching the chain."
+# A disabled rehearsal is a deliberate operator choice, not an error — so it
+# skips rather than fails. It does not skip QUIETLY: the whole point of promoting
+# this role into the build is that "the runtime chain was never exercised" must
+# never again be something you can only discover by reading 5,000 lines of
+# deployment log.
+- name: Announce that the runtime chain will NOT be proven
+  ansible.builtin.debug:
+    msg: >-
+      REHEARSAL SKIPPED (puc2_rehearsal_enabled=false) — this range ships
+      WITHOUT runtime proof of 100101 -> 100102 -> 100103 -> active response ->
+      markers -> quarantine. The preflight gate below still proves every graded
+      answer is obtainable statically, but nothing here confirms that rule
+      100101's CDB lookup resolves, that 100103 correlates, or that containment
+      writes the markers L19/L21 grade. Re-run without the flag before handing
+      the sandbox to students.
   run_once: true
+  when: not (puc2_rehearsal_enabled | bool)
 
 - name: PUC2 2c rehearsal — fire the chain, verify it, then undo it
+  when: puc2_rehearsal_enabled | bool
   block:
 
     # ── Readiness (victim) ───────────────────────────────────────────────────
@@ -83,7 +91,7 @@
     # actionable message naming the exact link that never appeared.
     - name: Wait for rule 100101 (malware detected — L10)
       ansible.builtin.shell: >-
-        grep -Ew '100101' {{ puc2_rehearsal_alerts_log }} | tail -1
+        grep -a -Ew '100101' {{ puc2_rehearsal_alerts_log }} | tail -1
       register: puc2_reh_100101
       changed_when: false
       failed_when: false
@@ -104,7 +112,7 @@
 
     - name: Wait for rule 100102 (blocked C2 beacon)
       ansible.builtin.shell: >-
-        grep -Ew '100102' {{ puc2_rehearsal_alerts_log }} | tail -1
+        grep -a -Ew '100102' {{ puc2_rehearsal_alerts_log }} | tail -1
       register: puc2_reh_100102
       changed_when: false
       failed_when: false
@@ -125,7 +133,7 @@
 
     - name: Wait for rule 100103 (correlated targeted attack — L11/L12)
       ansible.builtin.shell: >-
-        grep -Ew '100103' {{ puc2_rehearsal_alerts_log }} | tail -1
+        grep -a -Ew '100103' {{ puc2_rehearsal_alerts_log }} | tail -1
       register: puc2_reh_100103
       changed_when: false
       failed_when: false
@@ -148,7 +156,7 @@
     # ── Link 4-7: response on the endpoint (victim) ──────────────────────────
     - name: Wait for the active response to execute (L19/L20)
       ansible.builtin.shell: >-
-        grep -F 'puc2-isolate' {{ puc2_rehearsal_ar_log }} | tail -1
+        grep -a -F 'puc2-isolate' {{ puc2_rehearsal_ar_log }} | tail -1
       register: puc2_reh_ar
       changed_when: false
       failed_when: false
@@ -376,6 +384,12 @@
   # Evidence is split across hosts (alert lines on ng-siem, markers on victim),
   # so the template reads both out of hostvars. Written before the preflight
   # re-run so the report survives even if that re-run trips.
+  # The report is EVIDENCE, not a verdict, and it is written to the controller's
+  # own checkout — which on the CyberRangeCZ runner is a throwaway clone under
+  # /app/ansible_repo that nobody reads afterwards, and which may be read-only.
+  # Now that this role gates every build, a controller that cannot take the file
+  # must not be able to sink a range whose chain actually passed. The verdict
+  # below is what fails the deployment; this only records the detail.
 - name: Write the rehearsal report
   ansible.builtin.template:
     src: REHEARSAL_REPORT.md.j2
@@ -384,18 +398,43 @@
   delegate_to: localhost
   become: false
   run_once: true
+  register: puc2_reh_report
+  # ignore_errors, NOT failed_when:false — the latter rewrites `failed` to false,
+  # which would make the notice below unreachable and the miss silent.
+  ignore_errors: true
+  when: puc2_rehearsal_enabled | bool
+
+- name: Note that the rehearsal report could not be written
+  ansible.builtin.debug:
+    msg: >-
+      Rehearsal report NOT written to validation/REHEARSAL_REPORT.md
+      ({{ puc2_reh_report.msg | default('unknown reason') }}). The verdict below
+      is unaffected — every link's evidence is in this deployment log.
+  run_once: true
+  when:
+    - puc2_rehearsal_enabled | bool
+    - puc2_reh_report.failed | default(false)
 
   # ── Re-prove the range is back to a handover-ready state ────────────────────
   # Criterion (3): cleanup must leave puc2_preflight green again. Running it here
   # rather than trusting the cleanup makes that a verified fact — and if anything
   # was not restored, this fails loudly, on the host where it is wrong.
+  #
+  # Skipped when the drill is: the preflight play runs immediately after this one
+  # anyway, so re-including it here would only double a gate that already ran.
 - name: Re-prove the preflight gate after the rehearsal
   ansible.builtin.include_role:
     name: puc2_preflight
+  when: puc2_rehearsal_enabled | bool
 
   # ── Signal the rehearsal's own verdict ──────────────────────────────────────
   # Cleanup and the report are done; now fail non-zero if any link broke, so a
   # broken chain is never a silently green run. The report names which link.
+  #
+  # `default(false)` is the correct reading for a host that never recorded a
+  # verdict — but ONLY while the drill ran. With the drill skipped no host records
+  # anything, so this must be skipped too or turning the kill switch on would fail
+  # every deployment for the crime of being switched off.
 - name: Fail if any link of the chain broke
   ansible.builtin.assert:
     that:
@@ -403,11 +442,13 @@
       - hostvars['victim'].puc2_reh_chain_ok | default(false)
     fail_msg: >-
       Rehearsal FAILED — a link of the detection/response chain broke. See
-      validation/REHEARSAL_REPORT.md for which one and the overlay to fix. The
-      range was still restored and preflight re-run.
+      validation/REHEARSAL_REPORT.md for which one and the overlay to fix, or
+      the LINK n BROKEN message earlier in this log. The range was still
+      restored and preflight re-run.
     success_msg: >-
       Rehearsal PASSED — 100101 -> 100102 -> 100103 -> active response ->
       markers -> quarantine all confirmed in runtime, range restored, preflight
       green.
   run_once: true
   delegate_to: localhost
+  when: puc2_rehearsal_enabled | bool

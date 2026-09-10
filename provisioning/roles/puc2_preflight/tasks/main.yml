@@ -35,20 +35,32 @@
   ansible.builtin.include_tasks: training_contract.yml
   when: inventory_hostname == 'docker-server'
 
+# The analyst workstation. kali runs none of the overlay's services, so it used
+# to be outside the gate entirely — but level 1 sends every trainee there for all
+# four dashboards, because it is the only node with a desktop and the dashboards
+# sit on testnet addresses no outside browser reaches.
+- name: Preflight — the analyst workstation can reach the SOC dashboards
+  ansible.builtin.include_tasks: kali_access.yml
+  when: inventory_hostname == 'kali'
+
 # The training runs `sudo` on every node with a shell step; without passwordless
-# sudo and a known login, the trainee is blocked before answering anything. Prove
-# both on the three nodes they touch.
+# sudo and a known login, the trainee is blocked before answering anything.
+# kali included: puc2_node_access has always set its `debian` user up, but
+# nothing ever checked that it took.
 - name: Preflight — node login and passwordless sudo are in place
   ansible.builtin.include_tasks: node_access.yml
-  when: inventory_hostname in ['victim', 'ng-siem', 'docker-server']
+  when: inventory_hostname in ['victim', 'ng-siem', 'docker-server', 'kali']
 
 - name: Report which graded levels this host just proved
   ansible.builtin.debug:
     msg: >-
       {{ inventory_hostname }} preflight PASSED — levels proven here:
-      {{ {'ng-siem': 'L8 (watchlist), L10, plus the 100102/100103 correlation
+      {{ {'ng-siem': 'L8 (watchlist, compiled and fresh), L10, the agent
+          telemetry those rules are built on, plus the 100102/100103 correlation
           evidence L12 needs and the containment trigger L19/L20/L21 depend on',
           'victim': 'L4, L5, L19, L21, and the administrative channel that keeps
           L20/L21 answerable after containment',
-          'docker-server': 'L8 (event), L9, L14, L15, L18, L20, L24, L26'}
+          'docker-server': 'L8 (event), L9, L14, L15, L18, L20, L24, L26',
+          'kali': 'L1 — the analyst workstation the access primer sends every
+          trainee to: browser, desktop and a route to all four dashboards'}
          [inventory_hostname] | default('none') }}

@@ -1,0 +1,121 @@
+---
+# =============================================================================
+# The analyst workstation side of the gate.
+#
+# The training's access primer (level 1) is unambiguous about kali's role: it is
+# "the analyst workstation: use its browser to reach the four dashboards", and
+# it is the ONLY node whose image ships a graphical desktop. The four dashboards
+# live on testnet addresses, so no browser outside the sandbox can reach them —
+# if kali has no browser, no graphical session, or no route to 10.0.16.70 and
+# 10.0.16.60, then every GUI instruction in the training is dead text and the
+# whole exercise collapses onto the console fallbacks.
+#
+# None of that was checked before. The role that would have checked it,
+# puc2_access_probe, was tagged `never`, so on 2026-09-10 it gathered facts on
+# seven hosts and ran zero tasks. This file is the part of that probe that is a
+# PASS/FAIL question about whether a trainee is blocked, promoted into the gate;
+# puc2_access_probe stays as the opt-in, writes-a-report diagnostic it is.
+#
+# Note kali is not otherwise touched by the overlay: it holds the C2 address as
+# an indicator only, and no trainee ever logs into it as an attacker.
+# =============================================================================
+
+# `wait_for` needs nothing but the Python that Ansible already requires, so a
+# missing curl on the image cannot turn "the dashboards are reachable" into an
+# unanswerable question. TCP reach is the thing that actually breaks here: the
+# dashboards answer 200/302/401 depending on session state, so an HTTP status is
+# evidence, not a criterion.
+- name: Probe each SOC dashboard's port from the analyst workstation
+  ansible.builtin.wait_for:
+    host: "{{ item.host }}"
+    port: "{{ item.port }}"
+    timeout: "{{ puc2_pf_dashboard_timeout }}"
+    state: started
+  loop: "{{ puc2_pf_dashboards }}"
+  loop_control:
+    label: "{{ item.name }} ({{ item.host }}:{{ item.port }})"
+  register: puc2_pf_dash
+  # ignore_errors, NOT failed_when:false — the latter REWRITES `failed` to false
+  # on every item, which would leave the filter below unable to tell a timed-out
+  # dashboard from a reachable one and hand back a permanently green gate.
+  ignore_errors: true
+
+# Kept as a joined STRING rather than a list: a `set_fact` whose value is a
+# folded scalar is not guaranteed to come back as a native list, and
+# `"[]" | length` is 2, not 0 — an assert that can never pass. A string is 0 when
+# it is empty in every case, and it is also what the message wants to print.
+- name: Name the dashboards this node cannot reach
+  ansible.builtin.set_fact:
+    puc2_pf_dash_unreachable: >-
+      {{ puc2_pf_dash.results | default([])
+         | selectattr('failed', 'defined') | selectattr('failed')
+         | map(attribute='item') | map(attribute='name') | join(', ') }}
+
+# A desktop with no browser is as blocking as no desktop. Look for the actual
+# executables rather than asking the package manager, so a browser installed by
+# any route counts.
+- name: Look for a browser and a graphical session
+  ansible.builtin.shell: |
+    set +e
+    echo "BROWSERS:"
+    for b in {{ puc2_pf_browsers | join(' ') }}; do
+      p=$(command -v "$b" 2>/dev/null) && echo "  found: $b ($p)"
+    done
+    echo "DESKTOP:"
+    echo "  default target: $(systemctl get-default 2>/dev/null || echo '?')"
+    echo "  xsessions: $(ls -1 /usr/share/xsessions/ 2>/dev/null | tr '\n' ' ')"
+    echo "  wayland-sessions: $(ls -1 /usr/share/wayland-sessions/ 2>/dev/null | tr '\n' ' ')"
+    pgrep -x Xorg     >/dev/null 2>&1 && echo "  running: Xorg"
+    pgrep -x Xwayland >/dev/null 2>&1 && echo "  running: Xwayland"
+    for dm in gdm3 gdm sddm lightdm xrdp; do
+      systemctl is-enabled "$dm" >/dev/null 2>&1 && echo "  display-manager enabled: $dm"
+    done
+  args:
+    executable: /bin/bash
+  register: puc2_pf_desktop
+  changed_when: false
+  failed_when: false
+
+- name: Show what the analyst workstation offers
+  ansible.builtin.debug:
+    var: puc2_pf_desktop.stdout_lines
+
+# "A desktop exists" has several equally valid shapes across images — a session
+# file, a live X server, an enabled display manager, a graphical default target.
+# Requiring one specific shape would fail a perfectly usable workstation, so any
+# of them counts. Requiring NONE of them is what the old build effectively did.
+- name: Reduce the workstation probe to the two facts the gate needs
+  ansible.builtin.set_fact:
+    puc2_pf_has_browser: >-
+      {{ puc2_pf_desktop.stdout_lines | default([])
+         | select('search', '^\s+found:') | list | length > 0 }}
+    puc2_pf_has_desktop: >-
+      {{ (puc2_pf_desktop.stdout | default('')) is search('xsessions: \S')
+         or (puc2_pf_desktop.stdout | default('')) is search('wayland-sessions: \S')
+         or (puc2_pf_desktop.stdout | default('')) is search('running: X')
+         or (puc2_pf_desktop.stdout | default('')) is search('display-manager enabled:')
+         or (puc2_pf_desktop.stdout | default('')) is search('default target: graphical') }}
+
+- name: GATE — the analyst workstation can actually reach the SOC dashboards
+  ansible.builtin.assert:
+    that:
+      - puc2_pf_dash_unreachable | length == 0
+      - puc2_pf_has_browser | bool
+      - puc2_pf_has_desktop | bool
+    fail_msg: >-
+      ANALYST-WORKSTATION preflight FAILED on {{ inventory_hostname }} — the
+      training sends every trainee here for the four SOC dashboards and they
+      would not get there. Dashboards unreachable from this node:
+      {{ puc2_pf_dash_unreachable if (puc2_pf_dash_unreachable | length > 0) else '(none)' }}
+      (checked: {{ puc2_pf_dashboards | map(attribute='name') | join(', ') }});
+      a browser is installed: {{ puc2_pf_has_browser }};
+      a graphical session is available: {{ puc2_pf_has_desktop }}.
+      The node reported: {{ puc2_pf_desktop.stdout | default('(not read)') }}
+      Every hands-on level also has a console route, so this is not a dead
+      range — but level 1 promises a desktop on this node and the GUI half of
+      the exercise is gone until it is fixed.
+    success_msg: >-
+      Analyst workstation OK — {{ inventory_hostname }} has a browser and a
+      graphical session, and reaches all
+      {{ puc2_pf_dashboards | length }} dashboards
+      ({{ puc2_pf_dashboards | map(attribute='name') | join(', ') }}).

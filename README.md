@@ -15,19 +15,32 @@ The platform clones **this single repository**: `topology.yml` at the root and
 
 This sandbox is **not** built from scratch. It sits on the proven substrate of
 [`NG-SOC-eu/ng-soc-ansible@integrations`](https://github.com/NG-SOC-eu/ng-soc-ansible/tree/integrations),
-which is vendored here **byte-identical**:
+vendored here:
 
-| Vendored verbatim | What it gives us |
-|---|---|
-| `topology.yml` | the tested flat `testnet` 10.0.16.0/24 |
-| `provisioning/roles/all/` | `/etc/hosts` wiring, sandbox command logging |
-| `provisioning/roles/docker_server/` | MISP, DFIR-IRIS, NG-SOAR; publishes `misp_api_key`, `iris_api_key`, `docker_server_internal_ip` |
-| `provisioning/roles/ng-siem/` | the `siemng` image (Wazuh + SPHYNX stack); injects the MISP and `custom-iris` integrations into `ossec.conf` |
-| `provisioning/roles/victim/` | Wazuh agent, already enrolled against `ng-siem` |
+| Vendored | What it gives us | Local changes |
+|---|---|---|
+| `topology.yml` | the tested flat `testnet` 10.0.16.0/24 | none |
+| `provisioning/roles/all/` | `/etc/hosts` wiring, sandbox command logging | none of substance |
+| `provisioning/roles/docker_server/` | MISP, DFIR-IRIS, NG-SOAR; publishes `misp_api_key`, `iris_api_key`, `docker_server_internal_ip` | **yes** — hardcoded credentials moved to vault, the DFIR-IRIS build no longer depends on a `github.com` clone, unset MISP compose variables pinned, obsolete `version:` key dropped |
+| `provisioning/roles/ng-siem/` | the `siemng` image (Wazuh + SPHYNX stack); injects the MISP and `custom-iris` integrations into `ossec.conf` | minor |
+| `provisioning/roles/victim/` | Wazuh agent, enrolled against `ng-siem` at install time via `WAZUH_MANAGER` | minor |
+
+This table said "vendored **byte-identical**" long after that stopped being
+true — `docker_server` alone carries nine commits. Where the substrate is
+modified it is because it had to be (public credentials, an unreachable build
+dependency) and the reason is in the commit; the *scenario* itself adds nothing
+to these roles.
 
 Sub Case 2c is layered on top as an **additive overlay** of `*_2c` roles that run
 *after* them and use their own `blockinfile` markers, so the substrate's
 `ossec.conf` integrations are never clobbered.
+
+One substrate promise is worth singling out: `roles/victim` sets
+`WAZUH_MANAGER` at package-install time, so the agent enrols itself. Nothing
+verified that it had until the preflight gate started asking the *manager* which
+agents it holds — an agent that installs, starts and never registers passes
+`systemctl is-active` on the endpoint and produces a range where no rule that
+depends on FIM telemetry can ever fire.
 
 ### Trimmed to the UML's components
 
@@ -106,9 +119,9 @@ Flat, single-subnet testnet — the layout the substrate is tested on:
         ───────── testnet 10.0.16.0/24 ─────────
          │            │            │           │
       kali .50   docker-server .60  ng-siem .70  victim .100
-   (deployed by  (MISP/IRIS/       (siemng:      (Wazuh agent,
-    substrate,    NG-SOAR)          Wazuh+SPHYNX) FIM + AR,
-    UNUSED)                                       injection target)
+   (analyst      (MISP/IRIS/       (siemng:      (Wazuh agent,
+    workstation;  NG-SOAR)          Wazuh+SPHYNX) FIM + AR,
+    C2 IOC)                                       injection target)
 ```
 
 ### UML actor → host mapping
@@ -121,10 +134,24 @@ Flat, single-subnet testnet — the layout the substrate is tested on:
 | CICMS | `docker-server` | 10.0.16.60 | DFIR-IRIS `:8083` |
 | NG-SOAR | `docker-server` | 10.0.16.60 | webhook `:8080/trigger/playbook` |
 | Cyber Range (hands-on platform) | CyberRangeCZ (the provisioning layer) | — | sandbox lifecycle, scenario injection (steps 1-2), evaluation |
+| *(no UML actor)* | `kali` | 10.0.16.50 | analyst workstation — the browser that reaches the four dashboards; its address doubles as the simulated C2 IOC |
 
-`kali` is part of the substrate topology and is provisioned by the substrate
-role, but **the scenario does not employ it**: the UML has no attacker host.
-Its address is reused as the simulated C2 IOC, and nothing runs there.
+**`kali` has no UML lifeline, but it is not idle.** The UML has no attacker host,
+so nothing attacks from it and no trainee ever logs into it as an attacker. Two
+things do depend on it:
+
+- It is the **analyst workstation**. The dashboards listen on testnet addresses,
+  so a browser has to run inside the sandbox, and kali is the only node whose
+  image ships a desktop — which is why the access primer (L1) sends every
+  trainee there for NG-SIEM, MISP, DFIR-IRIS and NG-SOAR.
+- Its address is reused as the **simulated C2 IOC**, the one rule `100102`
+  reports a blocked beacon to and `block_malicious_ip` drops.
+
+`puc2_node_access` therefore gives its `debian` user the same known password and
+passwordless sudo as the other nodes, and `puc2_preflight` gates it: browser,
+graphical session and a live route to all four dashboards. It was described here
+as `UNUSED` until the 2026-09-10 build, when nothing in the deployment checked
+any of that — the role that would have was tagged `never`.
 
 Addresses are resolved from the facts the substrate publishes
 (`hostvars['ng-siem'].ng_siem_internal_ip`,
@@ -186,7 +213,7 @@ operator can guarantee the L19/L21 markers without cross-node plumbing.
 | 2 | Inject phishing + payload delivery | Cyber Range → victim | `roles/scenario_injection_2c/templates/inject_scenario.sh.j2` (4-stage EICAR delivery) + `templates/phishing_email.eml.j2` |
 | 3 | Telemetry (file hash) | victim → ng-siem | `roles/lab_endpoint_2c/tasks/main.yml` (FIM on `~victim/Downloads`) → rule `100100` |
 | 4 | Enrich hash with CTI | ng-siem ↔ docker-server | `roles/ng_siem_rules_2c` (CDB list `etc/lists/cti-malware-hashes`) + `roles/cti_ss_2c` (same IOCs seeded into MISP) + the substrate's MISP integration |
-| 5 | Alert: malware detected | ng-siem | `roles/ng_siem_rules_2c/files/local_rules.xml` rule `100101` (level 12) |
+| 5 | Alert: malware detected | ng-siem | `roles/ng_siem_rules_2c/templates/local_rules.xml.j2` rule `100101` (level 12), deployed as `/var/ossec/ruleset/rules/9999-puc2-2c.xml` — **not** `etc/rules/`, which this image does not read |
 | 6 | Correlate logs + confirm attack pattern | ng-siem | rule `100102` (firewall source: the endpoint's baseline egress filter, decoded by Wazuh's built-in kernel decoder) and rule `100103` (fired by the multi-stage delivery) + `training/ng_siem_correlation_guide.md` |
 | 7 | Open incident case + attach SIEM context | ng-siem → docker-server | **automatic:** substrate `custom-iris` integration (dedups by `case_soc_id`); **operator-driven:** `roles/cicms_2c/templates/open_case.sh.j2` + the registered case template |
 | 8 | Enrich with CTI (IOCs/TTPs) | docker-server | `roles/cicms_2c` + `roles/cti_ss_2c`; the IRIS↔MISP module is wired by the substrate |
@@ -260,6 +287,7 @@ Everything else follows the diagram's actor, direction and ordering.
 the overlay in this order:
 
 ```
+one-clock play            (every node onto UTC, before anything timestamps)
 docker-server (facts: misp_api_key, iris_api_key, docker_server_internal_ip)
   → ng-siem (substrate integrations)
     → ng_siem_rules_2c      (rules, CDB list, active-response wiring)
@@ -267,6 +295,9 @@ docker-server (facts: misp_api_key, iris_api_key, docker_server_internal_ip)
         → scenario_injection_2c  (stages the attack; does NOT fire it)
           → cti_ss_2c / cicms_2c / soar_actions_2c
             → evaluation_reporting
+              → puc2_node_access  (trainee login + passwordless sudo)
+                → puc2_rehearsal  (fires the chain, verifies it, self-cleans)
+                  → puc2_preflight (QA gate; fails the deploy if a level is unanswerable)
 ```
 
 `provisioning/group_vars/puc2_2c.yml` is the single source of IPs, ports and
@@ -274,14 +305,105 @@ IOCs. It is loaded through `vars_files` rather than by name: the substrate
 topology declares `groups: []`, so a `group_vars/<group>.yml` file would never
 be auto-loaded.
 
+### Deploying
+
+The platform runs `provisioning/playbook.yml` with no extra arguments and that
+is the supported path. Two switches are worth knowing:
+
+```bash
+# Docker Hub pulls are anonymous unless a PAT is supplied, and anonymous pulls
+# are rate-limited. A deploy that dies on "429 Too Many Requests" while pulling
+# an image wants this — nothing else does:
+ansible-playbook provisioning/playbook.yml \
+  -e vault_dockerhub_pat=dckr_pat_... -e vault_dockerhub_user=<user>
+
+# Skip the end-to-end rehearsal (a smoke deploy, or a re-run against a sandbox
+# students are already using — it fires the real scenario before cleaning up):
+ansible-playbook provisioning/playbook.yml -e puc2_rehearsal_enabled=false
+```
+
+Skipping the rehearsal is a clean skip, not a failure, but the range then ships
+without runtime proof that rule 100101 alerts, that 100103 correlates, or that
+containment writes the markers L19/L21 grade. The log says so explicitly when it
+happens. Do not hand a sandbox to students off such a run without re-checking.
+
+The last two plays of the file are diagnostics (`puc2_diag`,
+`puc2_access_probe`), tagged `never` and absent from a normal deploy:
+
+```bash
+ansible-playbook provisioning/playbook.yml --tags puc2_diag --limit docker-server
+ansible-playbook provisioning/playbook.yml \
+  --tags puc2_access_probe -e puc2_access_probe_enabled=true
+```
+
+---
+
+## The deployment proves itself, or it fails
+
+A range that cannot answer its own training must never reach a student. Two
+plays enforce that, and both run in every deploy — **no dashboard is glanced at
+and no human confirms anything**.
+
+**`puc2_rehearsal` — the runtime proof.** Fires the real scenario and follows
+every link:
+
+```
+100101 → 100102 → 100103 → active response → markers → quarantine
+```
+
+then rolls containment back, restores the sinkhole and the baseline egress
+filter, empties the quarantine, removes the markers, un-expires the victim
+account, truncates `alerts.log` to its pre-drill size, and re-runs the gate. The
+student meets a freshly provisioned range, never an attacked one. A broken link
+fails the deploy naming which one (`LINK 3 BROKEN — rule 100103 never
+correlated…`) and writes `validation/REHEARSAL_REPORT.md`.
+
+**`puc2_preflight` — the static gate.** Runs last, on `ng-siem`, `victim`,
+`docker-server` and `kali`, and fails the play if any graded answer is
+unobtainable. `roles/puc2_preflight/README.md` maps each hands-on level to the
+check that proves it.
+
+### What the gate can and cannot decide
+
+The two are not redundant. Rules `100100`/`100101` key on syscheck events, which
+the FIM daemon raises internally — no log line can synthesise one, so
+`wazuh-logtest` can only ever exercise `100102`. That asymmetry is exactly how
+the 2026-09-10 build shipped green with the entire detection chain unexercised:
+analysisd had only been asked about one of the four rules.
+
+So the gate proves what is *decidable* — the rules are on disk, the CDB
+watchlist is compiled, newer than its source and carries the payload hash,
+analysisd discarded none of `100100`-`100103`, an endpoint agent is enrolled,
+containment is wired to `100103` alone, kali reaches all four dashboards — and
+the rehearsal proves what only firing can. Skip the rehearsal and half the proof
+goes with it.
+
+### Things a deploy now refuses to do quietly
+
+Each of these shipped green at least once:
+
+| Silent failure | What catches it now |
+|---|---|
+| The CDB compile step reports success while compiling nothing (`wazuh-makelists` is absent from this image; analysisd is what actually compiles the lists) | the `.cdb` is asserted to exist, be newer than its source list and contain the payload hash — the artefact, not a tool's exit code |
+| analysisd silently DISCARDS a rule whose CDB list failed to load | any `WARNING` naming `1001xx` fails the gate |
+| The Wazuh agent installs, starts, and never enrols, so no FIM telemetry ever arrives | the manager is asked which agents it holds, not the endpoint whether its service is up |
+| `kali` has no browser, no desktop, or no route to the dashboards | asserted per dashboard from kali itself |
+| Nodes disagree about the clock (kali ran two hours ahead) | every node is put on UTC before anything timestamps, and asserted |
+| A diagnostic reads `ossec.log` without `grep -a` and reports the image's build date as this run's state | `-a` throughout, and startup sections scoped to today |
+
 ---
 
 ## Running the exercise
 
+Provisioning already fired this whole chain once, in the rehearsal, and undid
+it — so the sandbox you are handed is both **proven** and **pristine**: no PUC2
+alerts in the manager, no markers, empty quarantine, payload staged but not
+delivered. Every step below starts from that state.
+
 ```bash
 # 1. Provision the sandbox (the platform does this from topology.yml)
 # 2. Kick off the scenario — UML steps 1-2. The Cyber Range injects into the
-#    endpoint; provisioning never fires this by itself:
+#    endpoint; ordinary provisioning never fires this by itself:
 ansible-playbook provisioning/playbook.yml --tags puc2-inject --limit victim
 #    (equivalently, on the endpoint: sudo /opt/puc2/inject_scenario.sh)
 
@@ -300,10 +422,13 @@ See `VALIDATION.md` for the full acceptance procedure and `training/` for the
 trainee-facing brief, runbook and correlation guide.
 
 The 30-level linear training definition uploaded to CyberRangeCZ is
-`puc2-cynet-2c-malware-detection-response_linear-training-definition.json`, in
-the repository root — the single source of truth for it. `validation/
+`*_linear-training-definition.json`, kept in the repository root **locally
+only**: `.gitignore` excludes it, because it is uploaded to the platform by hand
+and must never reach the remote. Treat the copy in the root as the single source
+of truth and version it in the filename (`V5_…`). `validation/
 validate_training.sh` checks that every graded answer in it is actually
-obtainable in the built sandbox.
+obtainable in the built sandbox — matching on API *fields* (for example
+`case_soc_id`) rather than on level prose, so rewording a level never breaks it.
 
 ---
 
@@ -326,9 +451,19 @@ route where a desktop is present.
 browser must run *inside* the sandbox. Per `diagnostics/ACCESS-MATRIX.md`, the
 only node that can serve as the analyst workstation is **kali (10.0.16.50)** —
 which in this scenario also plays the simulated C2. That the C2 address doubles
-as the analyst desktop is deliberate and stated in L1. Whether the kali image
-actually ships a desktop and browser is not knowable from this repo; run the
-read-only probe to confirm and fill `diagnostics/ACCESS-PROBE-RESULTS.md`:
+as the analyst desktop is deliberate and stated in L1.
+
+Whether the kali image actually ships a desktop and a browser is **no longer a
+question this repo leaves open**: `puc2_preflight` asserts it on every deploy,
+along with a live TCP route from kali to each of the four dashboards, and fails
+the deployment if any of it is missing. It used to say here that this was "not
+knowable from this repo" and to point at an opt-in probe — which meant the claim
+L1 makes to every trainee rested on a check nobody ran.
+
+The probe still exists, as a *diagnostic* rather than a gate: it reports browser,
+desktop and per-dashboard HTTP status for **every** node and writes
+`diagnostics/ACCESS-PROBE-RESULTS.md`, filling the "CONFIRM IN SANDBOX" cells of
+`ACCESS-MATRIX.md`. Use it when you want the whole picture, not a pass/fail:
 
 ```bash
 ansible-playbook provisioning/playbook.yml \

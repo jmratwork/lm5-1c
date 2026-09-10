@@ -74,7 +74,19 @@
       Content-Type: "application/json"
     body_format: json
     body:
-      case_template_json: "{{ lookup('template', 'case_template_puc2.json.j2') }}"
+      # THE TRAILING NEWLINE IS LOAD-BEARING. IRIS does json.loads() on this
+      # field, so it must arrive as a JSON *string*. `lookup('template', ...)`
+      # returns one — but a value that is nothing but a single "{{ }}" expression
+      # is converted to a native Python object when jinja2_native is enabled, as
+      # it is on the CyberRangeCZ runner. The JSON text was therefore parsed back
+      # into a dict before it ever left the controller, and IRIS answered:
+      #   HTTP 400 — Invalid JSON
+      #   the JSON object must be str, bytes or bytearray, not dict
+      # Appending a literal newline makes this a concatenation of two nodes
+      # rather than a lone expression, so the result stays a string. json.loads
+      # ignores trailing whitespace, and the fix is correct with jinja2_native
+      # either on or off.
+      case_template_json: "{{ lookup('template', 'case_template_puc2.json.j2') | trim }}\n"
     return_content: true
     validate_certs: false
     status_code: [200, 201]
@@ -101,6 +113,33 @@
   failed_when: false
   when: "'PUC2-2C-Malware' not in (puc2_iris_templates.content | default(''))"
 
+# `changed` is inferred from the response body, and a body can lie by omission.
+# Now that the registration can actually succeed, ask IRIS what it holds rather
+# than trusting what it said — the previous version reported its own POST and
+# never once looked. Still not fatal: this template is cosmetic by design, and a
+# cosmetic resource does not get to decide whether the range ships.
+- name: Ask CICMS whether the template is registered now
+  ansible.builtin.uri:
+    url: "{{ puc2_iris_url }}/manage/case-templates/list"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ puc2_iris_api_key }}"
+      Content-Type: "application/json"
+    return_content: true
+    validate_certs: false
+    status_code: [200]
+    timeout: 30
+  register: puc2_iris_templates_after
+  no_log: true
+  failed_when: false
+  when: puc2_iris_template_add is not skipped
+
+- name: Record whether the template is present in CICMS
+  ansible.builtin.set_fact:
+    puc2_template_present: >-
+      {{ 'PUC2-2C-Malware' in (puc2_iris_templates_after.content
+         | default(puc2_iris_templates.content | default(''))) }}
+
 # `no_log` above hides the request, which carries the bearer token. The RESPONSE
 # body carries no credential, so it can be surfaced — and it must be, or the
 # next schema refusal is as silent as this one was. The reason arrives in the
@@ -110,8 +149,9 @@
     msg: >-
       {% if puc2_iris_template_add is skipped %}
       CICMS case template 'PUC2-2C-Malware' already registered — nothing to do.
-      {% elif puc2_iris_template_add is changed %}
-      CICMS case template 'PUC2-2C-Malware' registered.
+      {% elif puc2_template_present | bool %}
+      CICMS case template 'PUC2-2C-Malware' registered — confirmed present in
+      IRIS's own template list, not merely accepted by the POST.
       {% else %}
       CICMS case template NOT registered — HTTP
       {{ puc2_iris_template_add.status | default('unreachable') }},

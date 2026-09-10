@@ -97,6 +97,73 @@
 # git-ignored, so the example file is used when it is absent.
 # =============================================================================
 
+# =============================================================================
+# One clock for the whole range. Runs FIRST in the overlay so every timestamp
+# written after it — alerts, kern.log, active-responses.log, the command logs
+# forwarded off each node — is on the same scale.
+#
+# In the 2026-09-10 build kali ran two hours ahead of everything else: its tasks
+# closed at 09:15 while victim, ng-siem and docker-server closed at 07:15 UTC.
+# The image comes up on a local zone, the others on UTC. Nothing failed, which is
+# the problem — this is a SIEM training range whose entire Phase 2 is "correlate
+# these sources and place them on one timeline", and the analyst workstation was
+# contributing its syslog two hours in the future.
+#
+# Etc/UTC rather than a regional zone: the SIEM stores and the training text both
+# speak UTC, and a range that is torn down the same day has nothing to gain from
+# local time.
+- name: PUC2 2c — one clock across the range
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    # timedatectl rather than community.general.timezone: the collections in
+    # requirements.yml are installed by the platform, not by this repo, and the
+    # run log opens with "contains collections which will be ignored". Only
+    # community.docker is proven present by the substrate actually using it.
+    # Making the FIRST play of the overlay depend on an unproven collection would
+    # trade a two-hour clock skew for a deployment that cannot start. systemd is
+    # on every node here and every other play already relies on it.
+    - name: Read the zone each node is currently on
+      ansible.builtin.command: date +%Z
+      register: puc2_tz_before
+      changed_when: false
+
+    - name: Put every node on UTC
+      ansible.builtin.command: timedatectl set-timezone Etc/UTC
+      when: puc2_tz_before.stdout | trim != 'UTC'
+      register: puc2_tz
+      changed_when: true
+
+    # Long-running loggers cache the zone at start, so they keep stamping the old
+    # offset until they are restarted. rsyslog is the one that matters: it is what
+    # ships each node's command log off the box. Restarted only where the timezone
+    # actually moved, and only where rsyslog is present at all.
+    - name: Restart rsyslog where the clock just moved under it
+      ansible.builtin.systemd:
+        name: rsyslog
+        state: restarted
+      when: puc2_tz is changed
+      failed_when: false
+
+    - name: Read back the zone each node is now on
+      ansible.builtin.command: date +%Z
+      register: puc2_tz_now
+      changed_when: false
+
+    # Blocking: a node that silently refuses the change is a node whose logs will
+    # not line up with the SIEM's, and finding that out from a student's confused
+    # timeline is finding out too late.
+    - name: GATE — every node agrees on the clock
+      ansible.builtin.assert:
+        that:
+          - puc2_tz_now.stdout | trim == 'UTC'
+        fail_msg: >-
+          {{ inventory_hostname }} is on '{{ puc2_tz_now.stdout | trim }}', not UTC.
+          Its logs will not line up with NG-SIEM's on the incident timeline the
+          training asks trainees to reconstruct.
+        success_msg: "{{ inventory_hostname }} is on UTC."
+
 - name: PUC2 2c — NG-SIEM detection rules and active-response wiring (steps 3-6, 9-10)
   hosts: ng-siem
   become: true
@@ -165,19 +232,28 @@
         puc2_node_mgmt_user: "{{ 'debian' if inventory_hostname in ['kali', 'router'] else 'ubuntu' }}"
 
 # =============================================================================
-# Rehearsal — OPT-IN, NEVER part of a build (tagged `never`), placed right
-# before the preflight gate so a single command can fire, verify, self-clean,
-# and then re-prove the gate green:
+# Rehearsal — PART OF EVERY BUILD, placed right before the preflight gate so a
+# deployment fires the chain, verifies it, self-cleans, and then re-proves the
+# gate green without anyone typing a second command.
 #
-#   ansible-playbook provisioning/playbook.yml \
-#     --tags puc2_rehearsal,puc2-preflight -e puc2_rehearsal_enabled=true \
-#     --limit ng-siem,victim,docker-server
+# It used to be tagged `never`. That made the deployment's strongest check the
+# one nobody ran: the gate below proves STATICALLY that rules 100101/100103 are
+# on disk and that the watchlist carries the hash, but only firing the scenario
+# proves 100101 actually alerts (L10), that 100103 correlates (L11/L12) and that
+# the active response writes the markers (L19/L20/L21). The 2026-09-10 build
+# shipped green with that whole chain unexercised — analysisd had only ever been
+# asked about 100102. A check that is opt-in is a check that is absent.
 #
 # Unlike the preflight gate (which only ARMS the scenario), this fires the real
-# attack and watches the whole chain 100101 -> 100102 -> 100103 -> active
-# response -> markers -> quarantine in runtime, then removes every trace so the
-# range is handed to the student exactly as provisioning left it. No
-# any_errors_fatal: a broken link must still reach the always-cleanup.
+# attack and watches 100101 -> 100102 -> 100103 -> active response -> markers ->
+# quarantine in runtime, then removes every trace so the range is handed to the
+# student exactly as provisioning left it. No any_errors_fatal: a broken link
+# must still reach the always-cleanup.
+#
+# To skip it (a smoke deploy, a re-run against a live class):
+#   ansible-playbook provisioning/playbook.yml -e puc2_rehearsal_enabled=false
+# Skipping is a clean skip, not a failure — and it says so in the log, because
+# the range then ships with the runtime chain unproven.
 # =============================================================================
 - name: PUC2 2c — rehearsal, fire the chain end to end then self-clean
   hosts: ng-siem,victim,docker-server
@@ -188,7 +264,7 @@
     - "{{ lookup('first_found', ['group_vars/vault.yml', 'group_vars/vault.yml.example']) }}"
   roles:
     - role: puc2_rehearsal
-      tags: [puc2_rehearsal, puc2-rehearsal, never]
+      tags: [puc2_rehearsal, puc2-rehearsal]
 
 # =============================================================================
 # QA gate — runs last, fails the deployment if the range cannot answer its own
@@ -200,7 +276,13 @@
 # to re-run just the gate against an already-provisioned sandbox.
 # =============================================================================
 - name: PUC2 2c — preflight, every graded training answer must be obtainable
-  hosts: ng-siem,victim,docker-server
+  # kali is in the gate because the training's access primer sends every trainee
+  # there for the four SOC dashboards: it is the only node whose image ships a
+  # desktop, and the dashboards live on testnet addresses no outside browser can
+  # reach. Nothing in the 2026-09-10 build checked that kali had a browser, a
+  # graphical session, or a route to any of the four — the role that would have
+  # (puc2_access_probe) was tagged `never`.
+  hosts: ng-siem,victim,docker-server,kali
   become: true
   gather_facts: true
   any_errors_fatal: true
@@ -223,7 +305,12 @@
 - name: PUC2 2c — diagnose the CTI-SS / CICMS content against the live APIs
   hosts: docker-server
   become: true
-  gather_facts: true
+  # A `never`-tagged play still runs its implicit "Gathering Facts" task on every
+  # build — the 2026-09-10 log shows both diagnostic plays gathering facts and
+  # then executing zero tasks. No task in puc2_diag reads a gathered fact (the
+  # addresses it uses come from role-set facts and the group_vars fallbacks), so
+  # there is nothing to gather. Set this back to true if that stops being so.
+  gather_facts: false
   vars_files:
     - group_vars/puc2_2c.yml
     - "{{ lookup('first_found', ['group_vars/vault.yml', 'group_vars/vault.yml.example']) }}"
@@ -245,7 +332,11 @@
 - name: PUC2 2c — probe each node for desktop, browser and dashboard reachability
   hosts: all
   become: true
-  gather_facts: true
+  # Same reason as the diagnosis play above, across ALL seven hosts this time.
+  # Keyed on the probe's own switch rather than hardcoded false: when the probe
+  # is actually asked for, it gets a normal fact-gathering play, so anything
+  # added to it later behaves as expected.
+  gather_facts: "{{ puc2_access_probe_enabled | default(false) | bool }}"
   vars_files:
     - group_vars/puc2_2c.yml
     - "{{ lookup('first_found', ['group_vars/vault.yml', 'group_vars/vault.yml.example']) }}"
