@@ -36,14 +36,21 @@ Sub Case 2c is layered on top as an **additive overlay** of `*_2c` roles that ru
 `ossec.conf` integrations are never clobbered.
 
 > **The substrate is not the only moving part.** `docker_server` clones
-> `MISP/misp-docker` at **`master`**, unpinned, and that has broken a deploy
-> twice. Most recently upstream split a `misp-nginx` container out and renamed
-> the port variables — `CORE_HTTP_PORT` / `CORE_HTTPS_PORT` became
-> `NGINX_HTTP_PORT` / `NGINX_HTTPS_PORT` — so the role's port settings became
-> dead config, MISP published on :443 instead of :8443, and the 2026-09-10 12:22
-> build died eight plays later on `HTTP -1` from a credential probe. The role now
-> writes **both** naming schemes and asserts the port is bound right after the
-> compose, but pinning that clone to a known revision is still an open question.
+> `MISP/misp-docker` at **`master`**, unpinned, and one upstream restructure has
+> now broken three deploys in a row. Splitting `misp-nginx` out of `misp-core`
+> changed three things at once:
+>
+> | What changed | How it failed | Fixed by |
+> |---|---|---|
+> | Compose variables renamed | ~130 warnings drowning the log | pinning unset ones |
+> | `CORE_*_PORT` → `NGINX_*_PORT` | MISP published on :443, project addressed :8443 | writing both names |
+> | `./ssl` moved to a **read-only** mount on a `read_only` container | no certificate → upstream disables SSL → nothing listens on 8443 | generating certs before the compose |
+>
+> Each cost a deploy that died eight plays later on `HTTP -1`. The role now
+> handles all three and asserts, right after the compose, that MISP *answers
+> HTTPS* — not merely that a port is bound, which `docker-proxy` makes true
+> whether or not anything is listening. **Pinning that clone to a known revision
+> is still an open question**, and it is the thing that would stop a fourth.
 
 One substrate promise is worth singling out: `roles/victim` sets
 `WAZUH_MANAGER` at package-install time, so the agent enrols itself. Nothing

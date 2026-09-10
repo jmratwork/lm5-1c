@@ -518,6 +518,47 @@
       substituting a blank string for each of them; the deploy log just stops
       saying so 130 times.
 
+# ── TLS for the misp-nginx container ─────────────────────────────────────────
+# The third failure from one upstream restructure, after the compose variables
+# and the ports. Splitting nginx out of misp-core moved the ./ssl mount with it,
+# and the new container CANNOT create what it needs:
+#
+#     volumes:  - "./ssl:/etc/nginx/certs:ro"      <- read-only
+#     read_only: true
+#
+# so certificates have to exist on the host first. Upstream's README is explicit
+# about the consequence: "SSL is automatically disabled if certificates are
+# missing". Not a warning, not a 502 - nginx simply stops listening on 8443
+# inside the container, while Docker still publishes the host port. The
+# 2026-09-10 13:22 build reached play 8 and died on `MISP /servers/getVersion ->
+# HTTP -1` because there was nothing behind a port that looked open.
+#
+# When misp-core served its own nginx it generated these itself. It does not any
+# more, and iris_nginx has needed the same treatment here all along.
+#
+# Filenames are upstream's (cert.pem / key.pem, optional ca.pem). SANs cover
+# both the address group_vars resolves and localhost, so the cert is valid for
+# the probe below as well as for a trainee's browser - not that anything
+# validates it: every consumer here sets validate_certs false, because a
+# self-signed cert on a throwaway range is the point.
+- name: Create the SSL directory misp-nginx mounts
+  ansible.builtin.file:
+    path: /opt/misp-docker/ssl
+    state: directory
+    mode: '0755'
+
+- name: Generate the self-signed TLS certificate misp-nginx requires
+  ansible.builtin.shell: |
+    openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+      -keyout /opt/misp-docker/ssl/key.pem \
+      -out /opt/misp-docker/ssl/cert.pem \
+      -subj '/C=XX/ST=CyberRange/L=Lab/O=CTI-SS/CN={{ docker_server_internal_ip }}' \
+      -addext 'subjectAltName = IP:{{ docker_server_internal_ip }}, DNS:localhost, IP:127.0.0.1'
+    chmod 644 /opt/misp-docker/ssl/cert.pem
+    chmod 644 /opt/misp-docker/ssl/key.pem
+  args:
+    creates: /opt/misp-docker/ssl/cert.pem
+
 # No retry here, and none wanted: this task already fails on the first attempt.
 # What it lacked was a reason. MISP pulls mariadb and valkey from Docker Hub, so
 # it is just as exposed to the 429 as DFIR-IRIS is - it simply happens to pull
@@ -545,60 +586,86 @@
           {{ misp_output.stderr | default('') }}
           {% endif %}
 
-# ── Is MISP where the rest of the project thinks it is? ──────────────────────
-# `docker compose up` succeeding means the containers started, NOT that they
-# published where anyone expects. On 2026-09-10 every MISP container came up
-# healthy and the deploy sailed on for eight more plays before a credential gate
-# discovered, via `HTTP -1` after five minutes of retries, that :8443 had
-# nothing behind it — upstream had moved MISP to :443 by renaming the port
-# variables. The evidence was in this task's own output all along: the
-# misp-nginx publisher list read 443, not 8443, and nothing looked.
+# ── Is MISP actually SERVING where the rest of the project thinks it is? ──
+# `docker compose up` succeeding means the containers started, NOT that anything
+# answers. Two builds died eight plays later on `MISP /servers/getVersion ->
+# HTTP -1` for two different reasons, and both were visible right here:
 #
-# Now something looks, at the source. A bound port is a small claim - it says
-# nothing about MISP being *ready*, which takes minutes and which puc2_keys
-# already waits for - but it is exactly the claim that was silently false.
-- name: Wait for MISP to publish the HTTPS port this project addresses
-  ansible.builtin.wait_for:
-    host: 127.0.0.1
-    port: "{{ misp_https_host_port }}"
-    timeout: 120
-    state: started
-  register: misp_port_bound
+#   2026-09-10 12:22  upstream renamed the port variables, so MISP published on
+#                     :443 while the project addressed :8443.
+#   2026-09-10 13:22  the port was right, but misp-nginx had no certificate and
+#                     upstream disables SSL when certificates are missing, so
+#                     nothing inside the container listened on 8443 at all.
+#
+# The first version of this gate used wait_for on the port, and it PASSED during
+# the second failure - `elapsed: 0`, while MISP served nothing. docker-proxy
+# binds the host port as soon as the container starts, whatever is or is not
+# listening behind it, so an open socket here proves only that Docker did its
+# half. It cannot see this class of fault, which is most of the point of the
+# gate.
+#
+# So ask for an HTTP response instead. ANY status counts - 200, 302, 403, even
+# 502 - because the claim being tested is "TLS terminates and something answers",
+# not "MISP is ready". Readiness takes minutes and puc2_keys already waits five
+# for it. The retry budget is here only so a container that is still starting is
+# not called broken.
+- name: Wait for MISP to answer over HTTPS on the port this project addresses
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:{{ misp_https_host_port }}/"
+    method: GET
+    validate_certs: false
+    status_code: [200, 301, 302, 401, 403, 404, 500, 502, 503]
+    timeout: 15
+  register: misp_https
+  retries: 20
+  delay: 15
+  until: misp_https.status | default(-1) > 0
   ignore_errors: true
 
-- name: Read back where MISP actually published, for the failure message
+- name: Read back what MISP published and whether it has a certificate
   ansible.builtin.shell: |
     set -o pipefail
-    docker compose -f /opt/misp-docker/docker-compose.yml ps --format '{{ "{{" }}.Service{{ "}}" }} {{ "{{" }}.Ports{{ "}}" }}' 2>/dev/null \
-      || docker ps --filter 'name=misp-docker' --format '{{ "{{" }}.Names{{ "}}" }} {{ "{{" }}.Ports{{ "}}" }}'
+    echo "PUBLISHED PORTS:"
+    docker compose -f /opt/misp-docker/docker-compose.yml ps --format '{{ "{{" }}.Service{{ "}}" }} {{ "{{" }}.Ports{{ "}}" }}' 2>/dev/null       || docker ps --filter 'name=misp-docker' --format '{{ "{{" }}.Names{{ "}}" }} {{ "{{" }}.Ports{{ "}}" }}'
+    echo "SSL DIRECTORY:"
+    ls -l /opt/misp-docker/ssl/ 2>&1 || echo "  (missing)"
+    echo "NGINX LOG TAIL:"
+    docker logs --tail 15 misp-docker-misp-nginx-1 2>&1 || echo "  (no misp-nginx container)"
   args:
     chdir: /opt/misp-docker
     executable: /bin/bash
   register: misp_published
   changed_when: false
   failed_when: false
-  when: misp_port_bound is failed
+  when: misp_https is failed or (misp_https.status | default(-1)) < 0
 
-- name: GATE - MISP is reachable on the port every address in this project uses
+- name: GATE - MISP answers on the port every address in this project uses
   ansible.builtin.assert:
     that:
-      - misp_port_bound is not failed
+      - (misp_https.status | default(-1)) > 0
     fail_msg: >-
-      MISP came up but published nowhere near
-      {{ misp_https_host_port }}, so every address in this project is wrong:
-      group_vars/puc2_2c.yml, cti_lookup.sh, share_intel.sh, the preflight
-      dashboard probe, and levels L1/L9/L15/L24 of the training definition all
-      say https://<docker-server>:{{ misp_https_host_port }}.
-      Docker reports these published ports:
+      Nothing answered HTTPS on {{ misp_https_host_port }}, so every address in
+      this project is wrong: group_vars/puc2_2c.yml, cti_lookup.sh,
+      share_intel.sh, the preflight dashboard probe, and levels L1/L9/L15/L24 of
+      the training definition all say
+      https://<docker-server>:{{ misp_https_host_port }}.
+      The probe returned status {{ misp_https.status | default('-1') }}
+      ({{ misp_https.msg | default('no message') }}).
+      TWO CAUSES HAVE DONE THIS, both from upstream restructuring misp-docker,
+      which this role clones at `master`:
+      (1) NO CERTIFICATE. misp-nginx mounts ./ssl read-only and runs read_only,
+      so it cannot make its own, and upstream disables SSL outright when
+      cert.pem / key.pem are missing - the port stays bound by docker-proxy and
+      nothing listens behind it. This role generates them before the compose;
+      check the SSL DIRECTORY listing below.
+      (2) WRONG PORT. The port variables were renamed
+      (CORE_HTTP_PORT/CORE_HTTPS_PORT -> NGINX_HTTP_PORT/NGINX_HTTPS_PORT);
+      this role writes both, so check PUBLISHED PORTS below against
+      {{ misp_https_host_port }}.
       {{ misp_published.stdout | default('(could not read)') | trim }}
-      MOST LIKELY CAUSE: misp-docker is cloned at `master` and upstream renamed
-      the port variables. As of 2026-09-10 its compose reads
-      "${NGINX_HTTP_PORT:-80}:8080" and "${NGINX_HTTPS_PORT:-443}:8443"; the
-      older CORE_HTTP_PORT / CORE_HTTPS_PORT pair is gone. This role writes both
-      names, so if neither took, check what the current revision expects and add
-      it beside them.
     success_msg: >-
-      MISP is published on {{ misp_https_host_port }} - the address group_vars,
+      MISP answers HTTPS on {{ misp_https_host_port }}
+      (status {{ misp_https.status | default('?') }}) - the address group_vars,
       the console helpers and the training definition all use.
 
 - name: Deploy Portainer
