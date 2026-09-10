@@ -272,43 +272,48 @@
           ({{ 'unmeasured' if (hub_remaining | int) < 0 else hub_remaining ~ ' pulls' }}).
 
 # ═════════════════════════════════════════════════════════════════════════════
-# Spend less of that quota: pull the Docker OFFICIAL images from AWS's mirror,
-# which does not share Docker Hub's per-IP limit, and re-tag them under their
-# original names so compose finds them in the local cache and never asks Docker
-# Hub. See defaults/main.yml for why this re-tags instead of editing the three
-# upstream compose files.
+# Spend less of that quota: pull four of the six images from registries that do
+# not share Docker Hub's per-IP limit, and re-tag them under their Docker Hub
+# names so compose finds them in the local cache and never asks Docker Hub.
+# See defaults/main.yml for the digest comparison proving these are the same
+# images, and for why this re-tags instead of editing three upstream compose
+# files.
 #
-# NEVER FATAL. If the mirror does not carry a tag - and this was written without
-# network access to verify that it does - the image is simply left to Docker Hub,
-# which is the behaviour that existed before this task. The report says which.
+# NEVER FATAL. A tag that has moved is simply left to Docker Hub, which is the
+# behaviour that existed before this task. The report says which.
 # ═════════════════════════════════════════════════════════════════════════════
-- name: Seed Docker Official Images from the mirror instead of Docker Hub
+- name: Pre-pull images from registries that are not rate-limited
   ansible.builtin.shell: |
     set -u
-    for img in {{ docker_hub_official_images | join(' ') }}; do
-      if docker image inspect "$img" >/dev/null 2>&1; then
-        echo "CACHED  $img (already local, no pull needed)"
-        continue
+    seed() {
+      hub="$1"; src="$2"
+      if docker image inspect "$hub" >/dev/null 2>&1; then
+        echo "CACHED  $hub (already local, no pull needed)"
+        return
       fi
-      mirror="{{ docker_hub_mirror_prefix }}/$img"
-      if docker pull "$mirror" >/dev/null 2>&1; then
-        docker tag "$mirror" "$img"
-        echo "SEEDED  $img (from the mirror, Docker Hub not touched)"
+      if docker pull "$src" >/dev/null 2>&1; then
+        docker tag "$src" "$hub"
+        echo "SEEDED  $hub <- $src"
       else
-        echo "MISS    $img (not on the mirror - will come from Docker Hub)"
+        echo "MISS    $hub (not at $src - will come from Docker Hub)"
       fi
-    done
+    }
+    {% for i in docker_hub_prepull %}
+    seed {{ i.hub | quote }} {{ i.from | quote }}
+    {% endfor %}
   args:
     executable: /bin/bash
   register: hub_seed
   changed_when: "'SEEDED' in hub_seed.stdout"
   failed_when: false
 
-- name: Report what the mirror covered
+- name: Report which images avoided Docker Hub
   ansible.builtin.debug:
     msg: >-
-      {{ hub_seed.stdout_lines | default(['(seeding did not run)']) }}
-      Every SEEDED line is one Docker Hub pull this deploy no longer makes.
+      {{ hub_seed.stdout_lines | default(['(pre-pull did not run)']) }}
+      Every CACHED or SEEDED line is one Docker Hub pull this deploy does not
+      make. Only cossas/soarca and cyentific/cacao-roaster have to come from
+      Docker Hub - they are published nowhere else.
 
 - name: Download MISP docker
   git:

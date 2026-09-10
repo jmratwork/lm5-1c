@@ -344,14 +344,28 @@ Three things now stand between that and a twenty-minute wasted build:
    blocks only on a *measured* shortfall: an unreachable probe, or an account
    whose limit the registry does not publish, proceeds — "could not measure"
    must never read as "empty".
-2. **Fewer pulls to begin with.** Three of the six are Docker Official Images,
-   and AWS mirrors those outside Docker Hub's per-IP limit. They are pulled
-   from the mirror and re-tagged under their original names, so compose finds
-   them in the local cache and never asks Docker Hub. Re-tagging rather than
-   editing the three upstream compose files: those are cloned, unzipped and
-   copied off an SMB share, so an edit would have to be re-done every time
-   upstream moves. A tag the mirror does not carry falls back to Docker Hub and
-   is reported, never fatal.
+2. **Four of the six images no longer come from Docker Hub at all.** They are
+   pulled from registries that do not share its per-IP limit and re-tagged
+   under their Docker Hub names, so compose finds them in the local cache:
+
+   | Image | Pulled instead from |
+   |---|---|
+   | `mariadb:10.11` | `public.ecr.aws/docker/library/…` |
+   | `rabbitmq:3.8-management` | `public.ecr.aws/docker/library/…` |
+   | `mongo:latest` | `public.ecr.aws/docker/library/…` |
+   | `valkey/valkey:7.2` | `ghcr.io/valkey-io/valkey` |
+
+   These are the **same images**, not lookalikes: all four answered HTTP 200 on
+   the alternative registry, and the manifest digests match Docker Hub's
+   exactly (checked 2026-09-10 for `rabbitmq:3.8-management` and
+   `valkey/valkey:7.2`). Re-tagging rather than editing the three upstream
+   compose files: those are cloned, unzipped and copied off an SMB share, so an
+   edit would have to be re-done every time upstream moves. A tag that later
+   moves falls back to Docker Hub and is reported, never fatal.
+
+   Only `cossas/soarca` and `cyentific/cacao-roaster` are left — they publish
+   nowhere but Docker Hub. **Two anonymous pulls, not six**, which is why a
+   deploy without a PAT now has a real chance of succeeding.
 3. **An honest failure when it still happens.** The three compose tasks
    recognise a 429 and say so by name. DFIR-IRIS no longer burns its five
    retries on it: the retry exists for a genuine mid-build network reset, and a
