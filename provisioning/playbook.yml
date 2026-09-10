@@ -1,4 +1,81 @@
 ---
+# =============================================================================
+# One clock for the whole range, and the FIRST play of the file - before the
+# substrate, not merely before the overlay. Every timestamp written after it
+# is on the same scale: alerts, kern.log, active-responses.log, the command
+# logs forwarded off each node.
+#
+# It sat after the four substrate plays until 2026-09-10, which fixed the
+# clock but not their logs: kali stamped 14:20-14:21 through those four and
+# 12:22 from here on. Correcting a clock after things have written by it
+# leaves exactly that seam.
+#
+# Safe to run first: it takes no vars_files, reads no hostvars and depends on
+# no role - just timedatectl and date, on hosts systemd already runs.
+#
+# In the 2026-09-10 build kali ran two hours ahead of everything else: its tasks
+# closed at 09:15 while victim, ng-siem and docker-server closed at 07:15 UTC.
+# The image comes up on a local zone, the others on UTC. Nothing failed, which is
+# the problem — this is a SIEM training range whose entire Phase 2 is "correlate
+# these sources and place them on one timeline", and the analyst workstation was
+# contributing its syslog two hours in the future.
+#
+# Etc/UTC rather than a regional zone: the SIEM stores and the training text both
+# speak UTC, and a range that is torn down the same day has nothing to gain from
+# local time.
+- name: PUC2 2c — one clock across the range
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    # timedatectl rather than community.general.timezone: the collections in
+    # requirements.yml are installed by the platform, not by this repo, and the
+    # run log opens with "contains collections which will be ignored". Only
+    # community.docker is proven present by the substrate actually using it.
+    # Making the FIRST play of the whole file depend on an unproven collection
+    # would trade a two-hour clock skew for a deployment that cannot start, and
+    # nothing at all would run. systemd is on every node here and every other
+    # play already relies on it.
+    - name: Read the zone each node is currently on
+      ansible.builtin.command: date +%Z
+      register: puc2_tz_before
+      changed_when: false
+
+    - name: Put every node on UTC
+      ansible.builtin.command: timedatectl set-timezone Etc/UTC
+      when: puc2_tz_before.stdout | trim != 'UTC'
+      register: puc2_tz
+      changed_when: true
+
+    # Long-running loggers cache the zone at start, so they keep stamping the old
+    # offset until they are restarted. rsyslog is the one that matters: it is what
+    # ships each node's command log off the box. Restarted only where the timezone
+    # actually moved, and only where rsyslog is present at all.
+    - name: Restart rsyslog where the clock just moved under it
+      ansible.builtin.systemd:
+        name: rsyslog
+        state: restarted
+      when: puc2_tz is changed
+      failed_when: false
+
+    - name: Read back the zone each node is now on
+      ansible.builtin.command: date +%Z
+      register: puc2_tz_now
+      changed_when: false
+
+    # Blocking: a node that silently refuses the change is a node whose logs will
+    # not line up with the SIEM's, and finding that out from a student's confused
+    # timeline is finding out too late.
+    - name: GATE — every node agrees on the clock
+      ansible.builtin.assert:
+        that:
+          - puc2_tz_now.stdout | trim == 'UTC'
+        fail_msg: >-
+          {{ inventory_hostname }} is on '{{ puc2_tz_now.stdout | trim }}', not UTC.
+          Its logs will not line up with NG-SIEM's on the incident timeline the
+          training asks trainees to reconstruct.
+        success_msg: "{{ inventory_hostname }} is on UTC."
+
 - name: Configuring Docker-Server
   hosts: docker-server
   become: yes
@@ -81,11 +158,14 @@
 # =============================================================================
 # PUC2 (CYNET) — Sub Case 2c overlay
 # -----------------------------------------------------------------------------
-# Everything above this line is the ng-soc-ansible@integrations substrate,
-# copied verbatim. Everything below is the ADDITIVE scenario overlay: it never
-# modifies a substrate role and it always runs AFTER them, so the MISP /
-# custom-iris integrations injected into ossec.conf by the ng-siem role are
-# already in place (the overlay uses distinct blockinfile markers).
+# Everything above this line is the ng-soc-ansible@integrations substrate —
+# with ONE exception, the one-clock play at the very top, which is ours. It
+# leads the file rather than the overlay because a clock corrected after the
+# substrate has written by it leaves a seam in the logs; it touches nothing
+# else. Everything below is the ADDITIVE scenario overlay: it never modifies a
+# substrate role and it always runs AFTER them, so the MISP / custom-iris
+# integrations injected into ossec.conf by the ng-siem role are already in place
+# (the overlay uses distinct blockinfile markers).
 #
 # Ordering contract:
 #   docker-server (facts: misp_api_key, iris_api_key, docker_server_internal_ip)
@@ -96,73 +176,6 @@
 # `groups: []`, so a group_vars file would never be auto-loaded. vault.yml is
 # git-ignored, so the example file is used when it is absent.
 # =============================================================================
-
-# =============================================================================
-# One clock for the whole range. Runs FIRST in the overlay so every timestamp
-# written after it — alerts, kern.log, active-responses.log, the command logs
-# forwarded off each node — is on the same scale.
-#
-# In the 2026-09-10 build kali ran two hours ahead of everything else: its tasks
-# closed at 09:15 while victim, ng-siem and docker-server closed at 07:15 UTC.
-# The image comes up on a local zone, the others on UTC. Nothing failed, which is
-# the problem — this is a SIEM training range whose entire Phase 2 is "correlate
-# these sources and place them on one timeline", and the analyst workstation was
-# contributing its syslog two hours in the future.
-#
-# Etc/UTC rather than a regional zone: the SIEM stores and the training text both
-# speak UTC, and a range that is torn down the same day has nothing to gain from
-# local time.
-- name: PUC2 2c — one clock across the range
-  hosts: all
-  become: true
-  gather_facts: false
-  tasks:
-    # timedatectl rather than community.general.timezone: the collections in
-    # requirements.yml are installed by the platform, not by this repo, and the
-    # run log opens with "contains collections which will be ignored". Only
-    # community.docker is proven present by the substrate actually using it.
-    # Making the FIRST play of the overlay depend on an unproven collection would
-    # trade a two-hour clock skew for a deployment that cannot start. systemd is
-    # on every node here and every other play already relies on it.
-    - name: Read the zone each node is currently on
-      ansible.builtin.command: date +%Z
-      register: puc2_tz_before
-      changed_when: false
-
-    - name: Put every node on UTC
-      ansible.builtin.command: timedatectl set-timezone Etc/UTC
-      when: puc2_tz_before.stdout | trim != 'UTC'
-      register: puc2_tz
-      changed_when: true
-
-    # Long-running loggers cache the zone at start, so they keep stamping the old
-    # offset until they are restarted. rsyslog is the one that matters: it is what
-    # ships each node's command log off the box. Restarted only where the timezone
-    # actually moved, and only where rsyslog is present at all.
-    - name: Restart rsyslog where the clock just moved under it
-      ansible.builtin.systemd:
-        name: rsyslog
-        state: restarted
-      when: puc2_tz is changed
-      failed_when: false
-
-    - name: Read back the zone each node is now on
-      ansible.builtin.command: date +%Z
-      register: puc2_tz_now
-      changed_when: false
-
-    # Blocking: a node that silently refuses the change is a node whose logs will
-    # not line up with the SIEM's, and finding that out from a student's confused
-    # timeline is finding out too late.
-    - name: GATE — every node agrees on the clock
-      ansible.builtin.assert:
-        that:
-          - puc2_tz_now.stdout | trim == 'UTC'
-        fail_msg: >-
-          {{ inventory_hostname }} is on '{{ puc2_tz_now.stdout | trim }}', not UTC.
-          Its logs will not line up with NG-SIEM's on the incident timeline the
-          training asks trainees to reconstruct.
-        success_msg: "{{ inventory_hostname }} is on UTC."
 
 - name: PUC2 2c — NG-SIEM detection rules and active-response wiring (steps 3-6, 9-10)
   hosts: ng-siem

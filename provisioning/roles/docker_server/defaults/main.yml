@@ -13,6 +13,25 @@
 # encrypt it with ansible-vault) if a pre-seeded key is ever genuinely needed.
 iris_bootstrap_api_key: "{{ vault_iris_bootstrap_key | default('') }}"
 
+# ── Which revision of misp-docker to build ───────────────────────────────────
+# PINNED, after `master` broke three deployments in a row with one restructure:
+#
+#   compose variables renamed   ~130 warnings drowning every build log
+#   CORE_*_PORT -> NGINX_*_PORT MISP published on :443, the project used :8443
+#   ./ssl moved, read-only      no certificate, SSL disabled, nothing listening
+#
+# None was predictable from the one before it, each cost a deploy, and each
+# surfaced the same way: HTTP -1, eight plays downstream.
+#
+# This is the revision the 2026-09-10 13:51 build cloned - the first run in which
+# docker-server finished with failed=0, MISP included. Upstream had already moved
+# past it 32 minutes later (6e3f19b), which is the argument in miniature.
+#
+# TO BUMP IT: set this to a newer sha, deploy, and confirm docker-server still
+# ends failed=0 and the MISP HTTPS gate still passes. Do not move it to a branch
+# name - a training range wants the build it was tested with, not the newest one.
+misp_docker_version: "5fe20225a92d8143ebf16a7e7d208135252bada1"
+
 # ── Where MISP is published on the host ──────────────────────────────────────
 # The whole project addresses MISP at :8443 — group_vars/puc2_2c.yml, the
 # cti_lookup.sh / share_intel.sh helpers, the preflight gate's dashboard probe,

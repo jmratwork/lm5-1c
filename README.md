@@ -36,8 +36,8 @@ Sub Case 2c is layered on top as an **additive overlay** of `*_2c` roles that ru
 `ossec.conf` integrations are never clobbered.
 
 > **The substrate is not the only moving part.** `docker_server` clones
-> `MISP/misp-docker` at **`master`**, unpinned, and one upstream restructure has
-> now broken three deploys in a row. Splitting `misp-nginx` out of `misp-core`
+> `MISP/misp-docker`, and one upstream restructure broke three deploys in a row
+> while that clone tracked **`master`**. Splitting `misp-nginx` out of `misp-core`
 > changed three things at once:
 >
 > | What changed | How it failed | Fixed by |
@@ -49,8 +49,11 @@ Sub Case 2c is layered on top as an **additive overlay** of `*_2c` roles that ru
 > Each cost a deploy that died eight plays later on `HTTP -1`. The role now
 > handles all three and asserts, right after the compose, that MISP *answers
 > HTTPS* — not merely that a port is bound, which `docker-proxy` makes true
-> whether or not anything is listening. **Pinning that clone to a known revision
-> is still an open question**, and it is the thing that would stop a fourth.
+> whether or not anything is listening. And the clone is now **pinned** to
+> `5fe2022` — the revision of the first build in which `docker-server` finished
+> `failed=0`. Upstream had already moved past it 32 minutes later, which is the
+> argument in miniature. `misp_docker_version` in the role's defaults carries
+> the sha and the procedure for bumping it.
 
 One substrate promise is worth singling out: `roles/victim` sets
 `WAZUH_MANAGER` at package-install time, so the agent enrols itself. Nothing
@@ -305,7 +308,8 @@ Everything else follows the diagram's actor, direction and ordering.
 the overlay in this order:
 
 ```
-one-clock play            (every node onto UTC, before anything timestamps)
+one-clock play            (FIRST play of the file - every node onto UTC before
+                           anything, substrate included, timestamps by it)
 docker-server (facts: misp_api_key, iris_api_key, docker_server_internal_ip)
   → ng-siem (substrate integrations)
     → ng_siem_rules_2c      (rules, CDB list, active-response wiring)

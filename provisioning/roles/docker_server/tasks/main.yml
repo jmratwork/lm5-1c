@@ -409,7 +409,9 @@
   git:
     repo: "https://github.com/MISP/misp-docker.git"
     dest: "/opt/misp-docker"
-    version: "master"
+    # Pinned, not `master`. See misp_docker_version in defaults/main.yml for
+    # which revision, why, and how to move it.
+    version: "{{ misp_docker_version }}"
   
 - name: Copy MISP env
   copy:
