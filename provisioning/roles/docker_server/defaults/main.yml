@@ -12,3 +12,37 @@
 # Set `vault_iris_bootstrap_key` in group_vars/vault.yml (git-ignored, and
 # encrypt it with ansible-vault) if a pre-seeded key is ever genuinely needed.
 iris_bootstrap_api_key: "{{ vault_iris_bootstrap_key | default('') }}"
+
+# ── Docker Hub rate limiting ─────────────────────────────────────────────────
+# Anonymous pulls are capped per egress IP, and every sandbox on this platform
+# shares one. The 2026-09-10 09:37 build died on it: five Docker Hub images
+# pulled, the sixth (rabbitmq:3.8-management, for DFIR-IRIS) came back 429 and
+# took the whole deployment with it in play one.
+#
+# What made that worse than it had to be: the compose task retried five times at
+# 30-second intervals, because the retry was written for transient network
+# resets. A rate limit is not a transient reset — its window is measured in
+# hours — so the retries recovered nothing, spent 2.5 minutes, and issued four
+# more requests against the very limit that was the problem. Worse, the failure
+# read like a flaky network, which is the opposite of what an operator needs to
+# see: the fix is a PAT, and nothing about "attempts: 5" says so.
+#
+# Matched against the module's own message and stderr. Deliberately broad: the
+# daemon has worded this several ways (429, "toomanyrequests", the pull-limit
+# help URL), and over-matching costs a clearer error message on some other
+# failure, while under-matching costs another blind 20-minute deploy.
+docker_hub_rate_limit_pattern: '429|toomanyrequests|too many requests|pull rate limit|rate limit'
+
+# Shown when a pull is rate-limited. Kept here so the three compose tasks that
+# pull from Docker Hub all say the same thing rather than drifting apart.
+docker_hub_rate_limit_help: >-
+  DOCKER HUB RATE LIMIT (HTTP 429) - this is not a network fault and retrying
+  will not clear it: the quota is per egress IP, shared by every sandbox on the
+  platform, and its window is hours, not seconds.
+  Re-run supplying a Docker Hub token, which raises the limit:
+  ansible-playbook provisioning/playbook.yml
+  -e vault_dockerhub_pat=dckr_pat_... -e vault_dockerhub_user=<user>
+  A local group_vars/vault.yml does NOT work - it is git-ignored, so it never
+  reaches the sandbox; the PAT has to be an extra var on the deployment command.
+  Rotate before reusing: the PAT that used to be hardcoded in this role is
+  public (see validation/SECURITY_ROTATION.md).

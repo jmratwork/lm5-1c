@@ -327,6 +327,22 @@ without runtime proof that rule 100101 alerts, that 100103 correlates, or that
 containment writes the markers L19/L21 grade. The log says so explicitly when it
 happens. Do not hand a sandbox to students off such a run without re-checking.
 
+#### The Docker Hub limit is the most likely way a deploy dies
+
+`docker-server` is the first play, and a failure there ends the whole job — the
+platform does not go on to build the other eleven plays. It pulls six images
+from Docker Hub (`mariadb`, `valkey`, `mongo`, `soarca`, `cacao-roaster`,
+`rabbitmq`), and the anonymous quota is **per egress IP, shared by every sandbox
+on the platform**, so consecutive deploys exhaust it. On 2026-09-10 five images
+pulled and the sixth returned 429, taking the deployment with it.
+
+The three compose tasks that pull from Docker Hub now recognise a 429 and say
+so by name instead of letting it read as a flaky network. DFIR-IRIS in
+particular no longer burns its five retries on it: the retry exists for a
+genuine mid-build network reset, and a rate limit whose window is hours is not
+that — retrying only issued four more requests against the limit that was
+already the problem. It stops after one attempt and names the PAT as the fix.
+
 The last two plays of the file are diagnostics (`puc2_diag`,
 `puc2_access_probe`), tagged `never` and absent from a normal deploy:
 

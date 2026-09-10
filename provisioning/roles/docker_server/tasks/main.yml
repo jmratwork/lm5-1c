@@ -261,12 +261,32 @@
       substituting a blank string for each of them; the deploy log just stops
       saying so 130 times.
 
+# No retry here, and none wanted: this task already fails on the first attempt.
+# What it lacked was a reason. MISP pulls mariadb and valkey from Docker Hub, so
+# it is just as exposed to the 429 as DFIR-IRIS is - it simply happens to pull
+# earlier, while there is still quota left.
 - name: Deployment of MISP Docker
-  community.docker.docker_compose_v2:
-    project_src: "/opt/misp-docker"
-    state: present
-#    build: always
-  register: misp_output
+  block:
+    - name: Deployment of MISP Docker
+      community.docker.docker_compose_v2:
+        project_src: "/opt/misp-docker"
+        state: present
+    #    build: always
+      register: misp_output
+
+  rescue:
+    - name: Say whether MISP failed on the Docker Hub rate limit
+      ansible.builtin.fail:
+        msg: >-
+          {% if (misp_output.msg | default('') ~ ' ' ~ misp_output.stderr | default('')) | lower
+                is search(docker_hub_rate_limit_pattern) %}
+          MISP could not be deployed. {{ docker_hub_rate_limit_help }}
+          Docker said: {{ misp_output.msg | default('(no message)') }}
+          {% else %}
+          MISP could not be deployed, and it is NOT a Docker Hub rate limit.
+          Docker said: {{ misp_output.msg | default('(no message)') }}
+          {{ misp_output.stderr | default('') }}
+          {% endif %}
 
 - name: Deploy Portainer
   community.docker.docker_container:
@@ -314,12 +334,31 @@
 #    build: always
 #  register: dfir_iris_output
 
+# NG-SOAR pulls three Docker Hub images (soarca, cacao-roaster, mongo) - the
+# heaviest Docker Hub consumer in this role, and the one that leaves DFIR-IRIS
+# without quota when the limit is close.
 - name: Build and run NG-SOAR
-  community.docker.docker_compose_v2:
-    project_src: "/opt/NG-SOAR"
-    state: present
-    build: always
-  register: NG_SOAR_output
+  block:
+    - name: Build and run NG-SOAR
+      community.docker.docker_compose_v2:
+        project_src: "/opt/NG-SOAR"
+        state: present
+        build: always
+      register: NG_SOAR_output
+
+  rescue:
+    - name: Say whether NG-SOAR failed on the Docker Hub rate limit
+      ansible.builtin.fail:
+        msg: >-
+          {% if (NG_SOAR_output.msg | default('') ~ ' ' ~ NG_SOAR_output.stderr | default('')) | lower
+                is search(docker_hub_rate_limit_pattern) %}
+          NG-SOAR could not be deployed. {{ docker_hub_rate_limit_help }}
+          Docker said: {{ NG_SOAR_output.msg | default('(no message)') }}
+          {% else %}
+          NG-SOAR could not be deployed, and it is NOT a Docker Hub rate limit.
+          Docker said: {{ NG_SOAR_output.msg | default('(no message)') }}
+          {{ NG_SOAR_output.stderr | default('') }}
+          {% endif %}
 
 - name: Get or generate MISP API key for admin user
   community.docker.docker_container_exec:
@@ -497,17 +536,46 @@
     regexp: '^version:'
     state: absent
 
-# ── Build and run — retried against transient network resets (Option 1) ──────
-
+# ── Build and run — retried against transient network resets ─────────────────
+# The retry stays: a reset mid-build is real and a second attempt fixes it.
+# What it must NOT do is keep retrying a rate limit. See
+# defaults/main.yml (docker_hub_rate_limit_pattern) for why.
 - name: Build and run DFIR-IRIS
-  community.docker.docker_compose_v2:
-    project_src: "/opt/dfir-iris-custom"
-    state: present
-    build: always
-  register: dfir_iris_output
-  until: dfir_iris_output is succeeded
-  retries: 5
-  delay: 30
+  block:
+    - name: Build and run DFIR-IRIS
+      community.docker.docker_compose_v2:
+        project_src: "/opt/dfir-iris-custom"
+        state: present
+        build: always
+      register: dfir_iris_output
+      # Stop the loop on success OR on a rate limit. Breaking out on 429 does
+      # not make the task pass - it still fails, into the rescue below - it just
+      # fails after ONE attempt with the right diagnosis instead of after five
+      # and 2.5 minutes with the wrong one.
+      until: >-
+        dfir_iris_output is succeeded
+        or ((dfir_iris_output.msg | default('') ~ ' ' ~ dfir_iris_output.stderr | default('')) | lower
+            is search(docker_hub_rate_limit_pattern))
+      retries: 5
+      delay: 30
+
+  rescue:
+    - name: Say whether this was the rate limit or a genuine build failure
+      ansible.builtin.fail:
+        msg: >-
+          {% if (dfir_iris_output.msg | default('') ~ ' ' ~ dfir_iris_output.stderr | default('')) | lower
+                is search(docker_hub_rate_limit_pattern) %}
+          DFIR-IRIS could not be built. {{ docker_hub_rate_limit_help }}
+          Stopped after {{ dfir_iris_output.attempts | default(1) }} attempt(s) rather
+          than retrying into the same limit. Docker said:
+          {{ dfir_iris_output.msg | default('(no message)') }}
+          {% else %}
+          DFIR-IRIS could not be built, and it is NOT a Docker Hub rate limit -
+          the retry budget ({{ dfir_iris_output.attempts | default('?') }} attempts)
+          was spent on a real failure. Docker said:
+          {{ dfir_iris_output.msg | default('(no message)') }}
+          {{ dfir_iris_output.stderr | default('') }}
+          {% endif %}
 
 # ── Wait for iris_app healthy ─────────────────────────────────────────────────
 
