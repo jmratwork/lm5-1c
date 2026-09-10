@@ -21,7 +21,7 @@ vendored here:
 |---|---|---|
 | `topology.yml` | the tested flat `testnet` 10.0.16.0/24 | none |
 | `provisioning/roles/all/` | `/etc/hosts` wiring, sandbox command logging | none of substance |
-| `provisioning/roles/docker_server/` | MISP, DFIR-IRIS, NG-SOAR; publishes `misp_api_key`, `iris_api_key`, `docker_server_internal_ip` | **yes** — hardcoded credentials moved to vault, the DFIR-IRIS build no longer depends on a `github.com` clone, unset MISP compose variables pinned, obsolete `version:` key dropped |
+| `provisioning/roles/docker_server/` | MISP, DFIR-IRIS, NG-SOAR; publishes `misp_api_key`, `iris_api_key`, `docker_server_internal_ip` | **yes, the most** — hardcoded credentials taken out of the repo, the DFIR-IRIS build no longer depends on a `github.com` clone, unset MISP compose variables pinned, obsolete `version:` key dropped, and the whole Docker Hub rate-limit story below (preflight, pre-pull from other registries, fail-fast on 429) |
 | `provisioning/roles/ng-siem/` | the `siemng` image (Wazuh + SPHYNX stack); injects the MISP and `custom-iris` integrations into `ossec.conf` | minor |
 | `provisioning/roles/victim/` | Wazuh agent, enrolled against `ng-siem` at install time via `WAZUH_MANAGER` | minor |
 
@@ -92,8 +92,9 @@ done
 diff /tmp/subs/topology.yml topology.yml
 ```
 
-Expect mostly `when:` lines in `docker_server` and `ng-siem`, plus one
-functional deviation in `docker_server`: its DFIR-IRIS step now comments out the
+Expect mostly `when:` lines in `docker_server` and `ng-siem`, plus the Docker
+Hub handling described under *Deploying*, plus one older functional deviation in
+`docker_server`: its DFIR-IRIS step now comments out the
 `evtx2splunk` / `iris_evtx` requirement chain before the image build and retries
 the build on transient network resets. That chain pulls `splunk-hec` from
 `git+https://github.com/...` during `pip3 install`, and the sandbox's git clone
@@ -308,7 +309,7 @@ be auto-loaded.
 ### Deploying
 
 The platform runs `provisioning/playbook.yml` with no extra arguments and that
-is the supported path. Two switches are worth knowing:
+is the supported path — **no credential has to be supplied**. These override it:
 
 ```bash
 # Optional. Docker Hub authentication already falls back to the substrate's own
@@ -320,6 +321,13 @@ ansible-playbook provisioning/playbook.yml \
 # Skip the end-to-end rehearsal (a smoke deploy, or a re-run against a sandbox
 # students are already using — it fires the real scenario before cleaning up):
 ansible-playbook provisioning/playbook.yml -e puc2_rehearsal_enabled=false
+
+# Ignore the substrate's published credential and pull anonymously:
+ansible-playbook provisioning/playbook.yml -e substrate_docker_login_enabled=false
+
+# Skip the Docker Hub quota preflight (a registry proxy, an air-gapped mirror,
+# anywhere reaching auth.docker.io is not meaningful):
+ansible-playbook provisioning/playbook.yml -e docker_hub_preflight_enabled=false
 ```
 
 Skipping the rehearsal is a clean skip, not a failure, but the range then ships
@@ -330,15 +338,16 @@ happens. Do not hand a sandbox to students off such a run without re-checking.
 #### The Docker Hub limit is the most likely way a deploy dies
 
 `docker-server` is the first play, and a failure there ends the whole job — the
-platform does not go on to build the other eleven plays. It pulls six images
+platform does not go on to build the other eleven plays. It needed six images
 from Docker Hub (`mariadb`, `valkey`, `mongo`, `soarca`, `cacao-roaster`,
 `rabbitmq`), and the anonymous quota is **per egress IP, shared by every sandbox
 on the platform**, so consecutive deploys exhaust it. On 2026-09-10 five images
 pulled and the sixth returned 429, taking the deployment with it.
 
-Four things now stand between that and a twenty-minute wasted build:
+Four things now stand between that and a twenty-minute wasted build — and the
+six is down to two:
 
-0. **Authentication, without a credential in this repo.** The substrate
+1. **Authentication, without a credential in this repo.** The substrate
    (`ng-soc-ansible@integrations`) still carries a hardcoded Docker Hub login.
    This repo removed it — it is public, and committing it here would republish
    it — but it is still *used*: the role fetches it from the upstream repository
@@ -358,14 +367,13 @@ Four things now stand between that and a twenty-minute wasted build:
    `-e vault_dockerhub_pat=…` always wins. The deploy log says which path was
    taken.
 
-
-1. **A preflight.** Before the first pull, the role asks Docker Hub how much
+2. **A preflight.** Before the first pull, the role asks Docker Hub how much
    headroom is left (a HEAD on the probe repository, which does not itself
    consume a pull) and refuses to start a build the quota cannot finish. It
    blocks only on a *measured* shortfall: an unreachable probe, or an account
    whose limit the registry does not publish, proceeds — "could not measure"
    must never read as "empty".
-2. **Four of the six images no longer come from Docker Hub at all.** They are
+3. **Four of the six images no longer come from Docker Hub at all.** They are
    pulled from registries that do not share its per-IP limit and re-tagged
    under their Docker Hub names, so compose finds them in the local cache:
 
@@ -387,17 +395,18 @@ Four things now stand between that and a twenty-minute wasted build:
    Only `cossas/soarca` and `cyentific/cacao-roaster` are left — they publish
    nowhere but Docker Hub. **Two anonymous pulls, not six**, which is why a
    deploy without a PAT now has a real chance of succeeding.
-3. **An honest failure when it still happens.** The three compose tasks
+4. **An honest failure when it still happens.** The three compose tasks
    recognise a 429 and say so by name. DFIR-IRIS no longer burns its five
    retries on it: the retry exists for a genuine mid-build network reset, and a
    rate limit whose window is hours is not that — retrying only issued four more
    requests against the limit that was already the problem. It stops after one
    attempt and names the PAT as the fix.
 
-The mirror in (2) was **not** verifiable from the machine this was written on,
-which is why it degrades to the old behaviour rather than assuming. The first
-deploy to run it will print one `SEEDED` / `MISS` line per image, and that is
-the answer.
+None of this has met a live deploy yet — three attempts have died before
+`docker-server` finished. The first run to get past it prints the evidence in
+three lines worth grepping for: the `Docker Hub auth:` verdict, one
+`CACHED` / `SEEDED` / `MISS` line per pre-pulled image, and the measured
+headroom from the preflight.
 
 The last two plays of the file are diagnostics (`puc2_diag`,
 `puc2_access_probe`), tagged `never` and absent from a normal deploy:
