@@ -35,6 +35,16 @@ Sub Case 2c is layered on top as an **additive overlay** of `*_2c` roles that ru
 *after* them and use their own `blockinfile` markers, so the substrate's
 `ossec.conf` integrations are never clobbered.
 
+> **The substrate is not the only moving part.** `docker_server` clones
+> `MISP/misp-docker` at **`master`**, unpinned, and that has broken a deploy
+> twice. Most recently upstream split a `misp-nginx` container out and renamed
+> the port variables — `CORE_HTTP_PORT` / `CORE_HTTPS_PORT` became
+> `NGINX_HTTP_PORT` / `NGINX_HTTPS_PORT` — so the role's port settings became
+> dead config, MISP published on :443 instead of :8443, and the 2026-09-10 12:22
+> build died eight plays later on `HTTP -1` from a credential probe. The role now
+> writes **both** naming schemes and asserts the port is bound right after the
+> compose, but pinning that clone to a known revision is still an open question.
+
 One substrate promise is worth singling out: `roles/victim` sets
 `WAZUH_MANAGER` at package-install time, so the agent enrols itself. Nothing
 verified that it had until the preflight gate started asking the *manager* which

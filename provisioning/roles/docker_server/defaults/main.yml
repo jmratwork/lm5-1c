@@ -13,6 +13,18 @@
 # encrypt it with ansible-vault) if a pre-seeded key is ever genuinely needed.
 iris_bootstrap_api_key: "{{ vault_iris_bootstrap_key | default('') }}"
 
+# ── Where MISP is published on the host ──────────────────────────────────────
+# The whole project addresses MISP at :8443 — group_vars/puc2_2c.yml, the
+# cti_lookup.sh / share_intel.sh helpers, the preflight gate's dashboard probe,
+# and four levels of the training definition (L1, L9, L15, L24). One variable
+# here so the .env and the assert after the deploy cannot drift apart.
+#
+# 8443 is NOT the upstream default. misp-docker publishes on 80/443 unless told
+# otherwise, and 443 on this host is a scarce port — iris_nginx is already there
+# behind 8083. Keeping MISP on 8443 is what lets every address above stay true.
+misp_http_host_port: 8082
+misp_https_host_port: 8443
+
 # ── The substrate's own Docker Hub credential ────────────────────────────────
 # ng-soc-ansible@integrations carries a hardcoded Docker Hub login in
 # roles/docker_server/tasks/main.yml. This repo removed it, because a credential

@@ -377,21 +377,49 @@
   lineinfile:
     path: /opt/misp-docker/.env
     regexp: '^#?\s*CORE_HTTP_PORT='
-    line: CORE_HTTP_PORT=8082
+    line: "CORE_HTTP_PORT={{ misp_http_host_port }}"
     state: present
 
 - name: Change env https port for MISP
   lineinfile:
     path: /opt/misp-docker/.env
     regexp: '^#?\s*CORE_HTTPS_PORT='
-    line: CORE_HTTPS_PORT=8443
+    line: "CORE_HTTPS_PORT={{ misp_https_host_port }}"
     state: present
+
+# ── The variables misp-docker ACTUALLY reads now ─────────────────────────────
+# The two tasks above became dead config. Upstream restructured: a separate
+# misp-nginx container owns the host ports and declares them as
+#     - "${NGINX_HTTP_PORT:-80}:8080"
+#     - "${NGINX_HTTPS_PORT:-443}:8443"
+# CORE_HTTP_PORT and CORE_HTTPS_PORT are gone from both the compose file and
+# template.env. Nothing read them, so MISP published on 80/443 while the entire
+# project kept addressing :8443 — and the 2026-09-10 12:22 build died on
+# `MISP /servers/getVersion -> HTTP -1`, five minutes of retries into a port
+# with nothing behind it.
+#
+# The CORE_* pair is kept rather than deleted, deliberately: this role clones
+# misp-docker at `master`, and pinning it to an older ref is a separate open
+# question. Writing both means the port is {{ misp_https_host_port }} whichever
+# naming the cloned revision happens to use. Two inert lines is a cheap price
+# for surviving that choice either way.
+- name: Publish MISP on the ports this project addresses (current upstream names)
+  ansible.builtin.lineinfile:
+    path: /opt/misp-docker/.env
+    regexp: "^#?\\s*{{ item.key }}="
+    line: "{{ item.key }}={{ item.value }}"
+    state: present
+  loop:
+    - { key: 'NGINX_HTTP_PORT', value: "{{ misp_http_host_port }}" }
+    - { key: 'NGINX_HTTPS_PORT', value: "{{ misp_https_host_port }}" }
+  loop_control:
+    label: "{{ item.key }}={{ item.value }}"
 
 - name: Change BASE_URL in env for MISP
   lineinfile:
     path: /opt/misp-docker/.env
     regexp: '^#?\s*BASE_URL='
-    line: 'BASE_URL=https://{{ docker_server_internal_ip }}:8443'
+    line: 'BASE_URL=https://{{ docker_server_internal_ip }}:{{ misp_https_host_port }}'
     state: present
     insertafter: EOF
     backup: yes
@@ -472,6 +500,62 @@
           Docker said: {{ misp_output.msg | default('(no message)') }}
           {{ misp_output.stderr | default('') }}
           {% endif %}
+
+# ── Is MISP where the rest of the project thinks it is? ──────────────────────
+# `docker compose up` succeeding means the containers started, NOT that they
+# published where anyone expects. On 2026-09-10 every MISP container came up
+# healthy and the deploy sailed on for eight more plays before a credential gate
+# discovered, via `HTTP -1` after five minutes of retries, that :8443 had
+# nothing behind it — upstream had moved MISP to :443 by renaming the port
+# variables. The evidence was in this task's own output all along: the
+# misp-nginx publisher list read 443, not 8443, and nothing looked.
+#
+# Now something looks, at the source. A bound port is a small claim - it says
+# nothing about MISP being *ready*, which takes minutes and which puc2_keys
+# already waits for - but it is exactly the claim that was silently false.
+- name: Wait for MISP to publish the HTTPS port this project addresses
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ misp_https_host_port }}"
+    timeout: 120
+    state: started
+  register: misp_port_bound
+  ignore_errors: true
+
+- name: Read back where MISP actually published, for the failure message
+  ansible.builtin.shell: |
+    set -o pipefail
+    docker compose -f /opt/misp-docker/docker-compose.yml ps --format '{{ "{{" }}.Service{{ "}}" }} {{ "{{" }}.Ports{{ "}}" }}' 2>/dev/null \
+      || docker ps --filter 'name=misp-docker' --format '{{ "{{" }}.Names{{ "}}" }} {{ "{{" }}.Ports{{ "}}" }}'
+  args:
+    chdir: /opt/misp-docker
+    executable: /bin/bash
+  register: misp_published
+  changed_when: false
+  failed_when: false
+  when: misp_port_bound is failed
+
+- name: GATE - MISP is reachable on the port every address in this project uses
+  ansible.builtin.assert:
+    that:
+      - misp_port_bound is not failed
+    fail_msg: >-
+      MISP came up but published nowhere near
+      {{ misp_https_host_port }}, so every address in this project is wrong:
+      group_vars/puc2_2c.yml, cti_lookup.sh, share_intel.sh, the preflight
+      dashboard probe, and levels L1/L9/L15/L24 of the training definition all
+      say https://<docker-server>:{{ misp_https_host_port }}.
+      Docker reports these published ports:
+      {{ misp_published.stdout | default('(could not read)') | trim }}
+      MOST LIKELY CAUSE: misp-docker is cloned at `master` and upstream renamed
+      the port variables. As of 2026-09-10 its compose reads
+      "${NGINX_HTTP_PORT:-80}:8080" and "${NGINX_HTTPS_PORT:-443}:8443"; the
+      older CORE_HTTP_PORT / CORE_HTTPS_PORT pair is gone. This role writes both
+      names, so if neither took, check what the current revision expects and add
+      it beside them.
+    success_msg: >-
+      MISP is published on {{ misp_https_host_port }} - the address group_vars,
+      the console helpers and the training definition all use.
 
 - name: Deploy Portainer
   community.docker.docker_container:
