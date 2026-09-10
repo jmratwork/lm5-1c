@@ -164,17 +164,63 @@
 # raw 429 on an image like rabbitmq that says nothing about the skipped login.
 # This says it up front. It warns rather than fails because anonymous pulls do
 # succeed when the limit has not been hit (cached images, a fresh egress IP).
-- name: WARN that Docker Hub pulls will be anonymous and rate-limited
+# ── Fall back to the substrate's published credential ────────────────────────
+# Only when no PAT was supplied. See defaults/main.yml for what this credential
+# is, why it is read at deploy time instead of stored here, and what it costs.
+#
+# The secret is fetched, piped into `docker login --password-stdin` and
+# discarded inside one shell. It is never an Ansible variable, never a process
+# argument, and never written to this repo. Only the username and the outcome
+# are printed - which is why this task does NOT need no_log, and is better for
+# it: the deploy log says which path authentication took.
+#
+# Nothing here is fatal. A revoked credential, a moved upstream file, no route
+# to raw.githubusercontent.com - all end in an anonymous pull, which is what
+# happened before this existed.
+- name: Authenticate to Docker Hub with the substrate's published credential
+  ansible.builtin.shell: |
+    set -uo pipefail
+    raw=$(curl -fsS --max-time 20 {{ substrate_docker_login_url | quote }}) \
+      || { echo "FETCH_FAILED - could not read the upstream role over HTTPS"; exit 0; }
+    u=$(printf '%s' "$raw" | grep -A3 'docker_login' | grep -i 'username:' \
+        | head -1 | sed 's/.*username:[[:space:]]*//' | tr -d '"\047 \r')
+    p=$(printf '%s' "$raw" | grep -A3 'docker_login' | grep -i 'password:' \
+        | head -1 | sed 's/.*password:[[:space:]]*//' | tr -d '"\047 \r')
+    if [ -z "$u" ] || [ -z "$p" ]; then
+      echo "NOT_FOUND - upstream no longer carries a docker_login credential"
+      exit 0
+    fi
+    if printf '%s' "$p" | docker login --username "$u" --password-stdin >/dev/null 2>&1; then
+      echo "LOGGED_IN as $u"
+    else
+      echo "REJECTED - Docker Hub refused the credential for $u (rotated or revoked)"
+    fi
+  args:
+    executable: /bin/bash
+  register: substrate_login
+  changed_when: "'LOGGED_IN' in substrate_login.stdout"
+  failed_when: false
+  when:
+    - substrate_docker_login_enabled | bool
+    - (vault_dockerhub_pat | default('')) | length == 0
+
+- name: Report how Docker Hub authentication ended up
   ansible.builtin.debug:
     msg: >-
-      No vault_dockerhub_pat is set, so the Docker Hub login was skipped and every
-      image will be pulled anonymously. If this run later dies on a '429 Too Many
-      Requests' while pulling an image, THIS is why. Supply a PAT as an extra var
-      on the deployment command:  -e vault_dockerhub_pat=dckr_pat_...  A local
-      group_vars/vault.yml does NOT work: it is git-ignored, so it never reaches
-      the sandbox. See validation/SECURITY_ROTATION.md - and rotate first, the
-      PAT that used to be hardcoded here is public and must not be reused.
-  when: (vault_dockerhub_pat | default('')) | length == 0
+      Docker Hub auth:
+      {% if (vault_dockerhub_pat | default('')) | length > 0 %}
+      using the PAT supplied on the command line.
+      {% elif 'LOGGED_IN' in (substrate_login.stdout | default('')) %}
+      {{ substrate_login.stdout | trim }} - pulls are counted against that
+      account rather than this sandbox's egress IP.
+      {% else %}
+      ANONYMOUS. {{ substrate_login.stdout | default('substrate login disabled') | trim }}.
+      Pulls now count against the per-IP quota shared by every sandbox on the
+      platform. The pre-pull below still takes four of the six images off Docker
+      Hub, so two anonymous pulls remain - usually enough. If this run does die
+      on a 429, supply your own token:
+      -e vault_dockerhub_pat=... -e vault_dockerhub_user=...
+      {% endif %}
 
 # ═════════════════════════════════════════════════════════════════════════════
 # PREFLIGHT: is there enough Docker Hub quota to be worth starting?

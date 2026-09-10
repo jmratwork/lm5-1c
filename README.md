@@ -311,9 +311,9 @@ The platform runs `provisioning/playbook.yml` with no extra arguments and that
 is the supported path. Two switches are worth knowing:
 
 ```bash
-# Docker Hub pulls are anonymous unless a PAT is supplied, and anonymous pulls
-# are rate-limited. A deploy that dies on "429 Too Many Requests" while pulling
-# an image wants this — nothing else does:
+# Optional. Docker Hub authentication already falls back to the substrate's own
+# published credential (see below), so this is only needed to override it —
+# or when that credential is finally rotated upstream:
 ansible-playbook provisioning/playbook.yml \
   -e vault_dockerhub_pat=dckr_pat_... -e vault_dockerhub_user=<user>
 
@@ -336,7 +336,28 @@ from Docker Hub (`mariadb`, `valkey`, `mongo`, `soarca`, `cacao-roaster`,
 on the platform**, so consecutive deploys exhaust it. On 2026-09-10 five images
 pulled and the sixth returned 429, taking the deployment with it.
 
-Three things now stand between that and a twenty-minute wasted build:
+Four things now stand between that and a twenty-minute wasted build:
+
+0. **Authentication, without a credential in this repo.** The substrate
+   (`ng-soc-ansible@integrations`) still carries a hardcoded Docker Hub login.
+   This repo removed it — it is public, and committing it here would republish
+   it — but it is still *used*: the role fetches it from the upstream repository
+   at deploy time over HTTPS and pipes it straight into `docker login
+   --password-stdin`. It never becomes an Ansible variable, never appears in a
+   process argument, and nothing secret is written here.
+
+   The point is not the higher ceiling but *whose* ceiling: an authenticated
+   pull is counted against the **account**, not the egress IP, so it stops
+   competing with every other sandbox on the platform.
+
+   **Know what this is.** That credential is public — anyone who reads that
+   repository can use it, its quota is shared with all of them, and it can be
+   revoked upstream without warning. Every failure path (revoked, moved, no
+   route) degrades to an anonymous pull, which is what happened before. Set
+   `substrate_docker_login_enabled=false` to skip it, and an explicit
+   `-e vault_dockerhub_pat=…` always wins. The deploy log says which path was
+   taken.
+
 
 1. **A preflight.** Before the first pull, the role asks Docker Hub how much
    headroom is left (a HEAD on the probe repository, which does not itself

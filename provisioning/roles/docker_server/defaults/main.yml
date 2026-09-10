@@ -13,6 +13,35 @@
 # encrypt it with ansible-vault) if a pre-seeded key is ever genuinely needed.
 iris_bootstrap_api_key: "{{ vault_iris_bootstrap_key | default('') }}"
 
+# ── The substrate's own Docker Hub credential ────────────────────────────────
+# ng-soc-ansible@integrations carries a hardcoded Docker Hub login in
+# roles/docker_server/tasks/main.yml. This repo removed it, because a credential
+# in a git repository is a credential to rotate - see validation/
+# SECURITY_ROTATION.md - and lm5-1c is public, so committing it here would
+# republish it to a second public location.
+#
+# It is still USED, just never STORED: the task reads it from the upstream repo
+# at deploy time over HTTPS and pipes it straight into `docker login
+# --password-stdin`. It never becomes an Ansible variable, never appears in a
+# process argument, and nothing secret is written into this repository.
+#
+# Why bother, when the pre-pull below already cuts Docker Hub to two images:
+# an authenticated pull is counted against the ACCOUNT, not the egress IP.
+# Verified 2026-09-10 against the live registry - the account answers
+# `docker-ratelimit-source: demongsoc` with `ratelimit-limit: 200;w=3600`,
+# so those two pulls stop competing with every other sandbox on the platform.
+#
+# KNOW WHAT THIS IS. The credential is public: anyone who reads that repository
+# can use it, its 200/hour is shared with all of them, and it can be revoked or
+# rotated upstream without warning. Every one of those cases degrades to an
+# anonymous pull, which is why nothing here is fatal. An explicit
+# -e vault_dockerhub_pat=... always wins over it.
+substrate_docker_login_url: >-
+  https://raw.githubusercontent.com/NG-SOC-eu/ng-soc-ansible/integrations/provisioning/roles/docker_server/tasks/main.yml
+
+# Set false to skip it and pull anonymously (or with your own PAT only).
+substrate_docker_login_enabled: true
+
 # ── Docker Hub rate limiting ─────────────────────────────────────────────────
 # Anonymous pulls are capped per egress IP, and every sandbox on this platform
 # shares one. The 2026-09-10 09:37 build died on it: five Docker Hub images
