@@ -380,9 +380,19 @@ six is down to two:
 2. **A preflight.** Before the first pull, the role asks Docker Hub how much
    headroom is left (a HEAD on the probe repository, which does not itself
    consume a pull) and refuses to start a build the quota cannot finish. It
-   blocks only on a *measured* shortfall: an unreachable probe, or an account
-   whose limit the registry does not publish, proceeds — "could not measure"
-   must never read as "empty".
+   blocks only on a *measured* shortfall **in the pool this deploy will
+   actually use**: an unreachable probe, an unpublished limit, or an
+   authenticated pull all proceed — "could not measure" must never read as
+   "empty", and neither must "measured the wrong pool".
+
+   That last clause was learned the hard way. The probe can only authenticate
+   with a command-line PAT, so when the credential in force is the substrate's
+   (see 1) it measures the anonymous per-IP pool instead. On 2026-09-10 12:53
+   that stopped a working deployment at task 23: `docker login` had succeeded,
+   four of six images had left Docker Hub, two authenticated pulls remained
+   against a 200/hour account — and the gate blocked because the egress IP's
+   anonymous quota, which nothing was going to spend, read 0. A gate measuring
+   the wrong pool is worse than no gate: it fails the healthy case.
 3. **Four of the six images no longer come from Docker Hub at all.** They are
    pulled from registries that do not share its per-IP limit and re-tagged
    under their Docker Hub names, so compose finds them in the local cache:

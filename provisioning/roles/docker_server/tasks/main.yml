@@ -222,6 +222,16 @@
       -e vault_dockerhub_pat=... -e vault_dockerhub_user=...
       {% endif %}
 
+# Which pool the pulls will actually be billed to. Both paths lead to an
+# authenticated pull: a PAT on the command line, or the substrate credential
+# this role logged in with above. Only the preflight cares, and it cares a great
+# deal - see the note on the gate.
+- name: Record whether Docker Hub pulls will be authenticated
+  ansible.builtin.set_fact:
+    docker_hub_authenticated: >-
+      {{ ((vault_dockerhub_pat | default('')) | length > 0)
+         or ('LOGGED_IN' in (substrate_login.stdout | default(''))) }}
+
 # ═════════════════════════════════════════════════════════════════════════════
 # PREFLIGHT: is there enough Docker Hub quota to be worth starting?
 #
@@ -236,9 +246,10 @@
 - name: Preflight the Docker Hub rate limit before pulling anything
   when: docker_hub_preflight_enabled | bool
   block:
-    # With a PAT the token is issued against the account and reports the
-    # (higher) authenticated limit; without one it reports the anonymous
-    # per-IP limit, which is the case that actually fails here.
+    # The probe authenticates only with a command-line PAT, so when the
+    # credential in force is the substrate's the numbers below describe the
+    # ANONYMOUS pool - not the one the pulls will use. The gate accounts for
+    # that; nothing else here needs to.
     - name: Get a registry token for the rate-limit probe
       ansible.builtin.uri:
         url: >-
@@ -292,30 +303,63 @@
           {{ hub_remaining }} of {{ hub_limit_total }} pulls remaining; this
           deploy needs about {{ docker_hub_required_pulls }}.
           {% endif %}
-          {{ 'Authenticated.' if (vault_dockerhub_pat | default('')) | length > 0
-             else 'Anonymous - the quota is shared by every sandbox on this egress IP.' }}
+          {% if docker_hub_authenticated | bool %}
+          These are ANONYMOUS figures and this deploy is authenticated, so they
+          describe a pool it will not use - measured because the probe cannot
+          authenticate without a command-line PAT. Informational only; the gate
+          below does not act on them.
+          {% else %}
+          Anonymous - the quota is shared by every sandbox on this egress IP,
+          and it is the pool this deploy will pull from.
+          {% endif %}
 
-    # Blocking, but only on a MEASURED shortfall. An unreachable probe or an
-    # account with no published limit must never be the thing that stops a
-    # deploy that would have worked - the same reason the NG-SIEM gate does not
-    # fail when agent_control is missing from the image.
+    # Blocking, but only on a MEASURED shortfall IN THE POOL THIS DEPLOY WILL
+    # USE. Three ways out, and each one is a lesson already paid for:
+    #
+    #  * An unreachable probe or an unpublished limit (remaining -1). "Could not
+    #    measure" must never read as "empty" - the same reason the NG-SIEM gate
+    #    does not fail when agent_control is missing from the image.
+    #
+    #  * AUTHENTICATED pulls. The probe can only authenticate with a
+    #    command-line PAT, so when the credential in force is the substrate's it
+    #    measures the anonymous per-IP pool instead - a pool the deploy will not
+    #    touch. On 2026-09-10 12:53 that cost a working deployment: `docker
+    #    login` had succeeded as demongsoc, four of the six images had left
+    #    Docker Hub entirely, two authenticated pulls remained against a
+    #    200/hour account - and this gate stopped the run at task 23 because the
+    #    egress IP's anonymous quota, which nothing was going to spend, read 0.
+    #    A gate measuring the wrong pool is worse than no gate: it fails the
+    #    healthy case, which is exactly what it exists to avoid.
+    #
+    # The 429 fail-fast on the compose tasks remains the safety net for the
+    # authenticated path, and it names the PAT when it fires.
     - name: GATE - do not start a build the quota cannot finish
       ansible.builtin.assert:
         that:
-          - hub_limit.status | default(0) != 429
-          - (hub_remaining | int) < 0 or (hub_remaining | int) >= (docker_hub_required_pulls | int)
+          - (docker_hub_authenticated | bool) or hub_limit.status | default(0) != 429
+          - >-
+            (docker_hub_authenticated | bool)
+            or (hub_remaining | int) < 0
+            or (hub_remaining | int) >= (docker_hub_required_pulls | int)
         fail_msg: >-
-          Stopping before the first pull: Docker Hub has
+          Stopping before the first pull: this deploy pulls ANONYMOUSLY and
+          Docker Hub has
           {{ 'already returned 429 to the probe'
              if hub_limit.status | default(0) == 429
-             else hub_remaining ~ ' pulls left and this deploy needs about '
-                  ~ docker_hub_required_pulls }}.
+             else hub_remaining ~ ' pulls left, against about '
+                  ~ docker_hub_required_pulls ~ ' needed' }}.
           Starting now would clone MISP, build it, start NG-SOAR and then die on
           an image twenty minutes in - which is exactly what the 2026-09-10
-          build did. {{ docker_hub_rate_limit_help }}
+          09:37 build did. {{ docker_hub_rate_limit_help }}
         success_msg: >-
-          Docker Hub headroom is sufficient
+          {% if docker_hub_authenticated | bool %}
+          Docker Hub gate does not apply - pulls are authenticated, so the
+          anonymous figures above are not this deploy's pool. A 429 on an
+          authenticated pull is still caught, by name, at the compose task.
+          {% else %}
+          Docker Hub headroom is sufficient for an anonymous deploy
           ({{ 'unmeasured' if (hub_remaining | int) < 0 else hub_remaining ~ ' pulls' }}).
+          {% endif %}
 
 # ═════════════════════════════════════════════════════════════════════════════
 # Spend less of that quota: pull four of the six images from registries that do
