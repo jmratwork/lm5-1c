@@ -124,3 +124,81 @@
 
 - name: Apply the endpoint configuration now
   ansible.builtin.meta: flush_handlers
+
+# ═════════════════════════════════════════════════════════════════════════════
+# IS THE AGENT ACTUALLY TALKING TO THE MANAGER?
+#
+# Everything this role configures is inert unless the agent connects. FIM on
+# Downloads produces the telemetry rules 100100/100101 correlate; if it never
+# arrives, 100103 cannot fire, containment never runs, and the markers L19/L21
+# grade are never written. Four training levels, one connection.
+#
+# On 2026-09-10 the agent was installed, enrolled and RUNNING, and the manager
+# said `ID: 002, Name: victim606, Never connected`. The endpoint reported
+# nothing wrong: `systemctl is-active` said started, and the scenario's own arm
+# script printed `[ OK ] Wazuh agent running (telemetry to NG-SIEM)` on the
+# strength of it. A process that is up is not a process that is connected, and
+# every check on this side had been asking the easy question.
+#
+# The manager-side gate in puc2_preflight catches this, but six plays later and
+# with only "Never connected" to show for it - the reason lives in the agent's
+# own log, on this host, and nothing collected it. So collect it here, where the
+# agent was just configured, and fail here with it in hand.
+# ═════════════════════════════════════════════════════════════════════════════
+- name: Give the agent a moment to complete its handshake
+  ansible.builtin.wait_for:
+    timeout: 20
+
+- name: Collect everything that explains an agent that will not connect
+  ansible.builtin.shell: |
+    set +e
+    echo "=== service ==="
+    systemctl is-active wazuh-agent 2>&1
+    systemctl is-enabled wazuh-agent 2>&1
+    echo "=== manager address the agent is configured with ==="
+    sed -n '/<client>/,/<\/client>/p' /var/ossec/etc/ossec.conf 2>&1 | grep -E '<address>|<port>|<protocol>' || echo "  (no <client> block)"
+    echo "=== enrolment ==="
+    if [ -s /var/ossec/etc/client.keys ]; then
+      awk '{print "  id="$1" name="$2" ip="$3}' /var/ossec/etc/client.keys
+    else
+      echo "  client.keys is EMPTY or missing - the agent was never enrolled"
+    fi
+    echo "=== can this host even reach the manager? ==="
+    for p in 1514 1515; do
+      timeout 5 bash -c "cat < /dev/null > /dev/tcp/{{ puc2_ng_siem_ip }}/$p" 2>/dev/null \
+        && echo "  {{ puc2_ng_siem_ip }}:$p reachable" \
+        || echo "  {{ puc2_ng_siem_ip }}:$p UNREACHABLE"
+    done
+    echo "=== what the agent itself says (today only) ==="
+    # -a because ossec.log carries non-UTF-8 bytes; date-scoped because this log
+    # is never rotated and would otherwise show the image's build date.
+    grep -a "$(date '+%Y/%m/%d')" /var/ossec/logs/ossec.log 2>/dev/null \
+      | grep -aiE 'error|warn|unable|refus|timeout|connect|enroll' | tail -20 \
+      || echo "  (nothing from today)"
+  args:
+    executable: /bin/bash
+  register: puc2_agent_diag
+  changed_when: false
+  failed_when: false
+
+- name: Show the agent's side of the connection
+  ansible.builtin.debug:
+    var: puc2_agent_diag.stdout_lines
+
+# Deliberately NOT a hard gate here. The authoritative answer to "is this agent
+# connected" belongs to the manager, which is where puc2_preflight asks it; an
+# endpoint-side assert on the agent's own log would be guessing at wording and
+# would fail on phrasing changes rather than on facts. What this task guarantees
+# is that when the manager's gate does fire, the reason is already in the log
+# above rather than a sandbox run away.
+- name: Warn if the agent shows no sign of having connected
+  ansible.builtin.debug:
+    msg: >-
+      The agent's log shows no successful connection today. If the NG-SIEM
+      preflight later reports this agent as 'Never connected' or 'Disconnected',
+      the reason is in the block above - check the manager address against
+      {{ puc2_ng_siem_ip }}, whether 1514/1515 are reachable, and whether
+      client.keys carries an entry.
+  when: >-
+    'Connected to the server' not in (puc2_agent_diag.stdout | default(''))
+    and 'Connected to enrollment service' not in (puc2_agent_diag.stdout | default(''))
