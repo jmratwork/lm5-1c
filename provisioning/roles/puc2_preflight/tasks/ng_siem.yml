@@ -289,7 +289,10 @@
           echo "  not readable, not asked: $1"
         fi
       done
-      [ -z "$measured" ] && echo "PUC2_INDEXER_COUNT=unmeasurable"
+      # if, not &&: as the last command, a false test left rc 1 on every run
+      # that DID measure the count (2026-09-14 15:26), which reads as a masked
+      # failure in the log.
+      if [ -z "$measured" ]; then echo "PUC2_INDEXER_COUNT=unmeasurable"; fi
     executable: /bin/bash
   register: puc2_pf_indexer_probe
   changed_when: false

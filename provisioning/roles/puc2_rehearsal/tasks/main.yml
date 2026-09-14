@@ -588,6 +588,11 @@
             echo "SKIPPED=the indexer did not answer the count"
             exit 0
           fi
+          # What the purge will actually remove: the PUC2 alerts above plus every
+          # other alert the victim agent raised in the window. On 2026-09-14 15:26
+          # DELETED=134 stood next to 14 PUC2 alerts with nothing to reconcile them.
+          all=$(idx -X POST "$IDX/_count" -d "$PURGE_BODY" | grep -oE '"count":[0-9]+' | head -1 | cut -d: -f2)
+          echo "ALL_MATCHING_BEFORE_PURGE=${all:-unanswered}"
 
           deleted=0
           remaining=""
