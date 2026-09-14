@@ -13,6 +13,14 @@ you, **not alternatives to the GUI**. `Get SSH Access` is also a platform
 button — it hands you keys to connect from your own terminal — so it too is
 something the GUI provides, not a way around it.
 
+> **Status (2026-09-14): the CONFIRM IN SANDBOX cells are confirmed.**
+> `puc2_preflight` checks kali on every deploy. The 2026-09-14 builds found
+> `firefox`, `firefox-esr` and `chromium`, a running Xorg, `lightdm` enabled,
+> `xfce` and `lightdm-xsession` sessions, `graphical.target` as the default, and a
+> live route to all four dashboards. The contingency under *Decision taken* is
+> therefore met: kali is the analyst workstation. The rest of this document is the
+> July analysis that led there.
+
 ## Scope of this document — read first
 
 This is **static analysis of the repository**, not an observation of a running
@@ -49,7 +57,7 @@ desktop/browser present comes from the base image alone.
 
 | Node | Console (via GUI) | Graphical desktop (via GUI) | Browser present | Reaches the 4 dashboards |
 |------|--------------------|-------------------|-----------------|--------------------------|
-| kali | Yes | **CONFIRM IN SANDBOX** (Kali images commonly ship XFCE) | **CONFIRM IN SANDBOX** (not from repo) | Yes — on testnet, all 4 IPs routable |
+| kali | Yes | **Yes** — XFCE via `lightdm`, `graphical.target` (confirmed 2026-09-14) | **Yes** — `firefox`, `firefox-esr`, `chromium`, from the image (confirmed 2026-09-14) | Yes — asserted per dashboard on every deploy |
 | docker-server | Yes | No (server image, none installed) | No | Yes — it *hosts* MISP/IRIS/NG-SOAR |
 | ng-siem | Yes | Unlikely (server image; ships the Wazuh dashboard, not a client desktop) | No | Yes |
 | victim | Yes | **No** (ubuntu-noble server image, no desktop, no browser) | **No** | N/A |

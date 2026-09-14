@@ -1,3 +1,11 @@
+> **Status (2026-09-14): confirmed live.** The reads diagnosed here are blocking
+> gates in every deploy now, and the 2026-09-14 builds answered the questions this
+> file left open. `/manage/cases/list` **does** carry `case_soc_id` (`CICMS OK —
+> case CASE-PUC2-2C present … (case_soc_id field on /manage/cases/list)`). The MISP
+> event reads back published, with `T1566.001`, `T1204.002`, the C2 domain and the
+> payload hash. Both elected keys authenticate. `puc2_diag` has not been run to
+> overwrite this file, so it is kept as the record of the diagnosis.
+
 # Diagnosis — PUC2 2c preflight gate: three False verdicts that were never about MISP
 
 **Phase 0. Status: root cause identified and proven from source; live confirmation PENDING.**

@@ -13,9 +13,9 @@ scenario is now an additive overlay on the tested substrate of
 | `roles/ng_siem` deployed Wazuh (indexer + manager + dashboard) via compose | the `siemng` base box, configured by the substrate `roles/ng-siem` | **no Wazuh is deployed by this repo any more**; the manager runs natively under systemd, not in a container |
 | `roles/docker_server` (own MISP/IRIS/NG-SOAR compose) | substrate `roles/docker_server` | MISP `:8443`, IRIS `:8083`, NG-SOAR `:8080` come from the proven role, which also publishes `misp_api_key` / `iris_api_key` / `docker_server_internal_ip` as cacheable facts |
 | `roles/ng_soar` ran playbooks over SSH from a compose'd Shuffle | substrate NG-SOAR (`NG-SOAR.yml` from the SMB share) + Wazuh active response | containment is now **live** through the SIEM, and orchestration uses the webhook IRIS already calls |
-| `roles/lab_endpoint` installed the Wazuh agent | substrate `roles/victim` | the agent is enrolled once, by the substrate; `lab_endpoint_2c` only adds FIM + the AR script |
+| `roles/lab_endpoint` installed the Wazuh agent | substrate `roles/victim` | the agent is installed and enrolled once, by the substrate, at the version the overlay's `puc2_agent_pin` pins beforehand (the manager's, 4.4.0); `lab_endpoint_2c` adds FIM + the AR script and gates on that version and on the manager reporting the agent `Active` |
 | `roles/common` | substrate `roles/all` | superseded |
-| `roles/malware_injection` served the payload from a Python `http.server` on an attacker host | overlay `scenario_injection_2c` on `victim` | **the UML has no attacker host**: step 2 originates at the Cyber Range. The HTTP server was a component present in neither the UML nor the substrate, so it was removed; `kali` is provisioned by the substrate but no longer employed by the scenario |
+| `roles/malware_injection` served the payload from a Python `http.server` on an attacker host | overlay `scenario_injection_2c` on `victim` | **the UML has no attacker host**: step 2 originates at the Cyber Range. The HTTP server was a component present in neither the UML nor the substrate, so it was removed. `kali`'s substrate role is deleted; the node stays as the analyst workstation (the only image with a desktop, asserted by the preflight gate) and its address as the simulated C2 IOC |
 | 3 routed networks, 5 hosts | flat `testnet` 10.0.16.0/24, 4 hosts + router | matches the topology the substrate is tested on |
 
 ### Isolation is still verifiable on a flat network
@@ -63,7 +63,9 @@ never actually fire. Resolved as follows:
 | CTI Specialist had no touchpoint for step 12 | provisioning created the sharing group; nobody published | `share_intel.sh` scopes the event to the sharing group and publishes it |
 | "apply security updates" (6.3.2.3) missing from the live path | only present in the playbook library | `puc2-isolate` triggers a **detached** apt security run and records the outcome in the eradication marker (detached because a blocking AR would be killed by the manager) |
 | Active response wired to `100101,100103` — 100101 fires on the **first** payload drop, seconds into a delivery that takes ~60 s | containment ran mid-injection: the C2 name was sinkholed to `0.0.0.0` and `OUTPUT` policy set to DROP **before** stage 2 beaconed, so rule 100102 could never fire and UML step 6 lost its firewall evidence; the payload was also quarantined before the analyst could see it | the trigger set is **`100103` only** (`puc2_active_response_rules`). The whole 4-stage delivery completes, 100102 fires on the blocked beacon, and containment follows the *targeted attack confirmed* verdict — the order the UML draws (step 6 → step 9) |
-| `puc2-isolate` set `INPUT/OUTPUT` policy DROP allowing only `10.0.16.0/24` | trainees reach `victim` over the CyberRangeCZ **management** interface, which is outside that CIDR: an already-open SSH session survived on the conntrack rule, but every **reconnect** was refused, leaving training levels L20/L22 ("read the containment markers on victim") unanswerable over SSH | the action explicitly preserves the administrative channel (`tcp/{{ puc2_admin_ssh_port }}`, default 22) before flipping the policy, and records `admin_channel=` in the isolation marker. Malware containment is unaffected — the payload does not listen on 22 |
+| `puc2-isolate` set `INPUT/OUTPUT` policy DROP allowing only `10.0.16.0/24` | trainees reach `victim` over the CyberRangeCZ **management** interface, which is outside that CIDR: an already-open SSH session survived on the conntrack rule, but every **reconnect** was refused, leaving training levels L19/L21 ("read the containment markers on victim") unanswerable over SSH | the action explicitly preserves the administrative channel (`tcp/{{ puc2_admin_ssh_port }}`, default 22) before flipping the policy, and records `admin_channel=` in the isolation marker. Malware containment is unaffected — the payload does not listen on 22 |
+| Endpoint agent `Never connected` (2026-09-14) | the substrate installed agent 4.14.7 against manager 4.4.0; enrolment on 1515 worked, every connection on 1514 was refused, so no FIM telemetry reached any rule — and the endpoint's own checks (`systemctl is-active`, `--arm`) stayed green | `puc2_agent_pin` pins apt to the manager's version *before* the substrate installs (an in-place downgrade kept 4.14.7's `ossec.conf` and the agent never started again); `lab_endpoint_2c` gates on the version and waits for the manager to report the agent `Active` |
+| Rule 100101 never matched — `<list field="md5_after">` (2026-09-14) | the alert JSON prints the new hash as `md5_after`, but analysisd's FIM decoder names that field `md5` (`fields[FIM_MD5] = "md5"`, Wazuh 4.4.0); the lookup found no field, so 100100 alerted and 100101 never did, and neither 100103 nor containment could follow. Every static check passed: the rule loads and nothing is discarded | 100101 keys on `md5`; the preflight gate fails on any `*_after` field name in a PUC2 rule; `puc2_rehearsal` proves the match at runtime on every deploy |
 
 Ruleset loading is no longer assumed: after the restart, `ng_siem_rules_2c`
 feeds `wazuh-logtest` the exact kernel line the endpoint's `LOG+DROP` rule
@@ -99,16 +101,17 @@ native AI/ML product.
 
 | Check | Tool | Result |
 |---|---|---|
-| Substrate byte-identity (6 roles + `topology.yml`) | `diff -r` against a fresh `integrations` clone | **PASS** — no differences |
+| Substrate divergence (`all`, `docker_server`, `ng-siem`, `victim` + `topology.yml`) | `diff -r` against a fresh `integrations` clone | **Documented, not identical** — the deltas and their reasons are listed in README *Reuse of the `integrations` substrate*; `topology.yml` is unchanged. The earlier "no differences" PASS stopped being true with the component trim |
 | `grep -rn '10\.10\.'` | ripgrep over the whole repo | **PASS** — no matches |
-| YAML lint | `yamllint .` | **PASS** — 0 errors. 6 `truthy` warnings remain, all on `become: yes` lines inside the vendored substrate portion of `playbook.yml`, which must stay verbatim |
+| YAML lint | `yamllint .` | **1 error, 7 warnings** (2026-09-14). In `playbook.yml`, all in the substrate plays: the error is a trailing space after `hosts:` in the command-logging play at its tail, plus 5 `truthy` warnings (`become: yes`) and 1 `comments` warning (`#- name`). The seventh is a `line-length` warning in `puc2_access_probe`. Every overlay file changed in the 2026-09-14 cycle lints clean |
 | YAML parse (all `.yml` + `topology.yml`) | `yaml.safe_load` | **PASS** |
-| Role completeness | every role in `playbook.yml` has `tasks/main.yml` | **PASS** (13 roles + `sandbox-logging` from Galaxy) |
-| `src:` / `lookup('template')` references | custom script | **PASS** — 10/10 resolve |
+| Role completeness | every role has `tasks/main.yml` | **PASS** — 20 roles on disk (18 referenced by plays; `puc2_keys` is included by other roles) + `sandbox-logging` from Galaxy |
+| `src:` / `lookup('template')` references | custom script | **PASS** at the July audit (10/10); not re-counted since — the 2026-09-14 platform deploys below rendered every template in use |
 | Topology cross-reference | custom script | **PASS** — unique node names, all network refs resolve |
 | Payload-hash consistency | runtime assertion in `scenario_injection_2c` | **enforced at provision time** — the run fails if the generated EICAR MD5 diverges from the IOC seeded into MISP and the NG-SIEM CDB list |
 | Ansible syntax-check | `ansible-playbook --syntax-check` | **NOT RUN** — Ansible has no Windows control node (`check_blocking_io` → `WinError 87`) |
 | `ansible-lint` | `ansible-lint` | **NOT RUN** — same limitation (`No module named 'grp'`) |
+| Full playbook, end to end | CyberRangeCZ deployment | **PASS** — 2026-09-14 15:26: every host `failed=0`, `puc2_rehearsal` PASSED with all seven links on their first poll, `puc2_preflight` PASSED on `ng-siem`, `victim`, `docker-server` and `kali`. A stronger check than a syntax-check, though not a substitute for linting |
 
 Run the two outstanding checks on any Linux node:
 
@@ -119,9 +122,16 @@ ansible-lint provisioning/
 
 ## 4. Manual acceptance procedure (run after provisioning)
 
+**Most of this table now runs in every deploy.** `puc2_rehearsal` fires steps 1-11
+and checks each link, then removes its traces; `puc2_preflight` re-proves the
+rest and fails the build if anything is missing. Run these by hand to
+investigate, not to accept a range. After a deploy the rehearsal has already
+purged its own alerts (from `alerts.log` and the indexer) and its CICMS cases,
+so rows 8-9 read **zero** until the scenario is fired again.
+
 | # | Check | Command | Expected |
 |---|---|---|---|
-| 1 | Substrate intact | `diff -r /tmp/subs/provisioning/roles/ng-siem provisioning/roles/ng-siem` | no output |
+| 1 | Substrate deltas | `diff -r /tmp/subs/provisioning/roles/ng-siem provisioning/roles/ng-siem` | only the deltas documented in README (`when:` trim flags) |
 | 2 | Overlay did not clobber the integrations | `grep -c 'ANSIBLE MANAGED' /var/ossec/etc/ossec.conf` on `ng-siem` | both the `CYBERRANGE INTEGRATIONS` and the `PUC2-2C DETECTION AND RESPONSE` markers present |
 | 3 | Rules loaded | pipe a `PUC2-FW-DROP:` kernel line into `/var/ossec/bin/wazuh-logtest -v` on `ng-siem` | Phase 3 reports `id: '100102'` (not a built-in id such as `4100`) |
 | 4 | CDB list compiled | `ls -l /var/ossec/etc/lists/cti-malware-hashes*` | `.cdb` present |
@@ -135,8 +145,10 @@ ansible-lint provisioning/
 | 9b | Step 9 — operator path | `/opt/NG-SOAR/playbooks/ngsoar_trigger.sh isolate_host` | webhook returns 2xx |
 | 10 | Steps 9–11 | `cat /var/run/ngsoar_isolated /var/run/ngsoar_eradication_status` on `victim` | markers present; `status=eradicated`; `security_updates=triggered_background` |
 | 11 | Isolation effective | `ping -c2 -W2 10.0.16.50` then `ping -c2 -W2 10.0.16.70` on `victim` | C2 unreachable, NG-SIEM still reachable — the discriminator that proves containment is selective |
-| 11b | Endpoint still administrable | **new** SSH session to `victim` after containment | connects — the preserved admin channel is what keeps L20/L22 answerable |
+| 11b | Endpoint still administrable | **new** SSH session to `victim` after containment | connects — the preserved admin channel is what keeps L19/L21 answerable |
 | 11c | Trigger set correct | `grep -A2 '<active-response>' /var/ossec/etc/ossec.conf` on `ng-siem` | `<rules_id>100103</rules_id>` — 100101 must NOT be there |
+| 11d | Agent pinned and connected | `dpkg-query -W wazuh-agent` on `victim`; `/var/ossec/bin/agent_control -l` on `ng-siem` | `4.4.0-1`, held; the `victim<id>` agent `Active` |
+| 11e | Nothing waiting for the trainee (before firing) | on `ng-siem`: `sudo curl -sk --cert /etc/wazuh-indexer/certs/admin.pem --key /etc/wazuh-indexer/certs/admin-key.pem -G --data-urlencode 'q=rule.id:(100100 OR 100101 OR 100102 OR 100103)' 'https://127.0.0.1:9200/wazuh-alerts-*/_count'`; on `docker-server`: `sudo /opt/cicms-assets/case_lookup.sh` | `"count":0`, and no `[1001xx]` case |
 | 12 | Step 13 | `/opt/evaluation/collect_evaluation.sh` on `ng-siem` | report lists per-rule alert counts and both markers |
 
 ## 5. Secrets hygiene

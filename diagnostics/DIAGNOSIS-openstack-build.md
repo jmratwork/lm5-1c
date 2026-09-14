@@ -1,3 +1,8 @@
+> **Status (2026-09-14): not seen again.** Every build on 2026-09-10 and
+> 2026-09-14 brought its instances up and reached provisioning, so this July
+> failure has not recurred. Its verdict was never recorded below.
+> `RUNBOOK-operator.md` is still the procedure if a build fails in Terraform again.
+
 # Diagnosis — PUC2 2c sandbox build failure (project p0000000094, sandbox s0000000522)
 
 ## Status: **PENDIENTE DE CONFIRMAR** (second failed attempt analysed)

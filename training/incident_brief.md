@@ -27,7 +27,7 @@ finally share intel and debrief.
 | CICMS | DFIR-IRIS | `docker-server` | https://10.0.16.60:8083 |
 | NG-SOAR | containment webhook | `docker-server` | http://10.0.16.60:8080/trigger/playbook |
 | Lab Host/Endpoint | victim workstation | `victim` | 10.0.16.100 |
-| Simulated C2 | IOC address only — no component runs there | — | 10.0.16.50 |
+| Simulated C2 / analyst workstation | the C2 IOC address; the same node is the analyst desktop used to reach the dashboards | `kali` | 10.0.16.50 |
 
 ### Known IOCs (provided to CTI Specialist mid-exercise)
 - MD5 `44d88612fea8a8f36de82e1278abb02f`

@@ -1,3 +1,12 @@
+> **SUPERSEDED — every gap below is closed.** The overlay fixes landed: the
+> `--arm` token under `/opt/puc2`, the `T1566.001` and `T1204.002`
+> sub-techniques, the `NG-SOC-PUC2` sharing group, first-line `isolated` and
+> `eradicated` markers, a pre-created `CASE-PUC2-2C`, and a sinkholed C2 domain.
+> The architectural conflict was resolved as **option A**: from V5 on, the training
+> definition has the Cyber Range injecting on the endpoint, and kali is the
+> analyst workstation. The preflight gate reads each of these answers back on
+> every deploy, and all passed on 2026-09-14. Kept for the record.
+
 # Training definition vs. what the sandbox actually produces
 
 Source: `puc2-cynet-2c-malware-detection-response_linear-training-definition.json`

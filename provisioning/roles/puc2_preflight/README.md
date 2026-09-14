@@ -20,7 +20,8 @@ answer is *obtainable*. It cannot prove that a rule *fires*: rules 100100 and
 line can synthesise, so `wazuh-logtest` can only ever exercise 100102. The
 runtime half — 100101 alerting, 100103 correlating, containment writing the
 markers — belongs to `puc2_rehearsal`, which fires the real scenario and
-self-cleans immediately before this gate runs. Neither is optional; a build that
+self-cleans immediately before this gate runs, including its alerts in the
+indexer and its cases in CICMS; this gate then asserts both are gone. Neither is optional; a build that
 skips the rehearsal ships with that half unproven and says so in the log.
 
 Hosts: `ng-siem`, `victim`, `docker-server` **and `kali`** — the analyst
@@ -40,9 +41,9 @@ dashboard.**
 | L5 | `invoice.exe` | `--arm` verifies the lure is staged and the mail delivered, **and** the mail really carries an `href=` naming the payload — which is the route the level prescribes | `victim.yml` |
 | L8 | `44d88612…abb02f` | hash on the NG-SIEM CDB watchlist **and** on the MISP event | `ng_siem.yml`, `docker_server.yml` |
 | L9 | `T1566.001` | tag read back off the live MISP event | `docker_server.yml` |
-| L10 | `100101` | rule present in `local_rules.xml`, analysisd reports having discarded none of 100100-100103, the CDB watchlist is compiled fresh and carries the payload hash, and an endpoint agent is enrolled to feed it — **fired for real by `puc2_rehearsal`** | `ng_siem.yml` + rehearsal |
+| L10 | `100101` | rule present in the deployed ruleset (`ruleset/rules/9999-puc2-2c.xml`); analysisd reports having discarded none of 100100-100103; no PUC2 rule keys on an alert-output field name (`*_after` — 100101 must use the decoder field `md5`); the CDB watchlist is compiled fresh and carries the payload hash; an endpoint agent is enrolled **and `Active`**; and the indexer holds **no** PUC2 alert yet, or the dashboard would show the answer under L10's own hint — **fired for real by `puc2_rehearsal`** | `ng_siem.yml` + rehearsal |
 | L11 | `targeted` | derivable from the level text — no environment dependency | — |
-| L14 | `CASE-PUC2-2C` | case matched on its `case_soc_id` **field** in DFIR-IRIS | `docker_server.yml` → `cicms_2c/find_case.yml` |
+| L14 | `CASE-PUC2-2C` | case matched on its `case_soc_id` **field** in DFIR-IRIS, **and** no case for rules 100100-100103 is already there — a leftover gives L10 away in `case_lookup.sh`, and because custom-iris deduplicates on a `soc_id` that is the same every run, it also stops the trainee's own attack from opening any case | `docker_server.yml` → `cicms_2c/find_case.yml` |
 | L15 | `c2.puc2-training.lab` | domain IOC on the live MISP event | `docker_server.yml` |
 | L18 | `isolate_host` | playbook present in the NG-SOAR library | `docker_server.yml` |
 | L19 | `isolated` | the deployed active response writes it to the marker's first line | `victim.yml` |
@@ -105,6 +106,12 @@ Consequences for how the checks are written now:
 - **Every read is total.** `regex_search(...) | first` raises on no match, which
   would replace the actionable message with a stack trace exactly when
   something is missing. Guarded throughout.
+- **No back-references in Jinja string literals.** `regex_search(..., '\1')`
+  depends on how Jinja unescapes `'\1'`; `regex_findall` with one group returns
+  the group itself and needs none. The indexer count is read that way.
+- **A probe's exit code must mean the probe ran.** A script ending on a false
+  `&&` test exits non-zero on a healthy run, and a masked failure that is always
+  there hides the real ones. Probes end on an explicit `true` or `if … fi`.
 
 When something is missing, the assert names the level, the resource, the HTTP
 status and the command to re-run. For evidence without a dashboard:

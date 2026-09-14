@@ -74,6 +74,12 @@ endpoint's LOG rule carries the `PUC2-FW-DROP` prefix on tcp/4444 and nothing
 else, so every line the decoder sees *is* a blocked C2 beacon and the port test
 added no selectivity.
 
+> **Later superseded.** That decoder was still never consulted: analysisd
+> matches an event carrying a `program_name` (`kernel`) only against decoders
+> that declare one. The custom decoder is gone; rule 100102 now hangs off the
+> built-in rule 4100 through Wazuh's own kernel decoding (`VALIDATION.md` §1b).
+> The 2026-09-14 rehearsals saw it alert in runtime.
+
 ## Level-by-level
 
 | Level | Answer | Mechanism verified |
@@ -114,19 +120,23 @@ than the trainee.** If an assumption here is wrong, the deployment stops with a
 message naming the level and the HTTP status. The failure mode points at the
 operator, which is the whole design.
 
-Run it, and if the build goes green the range is ready:
+**Update, 2026-09-14 — both halves are now answered by every deploy.** The live
+questions above are gates, and the builds of that day answered them:
+`/manage/cases/list` does carry `case_soc_id`, the MISP event reads back
+published with every graded tag and IOC, and the elected keys authenticate. The
+runtime half — rules actually firing, markers actually written — is no longer a
+manual step either: `puc2_rehearsal` fires the scenario in every build, follows
+100101 → 100102 → 100103 → active response → markers → quarantine, and then
+removes its traces from the endpoint, `alerts.log`, the indexer and CICMS. It
+also exposed two faults this audit could not see: an agent newer than its manager
+(`Never connected`), and rule 100101 keyed on `md5_after` instead of `md5`.
+
+So a green build is the acceptance:
 
 ```bash
 ansible-playbook provisioning/playbook.yml
 ```
 
-For the two runtime behaviours no provisioning-time check can reach — that the
-rules actually fire and the markers actually get written — fire the scenario
-once on a throwaway sandbox:
-
-```bash
-./validation/validate_training.sh --with-attack   # DESTRUCTIVE: isolates the endpoint
-```
-
-That is the only check that exercises 100101/100102/100103 firing and the
-post-containment markers. It is worth one disposable sandbox before a cohort.
+`./validation/validate_training.sh --with-attack` remains for re-checking an
+existing sandbox by hand. It is destructive (it isolates the endpoint), so run it
+only on a sandbox no trainee will use.

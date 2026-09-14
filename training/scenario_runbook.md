@@ -7,9 +7,9 @@ host it happens on, and the resource that supports it.
 |---|----------|----------------|------|-----------------|
 | 1 | Initiate malware scenario | NG-SOC Operator runs the kickoff | Cyber Range → `victim` | `--tags puc2-inject` or `/opt/puc2/inject_scenario.sh` |
 | 2 | Inject phishing + payload | Cyber Range injects directly on the endpoint | Cyber Range → `victim` | role `scenario_injection_2c` (4-stage EICAR delivery + `phishing_email.eml`) |
-| 3 | Telemetry (file hash) | Wazuh agent ships FIM events | `victim` 10.0.16.100 | role `lab_endpoint_2c` (FIM on `~victim/Downloads`) → NG-SIEM |
+| 3 | Telemetry (file hash) | Wazuh agent ships FIM events | `victim` 10.0.16.100 | role `lab_endpoint_2c` (FIM on `~victim/Downloads` and `/tmp`) → NG-SIEM |
 | 4 | Enrich hash with CTI | SIEM matches the CDB IOC list; MISP holds the same IOCs | `ng-siem` ↔ `docker-server` | `ng_siem_rules_2c` (`etc/lists/cti-malware-hashes`) + `cti_ss_2c` + the substrate MISP integration |
-| 5 | Alert: malware detected | NG-SIEM rule 100101 alerts the analyst | `ng-siem` 10.0.16.70 | `ng_siem_rules_2c/files/local_rules.xml` |
+| 5 | Alert: malware detected | NG-SIEM rule 100101 alerts the analyst | `ng-siem` 10.0.16.70 | `ng_siem_rules_2c/templates/local_rules.xml.j2`, deployed as `/var/ossec/ruleset/rules/9999-puc2-2c.xml` |
 | 6 | Correlate logs + confirm | Analyst correlates FIM + firewall drops; 100102 and 100103 confirm | `ng-siem` | endpoint `kern.log` → built-in firewall decoding → rule `100102` + `training/ng_siem_correlation_guide.md` |
 | 7 | Open case + attach SIEM context | Auto-created on alert; the NG-SOC Operator also opens one explicitly | `docker-server` 10.0.16.60 | substrate `custom-iris` + `/opt/cicms-assets/open_case.sh` |
 | 8 | Enrich with CTI (IOCs/TTPs) | IRIS pulls from MISP | `docker-server` | `cicms_2c` ↔ `cti_ss_2c`; IRIS MISP module wired by the substrate |
@@ -20,6 +20,11 @@ host it happens on, and the resource that supports it.
 | 13 | Training summary + feedback | Cyber Range debrief | `ng-siem` | `evaluation_reporting` (`collect_evaluation.sh`, lessons-learned template) |
 
 ## Quick run order
+
+The range starts clean. Provisioning already fired this chain once, in the
+rehearsal, and removed every trace: no PUC2 alert in `alerts.log` or the
+dashboard, no PUC2 case in DFIR-IRIS, no markers, empty quarantine. The run below
+is the first to create any of them.
 
 ```bash
 # Steps 1-2 — the Cyber Range injects into the endpoint.
@@ -59,12 +64,33 @@ sudo /opt/cti-ss-seed/share_intel.sh
 
 ## Resetting between runs
 
+**A fresh sandbox per cohort is the reliable reset**: every deploy re-proves the
+range and hands it over clean. To reuse one, a run leaves traces in four places,
+and all four have to go — a PUC2 case left in DFIR-IRIS both gives the next
+trainee the L10 answer and stops custom-iris from opening their own case, because
+it deduplicates on a SOC id that is the same every run.
+
 ```bash
-# On victim — lift containment and clear the payload:
-sudo iptables -P INPUT ACCEPT; sudo iptables -P OUTPUT ACCEPT; sudo iptables -F
-sudo rm -f /var/run/ngsoar_isolated /var/run/ngsoar_eradication_status
+# On victim — lift containment and clear the payload. --lift resets the iptables
+# policies, removes the C2 DROP and SSH rules and both markers, and drops the C2
+# lines from /etc/hosts. Never `iptables -F`: it takes out the egress filter and
+# rules other roles own.
+sudo /var/ossec/active-response/bin/puc2-isolate --lift
+echo "10.0.16.50 c2.puc2-training.lab" | sudo tee -a /etc/hosts   # the observable sinkhole --arm checks
 sudo rm -rf /var/quarantine/* /home/victim/Downloads/*.exe /tmp/invoice.exe
-sudo sed -i '/c2.puc2-training.lab/d' /etc/hosts
-sudo systemctl restart wazuh-agent
-sudo systemctl restart puc2-fw-baseline   # re-arm the egress filter that feeds rule 100102
+sudo chage -d "$(date +%F)" victim          # containment expired the password
+sudo systemctl restart puc2-fw-baseline     # re-arm the egress filter that feeds rule 100102
+
+# On ng-siem — the console path of L10, and the dashboard's indexer:
+sudo truncate -s 0 /var/ossec/logs/alerts/alerts.log   # Filebeat reads alerts.json, not this file
+sudo curl -sk --cert /etc/wazuh-indexer/certs/admin.pem --key /etc/wazuh-indexer/certs/admin-key.pem \
+  -H 'Content-Type: application/json' \
+  -X POST 'https://127.0.0.1:9200/wazuh-alerts-*/_delete_by_query?conflicts=proceed&refresh=true' \
+  -d '{ "query": { "terms": { "rule.id": [ "100100", "100101", "100102", "100103" ] } } }'
+
+# In DFIR-IRIS (https://10.0.16.60:8083): delete every case whose SOC id starts
+# with WAZUH-10010. Keep CASE-PUC2-2C, the scenario case L14 grades.
+
+# Then, from the controller, let the gate confirm the range is clean again:
+ansible-playbook provisioning/playbook.yml --tags puc2-preflight
 ```

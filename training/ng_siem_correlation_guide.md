@@ -2,12 +2,18 @@
 
 Use this guide on the Wazuh (NG-SIEM) dashboard to work UML steps 3-6.
 
+The dashboard starts **empty of PUC2 alerts**: the deployment fires the scenario
+once to prove it, then removes its own alerts. Everything you find here comes from
+the attack fired in this session.
+
 ## 1. Telemetry ingestion (UML step 3)
 The endpoint runs the Wazuh agent enrolled by the substrate `victim` role;
 file-integrity monitoring on `/home/victim/Downloads` and `/tmp` (added by role
 `lab_endpoint_2c`) emits **file-hash** events the moment the payload lands.
 
-- Dashboard → *Agents* → confirm the `victim` agent (10.0.16.100) is **Active**.
+- Dashboard → *Agents* → confirm the endpoint agent is **Active**. It is named
+  after the sandbox allocation (`victim<id>`, e.g. `victim617`), not `victim`, and
+  it may show a management-network address rather than 10.0.16.100.
 - *Security events* → filter `syscheck.path: "/home/victim/Downloads/*"`.
 
 ## 2. CTI enrichment (UML step 4)
@@ -45,8 +51,12 @@ Build the holistic view across sources:
    view to the CICMS case (step 7).
 
 ## 5. Automated containment (UML steps 9-11)
-Rules **100101** and **100103** are wired to the `puc2-isolate` active response,
-which runs on the affected agent (`location=local`). After it fires:
+Only rule **100103** is wired to the `puc2-isolate` active response, which runs
+on the affected agent (`location=local`). Rule 100101 fires on the first payload
+drop, seconds into a delivery that takes about a minute; containing there would
+sinkhole the C2 before the beacon stage, and rule 100102 could never fire.
+Containment follows the *targeted attack confirmed* verdict instead. After it
+fires:
 
 - *Security events* → the agent keeps reporting: isolation deliberately keeps
   `10.0.16.0/24` reachable so telemetry survives containment.

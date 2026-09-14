@@ -1,3 +1,10 @@
+> **SUPERSEDED by [validation/SECURITY_ROTATION.md](../validation/SECURITY_ROTATION.md).**
+> The "Still to do" items below were overtaken. The Docker Hub PAT and the
+> `ubuntu` password hash now come from `ansible-vault`, with the substrate's
+> published credential as the Docker Hub fallback. The dead task files and the
+> `kali` role are deleted. What remains open is rotation at the source, which
+> that file tracks.
+
 # Security follow-up — credentials in this repository
 
 Phase 4 of the preflight work. **Non-blocking for the training**: nothing here

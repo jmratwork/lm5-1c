@@ -1,3 +1,13 @@
+> **Status (2026-09-14): still not registered, but no longer able to hurt.** The
+> Phase 2 change below landed. The template is non-fatal and reports IRIS's own
+> body, and `CASE-PUC2-2C` is created and gated on its own. The 15:26 build
+> printed that body: `CICMS case template NOT registered — HTTP 400, IRIS said:
+> Invalid JSON / the JSON object must be str, bytes or bytearray, not dict`. That
+> is a different refusal from the three schema violations analysed below. It reads
+> as the endpoint expecting the template as a JSON-encoded string rather than an
+> object, but that is not yet verified. Still open; cosmetic; no training level
+> depends on it.
+
 # Diagnosis — `cicms_2c` fails registering the PUC2 2c case template
 
 **Task:** `Register the PUC2 2c case template in CICMS`

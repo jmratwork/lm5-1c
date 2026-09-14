@@ -716,11 +716,13 @@ publishes; `provisioning/group_vars/vault.yml` (git-ignored, see
 > and **this repository is public**. All three must be rotated;
 > `validation/SECURITY_ROTATION.md` has the steps.
 >
-> **Supplying the Docker Hub PAT.** Authenticated pulls are required in practice:
-> without them the range hits Docker Hub's anonymous rate limit and the DFIR-IRIS
-> images fail to pull with a 429. A local `group_vars/vault.yml` will not do it —
-> it is git-ignored, so the sandbox, which deploys by cloning this repo, never
-> receives it. Pass it on the deployment command instead:
+> **Supplying the Docker Hub PAT.** Not needed today: the role falls back to the
+> substrate's published credential and pre-pulls four of the six images from
+> other registries (see *The Docker Hub limit is the most likely way a deploy
+> dies*), and the 2026-09-14 deploys ran without one. It becomes needed the moment
+> that credential is rotated upstream. A local `group_vars/vault.yml` will not
+> supply it — it is git-ignored, so the sandbox, which deploys by cloning this
+> repo, never receives it. Pass it on the deployment command instead:
 >
 > ```bash
 > ansible-playbook provisioning/playbook.yml \
