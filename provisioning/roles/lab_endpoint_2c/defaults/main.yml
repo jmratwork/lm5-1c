@@ -19,3 +19,8 @@ puc2_delivery_paths:
   - "/home/victim/Downloads/statement.exe"
 puc2_isolation_status: "isolated"
 puc2_eradication_status: "eradicated"
+puc2_wazuh_agent_version: ""
+# How long the manager may take to report the agent Active after its restart.
+# The agent itself waits 20 s before its first connection attempt.
+puc2_agent_connect_retries: 12
+puc2_agent_connect_delay: 10

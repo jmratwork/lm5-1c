@@ -75,6 +75,19 @@
         puc2_reh_alerts_offset: "{{ puc2_reh_alerts_before.stat.size | default(0) }}"
       when: inventory_hostname == 'ng-siem'
 
+    # The link checks read alerts.json, so it needs its own offset: only what is
+    # appended after this point can count as this run's evidence.
+    - name: Record the alerts.json size before the injection
+      ansible.builtin.stat:
+        path: "{{ puc2_rehearsal_alerts_json }}"
+      register: puc2_reh_alerts_json_before
+      when: inventory_hostname == 'ng-siem'
+
+    - name: Remember the pre-injection alerts.json offset
+      ansible.builtin.set_fact:
+        puc2_reh_alerts_json_offset: "{{ puc2_reh_alerts_json_before.stat.size | default(0) }}"
+      when: inventory_hostname == 'ng-siem'
+
     # ── Fire the scenario (victim) ───────────────────────────────────────────
     # Synchronous: the script returns after stage 4 (~3 x stage_pause seconds).
     # Every link is polled AFTER it returns.
@@ -104,11 +117,20 @@
     #    and 3 matched this role's own ossec.conf edit, quoted inside the diff of
     #    an unrelated syscheck alert. Reading alerts.json and matching the
     #    "id":"1001xx" FIELD makes a config diff unable to forge a detection.
+    #
+    # A THIRD WAY, closed on 2026-09-14: alerts.json is never purged, so a
+    # 1001xx alert from an EARLIER run - a previous rehearsal on the same
+    # sandbox, a trainee's attempt - satisfied the grep exactly as well as one
+    # from this run. Each check now reads only the bytes appended after the
+    # offset snapshotted before the injection (tail -c +N is 1-based, hence +1).
+    # If the file is rotated mid-drill it shrinks below the offset, nothing is
+    # read and the link FAILS - the safe direction for an evidence check.
     - name: Wait for rule 100101 (malware detected — L10)
       ansible.builtin.shell:
         cmd: |
           set -o pipefail
-          grep -a -F '"id":"100101"' {{ puc2_rehearsal_alerts_json }} | tail -1
+          tail -c +{{ (puc2_reh_alerts_json_offset | int) + 1 }} {{ puc2_rehearsal_alerts_json }} \
+            | grep -a -F '"id":"100101"' | tail -1
         executable: /bin/bash
       register: puc2_reh_100101
       changed_when: false
@@ -124,15 +146,18 @@
         fail_msg: >-
           LINK 1 BROKEN — rule 100101 never alerted after firing the payload.
           The hash-match detection (training L10) is not producing an alert.
-          Check ng_siem_rules_2c (rule 100101 / CDB watchlist) and that the
-          victim agent's FIM telemetry is reaching the manager.
+          First check the victim agent is Active on the manager
+          (/var/ossec/bin/agent_control -l on ng-siem): without it no FIM
+          telemetry arrives at all, which is how the 2026-09-14 build failed.
+          Then ng_siem_rules_2c (rule 100101 / CDB watchlist).
       when: inventory_hostname == 'ng-siem'
 
     - name: Wait for rule 100102 (blocked C2 beacon)
       ansible.builtin.shell:
         cmd: |
           set -o pipefail
-          grep -a -F '"id":"100102"' {{ puc2_rehearsal_alerts_json }} | tail -1
+          tail -c +{{ (puc2_reh_alerts_json_offset | int) + 1 }} {{ puc2_rehearsal_alerts_json }} \
+            | grep -a -F '"id":"100102"' | tail -1
         executable: /bin/bash
       register: puc2_reh_100102
       changed_when: false
@@ -156,7 +181,8 @@
       ansible.builtin.shell:
         cmd: |
           set -o pipefail
-          grep -a -F '"id":"100103"' {{ puc2_rehearsal_alerts_json }} | tail -1
+          tail -c +{{ (puc2_reh_alerts_json_offset | int) + 1 }} {{ puc2_rehearsal_alerts_json }} \
+            | grep -a -F '"id":"100103"' | tail -1
         executable: /bin/bash
       register: puc2_reh_100103
       changed_when: false
@@ -195,11 +221,22 @@
     - name: Assert the active response ran
       ansible.builtin.assert:
         that: puc2_reh_ar.stdout | default('') | length > 0
+        # The message used to assert "Rule 100103 fired" unconditionally. On
+        # 2026-09-14 it had not - the manager side had stopped at LINK 1 - so the
+        # log pointed at the active-response wiring for a fault that was never
+        # there. Say what the manager side actually saw.
         fail_msg: >-
-          LINK 4 BROKEN — the puc2-isolate active response never executed. Rule
-          100103 fired but the manager did not run the containment action on the
-          endpoint. Check the <active-response>/<command> wiring in
-          ng_siem_rules_2c and that puc2-isolate is executable on victim.
+          {% set r103 = hostvars['ng-siem'].puc2_reh_100103 | default({}) %}
+          LINK 4 BROKEN — the puc2-isolate active response never executed on
+          victim.
+          {% if r103.stdout | default('') | length > 0 %}Rule 100103 DID fire,
+          so the manager failed to run the action: check the
+          active-response/command wiring in ng_siem_rules_2c and that
+          puc2-isolate is executable on victim.{% elif r103.attempts is defined %}Rule
+          100103 never fired (LINK 3), so nothing triggered it: fix LINK 3
+          first.{% else %}The manager side never reached the 100103 check because
+          an earlier link broke there (LINK 1-3 above): this link is a consequence
+          of that one, not a separate fault.{% endif %}
       when: inventory_hostname == 'victim'
 
     - name: Wait for the isolation marker to read 'isolated' (L19)
@@ -375,6 +412,12 @@
     # fire the scenario themselves. Trade-off, acceptable pre-student: any alert
     # any agent wrote during the rehearsal window is dropped too. The byte count
     # removed is recorded for the report.
+    #
+    # alerts.json is deliberately NOT truncated the same way. On a Wazuh stack
+    # its reader is Filebeat, feeding the indexer, and Filebeat tracks a byte
+    # offset: a file that shrinks under it is read again from the start, so
+    # every earlier alert would be indexed twice. The link checks do not need it
+    # purged either - they only read what was appended after their offset.
     - name: Measure alerts.log before the purge
       ansible.builtin.stat:
         path: "{{ puc2_rehearsal_alerts_log }}"

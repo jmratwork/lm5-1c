@@ -4,7 +4,10 @@
 #
 # ADDITIVE OVERLAY. The substrate's `victim` role already installs and enrols
 # the Wazuh agent against hostvars['ng-siem'].ng_siem_internal_ip — this role
-# NEVER reinstalls or re-enrols it. It only adds what Sub Case 2c needs:
+# NEVER re-enrols it. The one thing it changes about the agent is its PACKAGE
+# VERSION, pinned to the manager's (see "Agent version" below), because the
+# substrate installs the newest agent and the siemng manager is older. On top
+# of that it adds what Sub Case 2c needs:
 #
 #   UML step 3  - FIM on the victim's Downloads dir so the payload drop emits
 #                 the file-hash telemetry rules 100100/100101 correlate
@@ -19,6 +22,91 @@
     path: /var/ossec/etc/ossec.conf
   register: puc2_agent_conf
   failed_when: not puc2_agent_conf.stat.exists
+
+# ── Agent version: never newer than the manager ──────────────────────────────
+# The substrate installs "latest Wazuh agent" from the 4.x repository, with no
+# version. On 2026-09-14 that was 4.14.7, while the siemng image runs manager
+# 4.4.0 — and Wazuh only guarantees compatibility when the manager is at least
+# as new as the agent. Enrolment on 1515 still succeeded, so client.keys had an
+# entry and every endpoint-side check was green, but the manager closed each
+# connection on 1514: `Never connected`, no FIM telemetry, no 100101, no
+# 100103, no containment. Four graded levels and the whole rehearsal, lost to
+# an unpinned package.
+#
+# The fix lives here and not in roles/victim, which is vendored substrate kept
+# byte-identical. The version is READ from the manager rather than hardcoded,
+# so a future siemng image moves the agent with it; puc2_wazuh_agent_version
+# overrides that when a specific package build is wanted.
+- name: Read the Wazuh version the NG-SIEM manager runs
+  ansible.builtin.shell:
+    cmd: |
+      { /var/ossec/bin/wazuh-control info 2>/dev/null
+        /var/ossec/bin/wazuh-analysisd -V 2>&1
+      } | grep -aoE 'v?[0-9]+\.[0-9]+\.[0-9]+' | head -1 | sed 's/^v//'
+    executable: /bin/bash
+  delegate_to: ng-siem
+  register: puc2_manager_version
+  changed_when: false
+  failed_when: puc2_manager_version.stdout | trim is not match('^[0-9]+\.[0-9]+\.[0-9]+$')
+
+- name: Read the Wazuh agent version the substrate installed
+  ansible.builtin.command:
+    argv: [dpkg-query, --show, "--showformat=${Version}", wazuh-agent]
+  register: puc2_agent_pkg_before
+  changed_when: false
+
+- name: Choose the agent package version to run
+  ansible.builtin.set_fact:
+    puc2_agent_target_version: >-
+      {{ puc2_wazuh_agent_version
+         if (puc2_wazuh_agent_version | default('') | length > 0)
+         else (puc2_manager_version.stdout | trim) ~ '-1' }}
+
+# allow_downgrade: every range built so far already carries the newer agent.
+# The package keeps client.keys and ossec.conf across the downgrade; the FIM
+# block below is written AFTER it, so no maintainer script can drop it.
+- name: Align the Wazuh agent with the manager's version
+  ansible.builtin.apt:
+    name: "wazuh-agent={{ puc2_agent_target_version }}"
+    state: present
+    allow_downgrade: true
+    allow_change_held_packages: true
+  environment:
+    # The values the substrate installed with, so a maintainer script that reads
+    # them finds the manager the agent is already enrolled against.
+    WAZUH_MANAGER: "{{ puc2_ng_siem_ip }}"
+    WAZUH_REGISTRATION_SERVER: "{{ puc2_ng_siem_ip }}"
+  when: puc2_agent_pkg_before.stdout | trim != puc2_agent_target_version
+  notify: restart wazuh-agent
+
+- name: Hold the agent there so no apt upgrade brings the mismatch back
+  ansible.builtin.dpkg_selections:
+    name: wazuh-agent
+    selection: hold
+
+- name: Read back the agent version now installed
+  ansible.builtin.command:
+    argv: [dpkg-query, --show, "--showformat=${Version}", wazuh-agent]
+  register: puc2_agent_pkg_after
+  changed_when: false
+
+- name: GATE — the agent is not newer than the manager
+  ansible.builtin.assert:
+    that:
+      - puc2_agent_pkg_after.stdout | trim == puc2_agent_target_version
+      - >-
+        (puc2_agent_pkg_after.stdout | trim | regex_replace('-.*$', ''))
+        is version(puc2_manager_version.stdout | trim, '<=')
+    fail_msg: >-
+      wazuh-agent is {{ puc2_agent_pkg_after.stdout | trim }} (the substrate
+      installed {{ puc2_agent_pkg_before.stdout | trim }}), target
+      {{ puc2_agent_target_version }}, manager {{ puc2_manager_version.stdout | trim }}.
+      An agent newer than its manager enrols and is then refused on 1514, so
+      NG-SIEM receives no FIM telemetry and rules 100101/100103 never fire.
+    success_msg: >-
+      wazuh-agent {{ puc2_agent_pkg_after.stdout | trim }} against manager
+      {{ puc2_manager_version.stdout | trim }} (the substrate had installed
+      {{ puc2_agent_pkg_before.stdout | trim }}).
 
 # ── The account that "receives" the phishing email ───────────────────────────
 - name: Create the victim user account
@@ -190,20 +278,92 @@
   ansible.builtin.debug:
     var: puc2_agent_diag.stdout_lines
 
-# Deliberately NOT a hard gate here. The authoritative answer to "is this agent
-# connected" belongs to the manager, which is where puc2_preflight asks it; an
-# endpoint-side assert on the agent's own log would be guessing at wording and
-# would fail on phrasing changes rather than on facts. What this task guarantees
-# is that when the manager's gate does fire, the reason is already in the log
-# above rather than a sandbox run away.
-- name: Warn if the agent shows no sign of having connected
+# ── GATE: the manager, not the endpoint, says whether the agent is connected ──
+# This used to end in a warning, on the reasoning that the authoritative answer
+# belongs to the manager and puc2_preflight asked it there. Both halves were
+# right and the result was still wrong: the 2026-09-14 build printed the warning
+# here, carried on for twelve more minutes, fired the rehearsal into an agent
+# that had never connected, and only then reached the manager-side gate. So ask
+# the manager from here, where the agent was just configured, and stop the build
+# with both sides of the connection in the log.
+#
+# By ID, from this host's client.keys: the name is a sequential hostname and the
+# IP is registered as `any`, so neither identifies the agent reliably.
+- name: Read the ID this agent enrolled under
+  ansible.builtin.command:
+    argv: [awk, 'NF && $1 !~ /^#/ { print $1; exit }', /var/ossec/etc/client.keys]
+  register: puc2_agent_id
+  changed_when: false
+  failed_when: false
+
+# Same rule as the preflight gate: blocking when the manager can answer, skipped
+# and said so when it cannot. This image has already dropped one binary the
+# roles assumed (wazuh-makelists).
+- name: Look for agent_control on the manager
+  ansible.builtin.stat:
+    path: /var/ossec/bin/agent_control
+  delegate_to: ng-siem
+  register: puc2_agent_control_bin
+
+- name: Wait for the manager to report this agent Active
+  ansible.builtin.command:
+    argv: [/var/ossec/bin/agent_control, -i, "{{ puc2_agent_id.stdout | trim }}"]
+  delegate_to: ng-siem
+  register: puc2_agent_status
+  changed_when: false
+  failed_when: false
+  until: puc2_agent_status.stdout | default('') is search('Status:\s+Active')
+  retries: "{{ puc2_agent_connect_retries }}"
+  delay: "{{ puc2_agent_connect_delay }}"
+  when:
+    - puc2_agent_control_bin.stat.exists
+    - puc2_agent_id.stdout | trim | length > 0
+
+# The other half of the diagnosis. The agent's log above only ever says the
+# connection closed; WHY it was refused (a version, a key) is written by
+# remoted and authd on the manager, which nothing collected on 2026-09-14.
+- name: Collect the manager's side of the connection
+  ansible.builtin.shell:
+    cmd: |
+      set +e
+      echo "=== manager version ==="
+      /var/ossec/bin/wazuh-control info 2>&1 | grep -a VERSION
+      echo "=== agent_control -i {{ puc2_agent_id.stdout | trim }} ==="
+      /var/ossec/bin/agent_control -i '{{ puc2_agent_id.stdout | trim }}' 2>&1
+      echo "=== remoted and authd on the manager (today only) ==="
+      out=$(grep -a "$(date '+%Y/%m/%d')" /var/ossec/logs/ossec.log 2>/dev/null \
+        | grep -aE 'wazuh-(remoted|authd)' | tail -25)
+      if [ -n "$out" ]; then echo "$out"; else echo "  (nothing from today)"; fi
+    executable: /bin/bash
+  delegate_to: ng-siem
+  register: puc2_manager_diag
+  changed_when: false
+  failed_when: false
+  when: puc2_agent_status.stdout | default('') is not search('Status:\s+Active')
+
+- name: Show the manager's side of the connection
   ansible.builtin.debug:
-    msg: >-
-      The agent's log shows no successful connection today. If the NG-SIEM
-      preflight later reports this agent as 'Never connected' or 'Disconnected',
-      the reason is in the block above - check the manager address against
-      {{ puc2_ng_siem_ip }}, whether 1514/1515 are reachable, and whether
-      client.keys carries an entry.
-  when: >-
-    'Connected to the server' not in (puc2_agent_diag.stdout | default(''))
-    and 'Connected to enrollment service' not in (puc2_agent_diag.stdout | default(''))
+    var: puc2_manager_diag.stdout_lines
+  when: puc2_manager_diag is not skipped
+
+- name: GATE — the manager sees this agent Active
+  ansible.builtin.assert:
+    that:
+      - puc2_agent_id.stdout | trim | length > 0
+      - >-
+        (puc2_agent_status.stdout | default('') is search('Status:\s+Active'))
+        or not puc2_agent_control_bin.stat.exists
+    fail_msg: >-
+      The victim agent (ID '{{ puc2_agent_id.stdout | trim }}', wazuh-agent
+      {{ puc2_agent_pkg_after.stdout | trim }}) is not Active on the manager
+      (Wazuh {{ puc2_manager_version.stdout | trim }}) after
+      {{ (puc2_agent_connect_retries | int) * (puc2_agent_connect_delay | int) }} s.
+      Without it NG-SIEM gets no FIM telemetry: L10 has no alert, 100103 never
+      correlates, containment never runs and L19/L21 have no markers. An empty
+      ID means client.keys is empty and the agent never enrolled. Otherwise read
+      the two blocks above: the agent's own log on this host, and remoted/authd
+      on the manager, which name a refused version or key.
+    success_msg: >-
+      The manager reports agent {{ puc2_agent_id.stdout | trim }}
+      {{ 'Active' if puc2_agent_control_bin.stat.exists
+         else '(liveness unmeasurable: no agent_control on the manager; the rehearsal proves it)' }}.

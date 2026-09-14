@@ -74,6 +74,14 @@ puc2_payload_name: "invoice.exe"
 puc2_payload_url: "http://{{ puc2_c2_domain }}/{{ puc2_payload_name }}"
 puc2_quarantine_dir: "/var/quarantine"
 
+# ---- Wazuh agent on the endpoint --------------------------------------------
+# Empty: lab_endpoint_2c installs the agent at the version the NG-SIEM manager
+# runs. A manager refuses agents newer than itself, and the substrate installs
+# the newest one (4.14.7 against manager 4.4.0 on 2026-09-14: `Never connected`).
+# Set a full package version (e.g. "4.4.0-1") to pin explicitly instead; the
+# role still fails if that is newer than the manager.
+puc2_wazuh_agent_version: ""
+
 # ---- IOCs seeded into CTI-SS and matched by NG-SIEM -------------------------
 # The payload is an EICAR-equivalent benign artefact assembled at provision
 # time; its MD5 is the well-known EICAR md5, which is what rule 100101 matches
