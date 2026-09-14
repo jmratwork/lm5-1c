@@ -88,6 +88,15 @@
         puc2_reh_alerts_json_offset: "{{ puc2_reh_alerts_json_before.stat.size | default(0) }}"
       when: inventory_hostname == 'ng-siem'
 
+    # The dashboard does not read alerts.log: Filebeat ships alerts.json to the
+    # indexer. The start of the drill, on the manager's own clock, bounds the
+    # window cleanup purges from the indexer.
+    - name: Record when the injection starts (UTC) for the indexer purge
+      ansible.builtin.command: date -u +%Y-%m-%dT%H:%M:%SZ
+      register: puc2_reh_started_at
+      changed_when: false
+      when: inventory_hostname == 'ng-siem'
+
     # ── Snapshot CICMS so the cases the drill creates can be removed later ───
     # Every alert this drill raises reaches DFIR-IRIS as a case, through the
     # custom-iris integration. On 2026-09-14 12:30 cleanup left [100101],
@@ -498,13 +507,13 @@
     # any agent wrote during the rehearsal window is dropped too. The byte count
     # removed is recorded for the report.
     #
-    # alerts.json is deliberately NOT truncated the same way. The working
-    # assumption is that Filebeat ships it to the indexer and tracks a byte
-    # offset, so a file that shrinks under it would be read again from the
-    # start and every earlier alert indexed twice. That assumption is NOT yet
-    # verified on this image: the ng-siem preflight probe reports whether
-    # Filebeat runs and how many PUC2 alerts the indexer holds. The link checks
-    # do not need the file purged either - they only read past their offset.
+    # alerts.json is deliberately NOT truncated the same way. Filebeat ships it
+    # to the indexer - confirmed on 2026-09-14 14:44 by the preflight probe:
+    # filebeat active, output wazuh-indexer.mini.ngsiem.sph.gr:9200 over https -
+    # and Filebeat tracks a byte offset, so a file that shrinks under it would be
+    # read again from the start and every earlier alert indexed twice. The
+    # drill's alerts are removed from the indexer itself instead (below), and
+    # the link checks only read past their own offset anyway.
     - name: Measure alerts.log before the purge
       ansible.builtin.stat:
         path: "{{ puc2_rehearsal_alerts_log }}"
@@ -527,6 +536,79 @@
           {{ (puc2_reh_alerts_after.stat.size | default(0) | int)
              - (puc2_reh_alerts_offset | default(0) | int) }}
       when: inventory_hostname == 'ng-siem'
+
+    # ── Indexer: remove the drill's alerts from what the dashboard reads ─────
+    # Truncating alerts.log cleans the console path only. On 2026-09-14 14:44,
+    # after cleanup, the indexer still held 14 alerts for rules 100100-100103:
+    # L10's hint ("filter the dashboard by rule.id 1001*") showed the answer
+    # before the trainee fired anything, and L8/L11/L25 showed the drill's
+    # events and times. The indexer admin certificate on this host answers
+    # (HTTP 200 in that run), so no credential has to be handled.
+    #
+    # Filebeat ships asynchronously, so first wait until the indexer holds at
+    # least as many 1001xx alerts as alerts.json gained since the offset -
+    # purging earlier would leave the stragglers behind. Then delete, inside the
+    # drill's window, every alert from the victim agent or for a PUC2 rule, and
+    # count again. Same trade-off as alerts.log: anything else that agent raised
+    # in the window goes too. No certificate, or no answer, means nothing is
+    # deleted and the report says so; the ng-siem preflight gate then fails the
+    # build if PUC2 alerts remain.
+    - name: Purge the drill's alerts from the indexer the dashboard reads
+      ansible.builtin.shell:
+        cmd: |
+          {% set agent_id = ((hostvars['victim'].puc2_agent_id | default({})).stdout | default('')) | trim %}
+          set +e
+          IDX="https://127.0.0.1:9200/wazuh-alerts-*"
+          CERT="{{ puc2_rehearsal_indexer_cert }}"
+          KEY="{{ puc2_rehearsal_indexer_key }}"
+          if [ ! -r "$CERT" ] || [ ! -r "$KEY" ]; then
+            echo "SKIPPED=no readable indexer admin certificate at $CERT"
+            exit 0
+          fi
+          WINDOW='{ "range": { "timestamp": { "gte": "{{ puc2_reh_started_at.stdout }}" } } }'
+          PUC2='{ "terms": { "rule.id": [ "100100", "100101", "100102", "100103" ] } }'
+          COUNT_BODY="{ \"query\": { \"bool\": { \"filter\": [ $WINDOW, $PUC2 ] } } }"
+          AGENT='{% if agent_id %}, { "term": { "agent.id": "{{ agent_id }}" } }{% endif %}'
+          PURGE_BODY="{ \"query\": { \"bool\": { \"filter\": [ $WINDOW ],
+            \"should\": [ $PUC2$AGENT ], \"minimum_should_match\": 1 } } }"
+          idx() { curl -sk --max-time 60 --cert "$CERT" --key "$KEY" -H 'Content-Type: application/json' "$@"; }
+          count_puc2() { idx -X POST "$IDX/_count" -d "$COUNT_BODY" | grep -oE '"count":[0-9]+' | head -1 | cut -d: -f2; }
+
+          expected=$(tail -c +{{ (puc2_reh_alerts_json_offset | int) + 1 }} {{ puc2_rehearsal_alerts_json }} \
+            | grep -acE '"id":"1001(00|01|02|03)"')
+          indexed=""
+          for i in $(seq 1 {{ puc2_rehearsal_indexer_settle_tries }}); do
+            indexed=$(count_puc2)
+            [ -n "$indexed" ] && [ "$indexed" -ge "${expected:-0}" ] && break
+            sleep {{ puc2_rehearsal_indexer_settle_delay }}
+          done
+          echo "EXPECTED_IN_ALERTS_JSON=${expected:-0}"
+          echo "INDEXED_BEFORE_PURGE=${indexed:-unanswered}"
+          if [ -z "$indexed" ]; then
+            echo "SKIPPED=the indexer did not answer the count"
+            exit 0
+          fi
+
+          deleted=0
+          remaining=""
+          for pass in 1 2 3; do
+            resp=$(idx -X POST "$IDX/_delete_by_query?conflicts=proceed&refresh=true" -d "$PURGE_BODY")
+            d=$(printf '%s' "$resp" | grep -oE '"deleted":[0-9]+' | head -1 | cut -d: -f2)
+            [ -z "$d" ] && echo "UNEXPECTED_RESPONSE=$(printf '%s' "$resp" | head -c 300)"
+            deleted=$((deleted + ${d:-0}))
+            remaining=$(count_puc2)
+            [ "$remaining" = "0" ] && break
+            sleep 10
+          done
+          echo "DELETED=$deleted"
+          echo "PUC2_REMAINING=${remaining:-unanswered}"
+        executable: /bin/bash
+      register: puc2_reh_indexer_purge
+      changed_when: puc2_reh_indexer_purge.stdout | default('') is search('DELETED=[1-9]')
+      failed_when: false
+      when:
+        - inventory_hostname == 'ng-siem'
+        - puc2_reh_started_at.stdout is defined
 
     # ── CICMS: remove the cases this drill made custom-iris create ───────────
     # integratord posts each alert to IRIS within seconds, so the last ones are
@@ -617,7 +699,9 @@
           Cleanup done on {{ inventory_hostname }}.
           {% if inventory_hostname == 'ng-siem' %}Purged
           {{ puc2_reh_alerts_purged_bytes | default(0) }} bytes of rehearsal
-          alerts from alerts.log.{% elif inventory_hostname == 'docker-server' %}{% if puc2_reh_case_max_id is defined %}Deleted
+          alerts from alerts.log; indexer:
+          {{ (puc2_reh_indexer_purge.stdout_lines | default(['purge not run'], true)) | join(', ') }}.
+          {%- elif inventory_hostname == 'docker-server' %}{% if puc2_reh_case_max_id is defined %}Deleted
           {{ puc2_reh_cases_deleted | default(0) }} of
           {{ puc2_reh_cases_targeted | default(0) }} CICMS case(s) created after
           case id {{ puc2_reh_case_max_id }}

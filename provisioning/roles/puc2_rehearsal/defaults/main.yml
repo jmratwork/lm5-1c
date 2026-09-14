@@ -63,6 +63,15 @@ puc2_rehearsal_alert_delay: 10
 puc2_rehearsal_marker_retries: 30
 puc2_rehearsal_marker_delay: 10
 
+# Indexer purge (cleanup, ng-siem). The admin client certificate the siemng
+# image ships answered the indexer with HTTP 200 on 2026-09-14; Filebeat's own
+# certificate is refused (401). Cleanup first waits up to tries x delay seconds
+# for Filebeat to finish shipping the drill's alerts before deleting them.
+puc2_rehearsal_indexer_cert: "/etc/wazuh-indexer/certs/admin.pem"
+puc2_rehearsal_indexer_key: "/etc/wazuh-indexer/certs/admin-key.pem"
+puc2_rehearsal_indexer_settle_tries: 12
+puc2_rehearsal_indexer_settle_delay: 5
+
 # Seconds cleanup waits for custom-iris to post the drill's last alerts to CICMS
 # before it lists and deletes the cases created after the pre-drill snapshot.
 puc2_rehearsal_case_settle: 20

@@ -273,6 +273,7 @@
       echo "  service: $(systemctl is-active wazuh-indexer 2>&1)"
       echo "  certs: $(ls /etc/wazuh-indexer/certs /etc/filebeat/certs 2>/dev/null | paste -sd' ' -)"
       q='rule.id:(100100 OR 100101 OR 100102 OR 100103)'
+      measured=""
       for pair in "/etc/wazuh-indexer/certs/admin.pem /etc/wazuh-indexer/certs/admin-key.pem" \
                   "/etc/filebeat/certs/filebeat.pem /etc/filebeat/certs/filebeat-key.pem"; do
         set -- $pair
@@ -280,10 +281,15 @@
           out=$(curl -sk --max-time 15 -w ' HTTP=%{http_code}' --cert "$1" --key "$2" \
                 -G --data-urlencode "q=$q" "https://127.0.0.1:9200/wazuh-alerts-*/_count")
           echo "  PUC2 alerts in wazuh-alerts-* asked with $1: $(printf '%s' "$out" | head -c 300)"
+          n=$(printf '%s' "$out" | grep -oE '"count":[0-9]+' | head -1 | cut -d: -f2)
+          case "$out" in
+            *HTTP=200*) if [ -n "$n" ] && [ -z "$measured" ]; then echo "PUC2_INDEXER_COUNT=$n"; measured=1; fi ;;
+          esac
         else
           echo "  not readable, not asked: $1"
         fi
       done
+      [ -z "$measured" ] && echo "PUC2_INDEXER_COUNT=unmeasurable"
     executable: /bin/bash
   register: puc2_pf_indexer_probe
   changed_when: false
@@ -292,6 +298,20 @@
 - name: Show how alerts reach the indexer
   ansible.builtin.debug:
     var: puc2_pf_indexer_probe.stdout_lines
+
+# The probe's first answer of 2026-09-14 14:44 settled the question above: 14
+# PUC2 alerts in the indexer right after the rehearsal's cleanup. So the count
+# is now a verdict. Blocking when the indexer answers; skipped, and said so,
+# when no certificate can ask it - the same rule as agent_control.
+- name: Reduce the indexer probe to the count the gate needs
+  ansible.builtin.set_fact:
+    # regex_findall with one group returns the group itself, so no '\1'
+    # back-reference argument is needed - a bare backslash-digit inside a Jinja
+    # string literal is at the mercy of Jinja's escape handling.
+    puc2_pf_indexer_count: >-
+      {{ (puc2_pf_indexer_probe.stdout | default(''))
+         | regex_findall('PUC2_INDEXER_COUNT=(\S+)')
+         | first | default('unmeasurable', true) }}
 
 - name: GATE — NG-SIEM can produce every answer that depends on it
   ansible.builtin.assert:
@@ -328,6 +348,11 @@
       - puc2_pf_rule_warnings | length == 0
       # ...and none of them may key on a field name analysisd never produces.
       - puc2_pf_after_fields | length == 0
+      # L10: the dashboard must not already show a PUC2 alert the trainee has
+      # not caused yet
+      - >-
+        puc2_pf_indexer_count == 'unmeasurable'
+        or (puc2_pf_indexer_count | int) == 0
       # The FIM telemetry 100100/100101/100103 are built on has to be arriving:
       # an agent that never enrolled leaves L10 with no alert to read. Enrolment
       # is decidable from client.keys, which always exists.
@@ -382,6 +407,11 @@
          else '(none)' }}
       (e.g. md5_after: the FIM decoder field is md5, so such a rule loads and
       never matches);
+      PUC2 alerts already in the indexer the dashboard reads:
+      {{ puc2_pf_indexer_count | default('unmeasurable') }}
+      (anything above 0 shows the trainee the L10 answer before they fire the
+      scenario; the rehearsal purges its own, so this means its purge missed
+      them or a previous class left them);
       an agent other than the manager is enrolled:
       {{ puc2_pf_agent_enrolled | default(false) }},
       reporting Active: {{ puc2_pf_agent_active | default(false) }}
@@ -397,4 +427,6 @@
       and carries {{ puc2_payload_md5 }}; an endpoint agent is enrolled
       {{ 'and reporting Active' if (puc2_pf_agent_active | bool)
          else '(liveness unmeasurable on this image — the rehearsal proves it)' }};
-      containment triggered by rule {{ puc2_pf_ar_rules }} only.
+      containment triggered by rule {{ puc2_pf_ar_rules }} only;
+      {{ 'the indexer holds no PUC2 alert' if puc2_pf_indexer_count != 'unmeasurable'
+         else 'PUC2 alerts in the indexer unmeasurable (no certificate could ask it)' }}.
