@@ -150,32 +150,37 @@
     timeout: 20
 
 - name: Collect everything that explains an agent that will not connect
-  ansible.builtin.shell: |
-    set +e
-    echo "=== service ==="
-    systemctl is-active wazuh-agent 2>&1
-    systemctl is-enabled wazuh-agent 2>&1
-    echo "=== manager address the agent is configured with ==="
-    sed -n '/<client>/,/<\/client>/p' /var/ossec/etc/ossec.conf 2>&1 | grep -E '<address>|<port>|<protocol>' || echo "  (no <client> block)"
-    echo "=== enrolment ==="
-    if [ -s /var/ossec/etc/client.keys ]; then
-      awk '{print "  id="$1" name="$2" ip="$3}' /var/ossec/etc/client.keys
-    else
-      echo "  client.keys is EMPTY or missing - the agent was never enrolled"
-    fi
-    echo "=== can this host even reach the manager? ==="
-    for p in 1514 1515; do
-      timeout 5 bash -c "cat < /dev/null > /dev/tcp/{{ puc2_ng_siem_ip }}/$p" 2>/dev/null \
-        && echo "  {{ puc2_ng_siem_ip }}:$p reachable" \
-        || echo "  {{ puc2_ng_siem_ip }}:$p UNREACHABLE"
-    done
-    echo "=== what the agent itself says (today only) ==="
-    # -a because ossec.log carries non-UTF-8 bytes; date-scoped because this log
-    # is never rotated and would otherwise show the image's build date.
-    grep -a "$(date '+%Y/%m/%d')" /var/ossec/logs/ossec.log 2>/dev/null \
-      | grep -aiE 'error|warn|unable|refus|timeout|connect|enroll' | tail -20 \
-      || echo "  (nothing from today)"
-  args:
+  # `cmd:` form, NOT free-form `shell: |`. A free-form string goes through
+  # Ansible's split_args at PLAYBOOK LOAD, which knows nothing of bash comments:
+  # one apostrophe in a comment ("the image's build date") broke the parse and
+  # the 2026-09-14 deploy died before running a single task. yaml.safe_load and
+  # yamllint both accepted it. A dict-valued `cmd:` is never split.
+  ansible.builtin.shell:
+    cmd: |
+      set +e
+      echo "=== service ==="
+      systemctl is-active wazuh-agent 2>&1
+      systemctl is-enabled wazuh-agent 2>&1
+      echo "=== manager address the agent is configured with ==="
+      sed -n '/<client>/,/<\/client>/p' /var/ossec/etc/ossec.conf 2>&1 | grep -E '<address>|<port>|<protocol>' || echo "  (no <client> block)"
+      echo "=== enrolment ==="
+      if [ -s /var/ossec/etc/client.keys ]; then
+        awk '{print "  id="$1" name="$2" ip="$3}' /var/ossec/etc/client.keys
+      else
+        echo "  client.keys is EMPTY or missing - the agent was never enrolled"
+      fi
+      echo "=== can this host even reach the manager? ==="
+      for p in 1514 1515; do
+        timeout 5 bash -c "cat < /dev/null > /dev/tcp/{{ puc2_ng_siem_ip }}/$p" 2>/dev/null \
+          && echo "  {{ puc2_ng_siem_ip }}:$p reachable" \
+          || echo "  {{ puc2_ng_siem_ip }}:$p UNREACHABLE"
+      done
+      echo "=== what the agent itself says (today only) ==="
+      # -a because ossec.log carries non-UTF-8 bytes; date-scoped because this log
+      # is never rotated and would otherwise show the image build date.
+      grep -a "$(date '+%Y/%m/%d')" /var/ossec/logs/ossec.log 2>/dev/null \
+        | grep -aiE 'error|warn|unable|refus|timeout|connect|enroll' | tail -20 \
+        || echo "  (nothing from today)"
     executable: /bin/bash
   register: puc2_agent_diag
   changed_when: false
