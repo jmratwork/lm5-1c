@@ -23,7 +23,7 @@ vendored here:
 | `provisioning/roles/all/` | `/etc/hosts` wiring, sandbox command logging | none of substance |
 | `provisioning/roles/docker_server/` | MISP, DFIR-IRIS, NG-SOAR; publishes `misp_api_key`, `iris_api_key`, `docker_server_internal_ip` | **yes, the most** — hardcoded credentials taken out of the repo, the DFIR-IRIS build no longer depends on a `github.com` clone, unset MISP compose variables pinned, obsolete `version:` key dropped, and the whole Docker Hub rate-limit story below (preflight, pre-pull from other registries, fail-fast on 429) |
 | `provisioning/roles/ng-siem/` | the `siemng` image (Wazuh + SPHYNX stack); injects the MISP and `custom-iris` integrations into `ossec.conf` | minor |
-| `provisioning/roles/victim/` | Wazuh agent, enrolled against `ng-siem` at install time via `WAZUH_MANAGER` | minor |
+| `provisioning/roles/victim/` | Wazuh agent, enrolled against `ng-siem` at install time via `WAZUH_MANAGER` | minor — its version-less `apt` install is steered by an apt pin the overlay writes *beforehand* (`puc2_agent_pin`), not by editing the role |
 
 This table said "vendored **byte-identical**" long after that stopped being
 true — `docker_server` alone carries nine commits. Where the substrate is
@@ -33,7 +33,10 @@ to these roles.
 
 Sub Case 2c is layered on top as an **additive overlay** of `*_2c` roles that run
 *after* them and use their own `blockinfile` markers, so the substrate's
-`ossec.conf` integrations are never clobbered.
+`ossec.conf` integrations are never clobbered. Two overlay plays deliberately run
+*before* a substrate role, because what they set up has to exist first: the
+one-clock play (every node onto UTC) leads the file, and the agent-pin play sits
+just before `Configuring victim PC` (see below).
 
 > **The substrate is not the only moving part.** `docker_server` clones
 > `MISP/misp-docker`, and one upstream restructure broke three deploys in a row
@@ -68,6 +71,26 @@ verified that it had until the preflight gate started asking the *manager* which
 agents it holds — an agent that installs, starts and never registers passes
 `systemctl is-active` on the endpoint and produces a range where no rule that
 depends on FIM telemetry can ever fire.
+
+The same role installs **the latest agent**, with no version. On 2026-09-14 that
+was 4.14.7, while the `siemng` image runs manager **4.4.0** — and Wazuh only
+guarantees compatibility when the manager is at least as new as the agent.
+Enrolment on 1515 still succeeded; then the manager closed every connection on
+1514, and the agent stayed `Never connected`. Two fixes were tried:
+
+| Attempt | Outcome |
+|---|---|
+| Downgrade the agent in place after the substrate installed it (`67cb586`) | the 4.4.0 package keeps the `ossec.conf` that 4.14.7 generated, whose syscollector block carries `<users>`, `<groups>`, `<services>` and `<browser_extensions>`; 4.4.0 answers an unknown tag with `No such tag` and the agent never started again |
+| Pin apt **before** the substrate installs (`c76c381`, current) | `puc2_agent_pin` reads the manager's version and writes `/etc/apt/preferences.d/wazuh-agent` (`Pin-Priority: 1001`); the untouched substrate task installs `4.4.0-1` fresh, with its own `ossec.conf`, and enrols once |
+
+A purge and re-enrolment was not an option either: with authd's default `force`
+settings the manager refuses the same agent name for an hour after it first
+registered. `lab_endpoint_2c` then asserts the installed version is the pinned
+one and not newer than the manager, holds the package, and waits for the
+**manager** to report the agent `Active`. If it is not, the build stops there,
+with the agent's log and the manager's `remoted`/`authd` lines, instead of twelve
+minutes later in the rehearsal. `puc2_wazuh_agent_version` in
+`group_vars/puc2_2c.yml` overrides the version the pin follows.
 
 ### Trimmed to the UML's components
 
@@ -156,8 +179,8 @@ Flat, single-subnet testnet — the layout the substrate is tested on:
 
 | UML actor | Host | IP | Services |
 |---|---|---|---|
-| Lab Hosts/Endpoints | `victim` | 10.0.16.100 | Wazuh agent (enrolled by the substrate), FIM, `puc2-isolate` active response |
-| NG-SIEM | `ng-siem` | 10.0.16.70 | `siemng` image, Wazuh manager (native systemd), 443 / 9200 |
+| Lab Hosts/Endpoints | `victim` | 10.0.16.100 | Wazuh agent 4.4.0 (installed and enrolled by the substrate, at the version `puc2_agent_pin` pins), FIM, `puc2-isolate` active response |
+| NG-SIEM | `ng-siem` | 10.0.16.70 | `siemng` image, Wazuh manager 4.4.0 (native systemd), Filebeat → wazuh-indexer, 443 / 9200 |
 | CTI-SS | `docker-server` | 10.0.16.60 | MISP `:8443` |
 | CICMS | `docker-server` | 10.0.16.60 | DFIR-IRIS `:8083` |
 | NG-SOAR | `docker-server` | 10.0.16.60 | webhook `:8080/trigger/playbook` |
@@ -241,9 +264,9 @@ operator can guarantee the L19/L21 markers without cross-node plumbing.
 | 2 | Inject phishing + payload delivery | Cyber Range → victim | `roles/scenario_injection_2c/templates/inject_scenario.sh.j2` (4-stage EICAR delivery) + `templates/phishing_email.eml.j2` |
 | 3 | Telemetry (file hash) | victim → ng-siem | `roles/lab_endpoint_2c/tasks/main.yml` (FIM on `~victim/Downloads`) → rule `100100` |
 | 4 | Enrich hash with CTI | ng-siem ↔ docker-server | `roles/ng_siem_rules_2c` (CDB list `etc/lists/cti-malware-hashes`) + `roles/cti_ss_2c` (same IOCs seeded into MISP) + the substrate's MISP integration |
-| 5 | Alert: malware detected | ng-siem | `roles/ng_siem_rules_2c/templates/local_rules.xml.j2` rule `100101` (level 12), deployed as `/var/ossec/ruleset/rules/9999-puc2-2c.xml` — **not** `etc/rules/`, which this image does not read |
+| 5 | Alert: malware detected | ng-siem | `roles/ng_siem_rules_2c/templates/local_rules.xml.j2` rule `100101` (level 12), deployed as `/var/ossec/ruleset/rules/9999-puc2-2c.xml` — **not** `etc/rules/`, which this image does not read. Its CDB lookup keys on the FIM decoder field `md5`: the alert JSON prints `md5_after`, but that is output naming only, and keyed on it the rule never matched |
 | 6 | Correlate logs + confirm attack pattern | ng-siem | rule `100102` (firewall source: the endpoint's baseline egress filter, decoded by Wazuh's built-in kernel decoder) and rule `100103` (fired by the multi-stage delivery) + `training/ng_siem_correlation_guide.md` |
-| 7 | Open incident case + attach SIEM context | ng-siem → docker-server | **automatic:** substrate `custom-iris` integration (dedups by `case_soc_id`); **operator-driven:** `roles/cicms_2c/templates/open_case.sh.j2` + the registered case template |
+| 7 | Open incident case + attach SIEM context | ng-siem → docker-server | **automatic:** substrate `custom-iris` integration (dedups by `case_soc_id`, which is the same on every run of this scenario — hence the rehearsal deletes the cases it creates); **operator-driven:** `roles/cicms_2c/templates/open_case.sh.j2` + the registered case template |
 | 8 | Enrich with CTI (IOCs/TTPs) | docker-server | `roles/cicms_2c` + `roles/cti_ss_2c`; the IRIS↔MISP module is wired by the substrate |
 | 9 | Execute containment playbooks | ng-siem / docker-server | **automatic:** `<active-response>` block injected by `roles/ng_siem_rules_2c` (rule `100103` only — see *Containment*); **operator-driven:** `roles/soar_actions_2c/templates/ngsoar_trigger.sh.j2` → the NG-SOAR webhook |
 | 10 | Apply isolation and remediation | victim | `roles/lab_endpoint_2c/templates/puc2-isolate.j2` (isolation, C2 block, quarantine, credential reset, security updates); library in `roles/soar_actions_2c/files/*.yml` |
@@ -311,22 +334,24 @@ Everything else follows the diagram's actor, direction and ordering.
 
 ## Provisioning order
 
-`provisioning/playbook.yml` runs the substrate plays unchanged, then appends
-the overlay in this order:
+`provisioning/playbook.yml` runs the substrate plays — with the two overlay plays
+that must precede them — and then the overlay, in this order:
 
 ```
 one-clock play            (FIRST play of the file - every node onto UTC before
                            anything, substrate included, timestamps by it)
 docker-server (facts: misp_api_key, iris_api_key, docker_server_internal_ip)
   → ng-siem (substrate integrations)
-    → ng_siem_rules_2c      (rules, CDB list, active-response wiring)
-      → lab_endpoint_2c     (FIM + puc2-isolate on the endpoint)
-        → scenario_injection_2c  (stages the attack; does NOT fire it)
-          → cti_ss_2c / cicms_2c / soar_actions_2c
-            → evaluation_reporting
-              → puc2_node_access  (trainee login + passwordless sudo)
-                → puc2_rehearsal  (fires the chain, verifies it, self-cleans)
-                  → puc2_preflight (QA gate; fails the deploy if a level is unanswerable)
+    → puc2_agent_pin        (apt pin: wazuh-agent = the manager's version)
+      → victim (substrate: installs and enrols the pinned agent)
+        → ng_siem_rules_2c      (rules, CDB list, active-response wiring)
+          → lab_endpoint_2c     (agent version + Active gates, FIM, puc2-isolate)
+            → scenario_injection_2c  (stages the attack; does NOT fire it)
+              → cti_ss_2c / cicms_2c / soar_actions_2c
+                → evaluation_reporting
+                  → puc2_node_access  (trainee login + passwordless sudo)
+                    → puc2_rehearsal  (fires the chain, verifies it, self-cleans)
+                      → puc2_preflight (QA gate; fails the deploy if a level is unanswerable)
 ```
 
 `provisioning/group_vars/puc2_2c.yml` is the single source of IPs, ports and
@@ -440,11 +465,12 @@ six is down to two:
    requests against the limit that was already the problem. It stops after one
    attempt and names the PAT as the fix.
 
-None of this has met a live deploy yet — three attempts have died before
-`docker-server` finished. The first run to get past it prints the evidence in
-three lines worth grepping for: the `Docker Hub auth:` verdict, one
-`CACHED` / `SEEDED` / `MISS` line per pre-pulled image, and the measured
-headroom from the preflight.
+This has now met live deploys: since 2026-09-14 `docker-server` finishes on every
+run. The evidence is in three lines worth grepping for, and the 15:26 log reads
+`Docker Hub auth: LOGGED_IN as demongsoc` (the substrate's credential, so pulls
+count against that account), `SEEDED` for all four pre-pulled images, and a
+measured anonymous headroom of 84 of 100 per hour on the egress IP — the pool
+that deploy did not have to use.
 
 The last two plays of the file are diagnostics (`puc2_diag`,
 `puc2_access_probe`), tagged `never` and absent from a normal deploy:
@@ -472,10 +498,34 @@ every link:
 
 then rolls containment back, restores the sinkhole and the baseline egress
 filter, empties the quarantine, removes the markers, un-expires the victim
-account, truncates `alerts.log` to its pre-drill size, and re-runs the gate. The
-student meets a freshly provisioned range, never an attacked one. A broken link
-fails the deploy naming which one (`LINK 3 BROKEN — rule 100103 never
-correlated…`) and writes `validation/REHEARSAL_REPORT.md`.
+account, and removes every trace of the drill **from wherever a trainee could
+read it**:
+
+| Where | Cleanup | Reported in the log as |
+|---|---|---|
+| `alerts.log` on ng-siem (L10's console path) | truncated to its pre-drill size | `Purged N bytes` |
+| wazuh-indexer (the dashboard) | waits until Filebeat has shipped the drill's alerts, then `_delete_by_query` with the host's indexer admin certificate: every alert in the drill's window from the victim agent or for rules 100100-100103 | `EXPECTED_IN_ALERTS_JSON`, `INDEXED_BEFORE_PURGE`, `ALL_MATCHING_BEFORE_PURGE`, `DELETED`, `PUC2_REMAINING` |
+| CICMS (DFIR-IRIS) | every case created after the pre-drill snapshot, via `POST /manage/cases/delete/<id>` | `Deleted N of N CICMS case(s)` |
+
+The last two rows exist because the 2026-09-14 12:30 and 14:44 builds shipped
+green without them. custom-iris deduplicates on a `soc_id` that is identical on
+every run of this scenario, so a drill case left in CICMS both hands the trainee
+the L10 answer (in `case_lookup.sh`, the helper L14 sends them to) and stops
+their own attack from creating any case at all. An alert left in the indexer
+shows up under L10's own hint, `rule.id 1001*`. Same trade-off as `alerts.log`:
+anything else the victim agent raised during the drill goes too.
+
+`alerts.json` itself is not truncated — Filebeat ships it by byte offset and would
+re-index the whole file. The link checks read only what it gained after the
+offset recorded before firing, so an alert from an earlier run can never satisfy
+them.
+
+Then it re-runs the gate. The student meets a freshly provisioned range, never an
+attacked one. A broken link fails the deploy naming which one (`LINK 3 BROKEN —
+rule 100103 never correlated…`) and writes `validation/REHEARSAL_REPORT.md`.
+LINK 1 also prints what *did* arrive — endpoint FIM events, which PUC2 rules
+fired, the last `100100` event — which is what tells missing telemetry, a
+non-matching `100100` and a failed hash lookup apart from the log alone.
 
 **`puc2_preflight` — the static gate.** Runs last, on `ng-siem`, `victim`,
 `docker-server` and `kali`, and fails the play if any graded answer is
@@ -492,8 +542,10 @@ analysisd had only been asked about one of the four rules.
 
 So the gate proves what is *decidable* — the rules are on disk, the CDB
 watchlist is compiled, newer than its source and carries the payload hash,
-analysisd discarded none of `100100`-`100103`, an endpoint agent is enrolled,
-containment is wired to `100103` alone, kali reaches all four dashboards — and
+analysisd discarded none of `100100`-`100103`, no PUC2 rule keys on an
+alert-output field name (`*_after`), an endpoint agent is enrolled and `Active`,
+containment is wired to `100103` alone, no PUC2 case is waiting in CICMS, the
+indexer holds no PUC2 alert, kali reaches all four dashboards — and
 the rehearsal proves what only firing can. Skip the rehearsal and half the proof
 goes with it.
 
@@ -509,6 +561,12 @@ Each of these shipped green at least once:
 | `kali` has no browser, no desktop, or no route to the dashboards | asserted per dashboard from kali itself |
 | Nodes disagree about the clock (kali ran two hours ahead) | every node is put on UTC before anything timestamps, and asserted |
 | A diagnostic reads `ossec.log` without `grep -a` and reports the image's build date as this run's state | `-a` throughout, and startup sections scoped to today |
+| The substrate installs an agent newer than the manager, which enrols and is then refused (`Never connected`) | the agent is pinned to the manager's version before it is installed; `lab_endpoint_2c` asserts the version and waits for the manager to report it `Active` |
+| The agent will not start, and a failing handler ends the host before anything records why | the restart is a task in a block whose rescue collects `systemctl`, the journal, the agent log and both daemons' `-t` configuration test |
+| A rule loads, survives every warning check, and never matches, because it names an alert-output field (`md5_after`) instead of the decoder's (`md5`) | any `*_after` field in a PUC2 rule fails the gate; the rehearsal proves the match at runtime |
+| An alert from an earlier run satisfies a rehearsal link | link checks read only what `alerts.json` gained after the pre-drill offset |
+| The rehearsal leaves its CICMS cases and indexer alerts behind, so `case_lookup.sh` and the dashboard show the L10 answer | the drill deletes both; the gate fails on any PUC2 case in CICMS or PUC2 alert in the indexer |
+| A probe ends on a false `&&` test, so a healthy run exits non-zero and real masked failures hide among false ones | probes end on an explicit exit path (`true`, `if … fi`) |
 
 ---
 
@@ -516,8 +574,12 @@ Each of these shipped green at least once:
 
 Provisioning already fired this whole chain once, in the rehearsal, and undid
 it — so the sandbox you are handed is both **proven** and **pristine**: no PUC2
-alerts in the manager, no markers, empty quarantine, payload staged but not
-delivered. Every step below starts from that state.
+alert in `alerts.log` or in the dashboard's indexer, no PUC2 case in CICMS, no
+markers, empty quarantine, payload staged but not delivered. The first three are
+asserted by the gate on every deploy, not assumed (first confirmed end to end by
+the 2026-09-14 15:26 build: `PUC2_REMAINING=0`, `PUC2_INDEXER_COUNT=0`, no
+`[1001xx]` case). Every step below starts from that state, and the trainee's own
+attack is the first to create PUC2 alerts and cases.
 
 ```bash
 # 1. Provision the sandbox (the platform does this from topology.yml)
@@ -541,10 +603,12 @@ See `VALIDATION.md` for the full acceptance procedure and `training/` for the
 trainee-facing brief, runbook and correlation guide.
 
 The 30-level linear training definition uploaded to CyberRangeCZ is
-`*_linear-training-definition.json`, kept in the repository root **locally
-only**: `.gitignore` excludes it, because it is uploaded to the platform by hand
-and must never reach the remote. Treat the copy in the root as the single source
-of truth and version it in the filename (`V5_…`). `validation/
+`V<n>_puc2-cynet-2c-malware-detection-response_linear-training-definition.json`,
+currently **V7**. It **never reaches the remote**: `.gitignore` excludes
+`*training-definition.json`, because it is uploaded to the platform by hand. The
+working tree is only a hand-off point — the current version is dropped into the
+root when it needs changes and taken away afterwards, so do not expect a copy to
+be there. The version lives in the filename. `validation/
 validate_training.sh` checks that every graded answer in it is actually
 obtainable in the built sandbox — matching on API *fields* (for example
 `case_soc_id`) rather than on level prose, so rewording a level never breaks it.
@@ -603,9 +667,9 @@ verifies each is answerable:
 | L5  | `invoice.exe` | `grep href= /var/mail/victim` | — | yes |
 | L8  | payload MD5 | `md5sum /opt/puc2/invoice.exe` | Wazuh FIM | yes |
 | L9  | `T1566.001` | **`cti_lookup.sh`** on docker-server | MISP event | yes (console gate) |
-| L10 | `100101` | `grep 1001 …/alerts.log` on ng-siem | Wazuh alerts | yes |
+| L10 | `100101` | `grep 1001 …/alerts.log` on ng-siem | Wazuh alerts | yes, and no PUC2 alert may already be in the indexer |
 | L11 | `targeted` | `grep PUC2-FW-DROP /var/log/kern.log` | Wazuh correlation | yes |
-| L14 | `CASE-PUC2-2C` | **`case_lookup.sh`** on docker-server | IRIS cases | yes (console gate) |
+| L14 | `CASE-PUC2-2C` | **`case_lookup.sh`** on docker-server | IRIS cases | yes (console gate), and no PUC2 case may already be in CICMS |
 | L15 | `c2.puc2-training.lab` | **`cti_lookup.sh`** on docker-server | MISP / IRIS | yes (console gate) |
 | L18 | `isolate_host` | `ls /opt/NG-SOAR/playbooks/` | NG-SOAR | yes |
 | L19 | `isolated` | `cat /var/run/ngsoar_isolated` | — | yes |
@@ -614,6 +678,11 @@ verifies each is answerable:
 | L24 | `NG-SOC-PUC2` | `share_intel.sh` on docker-server | MISP distribution | yes |
 | L25 | `phishing` | `collect_evaluation.sh` on ng-siem | IRIS timeline | yes |
 | L26 | `T1204.002` | `cti_lookup.sh` (execution technique) | MISP tag | yes |
+
+On the dashboard, the endpoint's agent is **not** named `victim`: the substrate
+names it after the sandbox allocation (`victim<id>`, e.g. `victim617`), and its
+CICMS cases end in that name, while the manager's own end in `on ng-siem`. The
+training definition says so from V6 on.
 
 The three levels that were dashboard-only — **L9, L14, L15** — gained the
 `cti_lookup.sh` / `case_lookup.sh` console helpers (read-only, key never printed;
