@@ -73,6 +73,24 @@
     name: cicms_2c
     tasks_from: find_case.yml
 
+# ── No PUC2 detection case may be waiting for the trainee ────────────────────
+# custom-iris turns every NG-SIEM alert into a CICMS case. A case for rules
+# 100100-100103 that exists before the trainee fires the scenario is an answer
+# key: on 2026-09-14 12:30 case_lookup.sh (the L14 helper) listed
+# "[100101] PUC2: file hash matches CTI-SS malware IOC" after the rehearsal. It
+# also blocks the real exercise, because custom-iris deduplicates on a soc_id
+# that is the same every run, so the trainee's own attack would create nothing.
+# Matched on the soc_id prefix and on the [rule] tag in the name, so either
+# field alone is enough. The rows come from find_case above.
+- name: Find CICMS cases raised by the PUC2 detection rules
+  ansible.builtin.set_fact:
+    puc2_pf_spoiler_cases: >-
+      {{ ((puc2_case_rows | default([]) | selectattr('case_soc_id', 'string')
+           | selectattr('case_soc_id', 'match', '^WAZUH-1001(00|01|02|03)-') | list)
+          + (puc2_case_rows | default([]) | selectattr('case_name', 'string')
+           | selectattr('case_name', 'search', '\[1001(00|01|02|03)\]') | list))
+         | map(attribute='case_name') | unique | join(' / ') }}
+
 - name: List the NG-SOAR containment library
   ansible.builtin.find:
     paths: "{{ puc2_soar_playbook_dir }}"
@@ -131,6 +149,8 @@
       - puc2_misp_sharing_group_name in puc2_pf_groups
       # L14: the scenario case, matched on its SOC id field
       - puc2_case_found
+      # L10/L11/L25: no PUC2 detection case left from a rehearsal or a class
+      - puc2_pf_spoiler_cases | length == 0
       # L18: the playbook name read off the library listing
       - "'isolate_host.yml' in puc2_pf_books"
       - "'block_malicious_ip.yml' in puc2_pf_books"
@@ -152,6 +172,13 @@
       {{ puc2_misp_sharing_group_name in puc2_pf_groups }}.
       CICMS case {{ puc2_case_soc_id }}: {{ puc2_case_found }}
       ({{ puc2_case_lookup }}).
+      PUC2 detection cases already in CICMS:
+      {{ puc2_pf_spoiler_cases if (puc2_pf_spoiler_cases | default('') | length > 0)
+         else '(none)' }}
+      (any of these gives away the L10 answer before the trainee fires the
+      scenario, and makes custom-iris skip the trainee's own cases; the
+      rehearsal deletes the ones it creates, so this means its cleanup missed
+      them or a previous class left them - delete them in CICMS before handover).
       NG-SOAR library: {{ puc2_pf_books }}.
       "body returned: False" means the read never happened — the key was
       rejected or the service did not answer — and nothing above it can be

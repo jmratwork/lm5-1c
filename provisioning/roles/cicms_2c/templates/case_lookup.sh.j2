@@ -14,6 +14,9 @@
 # "named WAZUH-...". They are not. custom-iris puts that prefix on the
 # case_soc_id FIELD; the case NAME it generates reads
 #   #4 - [550] Integrity checksum changed. on ng-siem
+#   #11 - [100101] PUC2: file hash matches CTI-SS malware IOC ... on victim615
+# (the manager's own alerts end in "on ng-siem", the endpoint's in its agent
+# name, which the substrate sets to victim<allocation id>),
 # so the word WAZUH appears nowhere in the listing below and anyone who went
 # looking for it found nothing. The listing now prints the SOC id alongside the
 # name, so the distinction the text draws is one the output actually shows.
@@ -86,8 +89,10 @@ echo
 if [ -n "${scenario_id}" ]; then
     echo "  Scenario case  : ${WANT_SOC_ID}  (case id ${scenario_id})   <-- L14 answer"
     echo "  The other cases are auto-created by the custom-iris integration, one"
-    echo "  per NG-SIEM alert. Their names read '#N - [rule] ... on ng-siem' and"
-    echo "  their soc_id carries a WAZUH- prefix. L14 wants the scenario case."
+    echo "  per NG-SIEM alert. Their names read '#N - [rule] ... on <agent>':"
+    echo "  'on ng-siem' for the manager's own alerts, 'on victimNNN' for the"
+    echo "  endpoint's. Their soc_id carries a WAZUH- prefix. L14 wants the"
+    echo "  scenario case."
     echo "RESULT: FOUND ${WANT_SOC_ID} case_id=${scenario_id}"
 else
     echo "RESULT: NOT_FOUND"

@@ -244,6 +244,55 @@
   changed_when: false
   failed_when: false
 
+# ── Does the dashboard hold the rehearsal's alerts? EVIDENCE, never a verdict ─
+# The rehearsal truncates alerts.log, which is the console path for L10. The
+# dashboard path reads the indexer, and nothing in this project knows yet how
+# alerts reach it on the siemng image: the rehearsal's comment assumes Filebeat
+# ships alerts.json, and no log or file has ever confirmed it. If the indexer
+# keeps the drill's 1001xx alerts, filtering the dashboard by rule.id hands the
+# trainee the L10 answer before they fire anything. This only collects what
+# decides that: whether Filebeat runs, where it ships to (no password is
+# printed), and how many PUC2 alerts the indexer answers for, asked with each
+# client certificate readable on the host. Read-only; it cannot fail the gate.
+- name: Probe how alerts reach the indexer and whether it holds PUC2 alerts
+  ansible.builtin.shell:
+    cmd: |
+      set +e
+      echo "=== filebeat ==="
+      echo "  service: $(systemctl is-active filebeat 2>&1)"
+      if [ -r /etc/filebeat/filebeat.yml ]; then
+        grep -E '^[[:space:]]*(hosts|protocol|username|paths?|ssl\.[a-z_]+):' /etc/filebeat/filebeat.yml \
+          | grep -vi password | sed 's/^/  /'
+      else
+        echo "  /etc/filebeat/filebeat.yml not present"
+      fi
+      if command -v filebeat >/dev/null 2>&1; then
+        echo "  keystore keys: $(filebeat keystore list 2>/dev/null | paste -sd, -)"
+      fi
+      echo "=== wazuh-indexer ==="
+      echo "  service: $(systemctl is-active wazuh-indexer 2>&1)"
+      echo "  certs: $(ls /etc/wazuh-indexer/certs /etc/filebeat/certs 2>/dev/null | paste -sd' ' -)"
+      q='rule.id:(100100 OR 100101 OR 100102 OR 100103)'
+      for pair in "/etc/wazuh-indexer/certs/admin.pem /etc/wazuh-indexer/certs/admin-key.pem" \
+                  "/etc/filebeat/certs/filebeat.pem /etc/filebeat/certs/filebeat-key.pem"; do
+        set -- $pair
+        if [ -r "$1" ] && [ -r "$2" ]; then
+          out=$(curl -sk --max-time 15 -w ' HTTP=%{http_code}' --cert "$1" --key "$2" \
+                -G --data-urlencode "q=$q" "https://127.0.0.1:9200/wazuh-alerts-*/_count")
+          echo "  PUC2 alerts in wazuh-alerts-* asked with $1: $(printf '%s' "$out" | head -c 300)"
+        else
+          echo "  not readable, not asked: $1"
+        fi
+      done
+    executable: /bin/bash
+  register: puc2_pf_indexer_probe
+  changed_when: false
+  failed_when: false
+
+- name: Show how alerts reach the indexer
+  ansible.builtin.debug:
+    var: puc2_pf_indexer_probe.stdout_lines
+
 - name: GATE — NG-SIEM can produce every answer that depends on it
   ansible.builtin.assert:
     that:

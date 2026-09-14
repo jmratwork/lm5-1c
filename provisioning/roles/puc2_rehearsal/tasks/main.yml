@@ -23,9 +23,9 @@
 # - puc2_rehearsal_enabled=false skips it cleanly, for a smoke deploy.
 # - block/rescue/always: cleanup runs whether the chain passes, fails, or errors.
 # - Tasks are guarded by inventory_hostname; the manager-side checks run on
-#   ng-siem, the endpoint side on victim. No task touches docker-server; it is
-#   in the play only so the trailing preflight re-run (added in a later change)
-#   can reprove all three hosts.
+#   ng-siem, the endpoint side on victim. On docker-server the drill snapshots
+#   CICMS before firing and deletes the cases custom-iris created for its
+#   alerts afterwards; the trailing preflight re-run reproves all three hosts.
 #
 # The full-pristine completion (baseline restart, credential restore, alerts.log
 # purge) and the preflight re-run land in the next change on this branch; the
@@ -87,6 +87,55 @@
       ansible.builtin.set_fact:
         puc2_reh_alerts_json_offset: "{{ puc2_reh_alerts_json_before.stat.size | default(0) }}"
       when: inventory_hostname == 'ng-siem'
+
+    # ── Snapshot CICMS so the cases the drill creates can be removed later ───
+    # Every alert this drill raises reaches DFIR-IRIS as a case, through the
+    # custom-iris integration. On 2026-09-14 12:30 cleanup left [100101],
+    # [100102] and [100103] "... on victim615" in CICMS: case_lookup.sh, the
+    # helper L14 sends trainees to, printed the L10 answer before anyone had
+    # fired anything. Worse, custom-iris deduplicates on a soc_id that is the
+    # same for every run of this scenario, so a trainee's own attack would then
+    # create no case at all, and L25's timeline would carry the drill's times.
+    # The highest case id recorded here lets cleanup remove exactly what came
+    # after it. A snapshot that cannot be taken is not a broken chain: it only
+    # means cleanup deletes nothing and the preflight gate judges what is left.
+    - name: Resolve the CICMS credentials for the case snapshot
+      ansible.builtin.include_role:
+        name: puc2_keys
+      when: inventory_hostname == 'docker-server'
+
+    - name: List the CICMS cases before the injection
+      ansible.builtin.uri:
+        url: "{{ puc2_iris_url }}/manage/cases/list"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ puc2_iris_api_key }}"
+          Content-Type: "application/json"
+        return_content: true
+        validate_certs: false
+        status_code: [200]
+        timeout: 30
+      register: puc2_reh_cases_before
+      no_log: true
+      failed_when: false
+      retries: 5
+      delay: 6
+      until: puc2_reh_cases_before.status | default(0) == 200
+      when: inventory_hostname == 'docker-server'
+
+    # Rows sit at .data or .data.data depending on the IRIS version, exactly as
+    # cicms_2c/find_case.yml handles them.
+    - name: Remember the highest CICMS case id before the injection
+      ansible.builtin.set_fact:
+        puc2_reh_case_max_id: >-
+          {{ ((puc2_reh_cases_before.json.data.data
+               | default(puc2_reh_cases_before.json.data, true)
+               | default([], true))
+              | selectattr('case_id', 'defined')
+              | map(attribute='case_id') | map('int') | list + [0]) | max }}
+      when:
+        - inventory_hostname == 'docker-server'
+        - puc2_reh_cases_before.status | default(0) == 200
 
     # ── Fire the scenario (victim) ───────────────────────────────────────────
     # Synchronous: the script returns after stage 4 (~3 x stage_pause seconds).
@@ -449,11 +498,13 @@
     # any agent wrote during the rehearsal window is dropped too. The byte count
     # removed is recorded for the report.
     #
-    # alerts.json is deliberately NOT truncated the same way. On a Wazuh stack
-    # its reader is Filebeat, feeding the indexer, and Filebeat tracks a byte
-    # offset: a file that shrinks under it is read again from the start, so
-    # every earlier alert would be indexed twice. The link checks do not need it
-    # purged either - they only read what was appended after their offset.
+    # alerts.json is deliberately NOT truncated the same way. The working
+    # assumption is that Filebeat ships it to the indexer and tracks a byte
+    # offset, so a file that shrinks under it would be read again from the
+    # start and every earlier alert indexed twice. That assumption is NOT yet
+    # verified on this image: the ng-siem preflight probe reports whether
+    # Filebeat runs and how many PUC2 alerts the indexer holds. The link checks
+    # do not need the file purged either - they only read past their offset.
     - name: Measure alerts.log before the purge
       ansible.builtin.stat:
         path: "{{ puc2_rehearsal_alerts_log }}"
@@ -477,14 +528,104 @@
              - (puc2_reh_alerts_offset | default(0) | int) }}
       when: inventory_hostname == 'ng-siem'
 
+    # ── CICMS: remove the cases this drill made custom-iris create ───────────
+    # integratord posts each alert to IRIS within seconds, so the last ones are
+    # given time to land before listing. A case raised later still (the active
+    # response's background update run can raise dpkg alerts minutes on) would
+    # survive; such cases carry no graded answer, and the preflight gate fails
+    # the build if any PUC2 rule case is left behind.
+    - name: Let custom-iris finish posting the drill's alerts
+      ansible.builtin.wait_for:
+        timeout: "{{ puc2_rehearsal_case_settle }}"
+      when:
+        - inventory_hostname == 'docker-server'
+        - puc2_reh_case_max_id is defined
+
+    - name: List the CICMS cases after the drill
+      ansible.builtin.uri:
+        url: "{{ puc2_iris_url }}/manage/cases/list"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ puc2_iris_api_key }}"
+          Content-Type: "application/json"
+        return_content: true
+        validate_certs: false
+        status_code: [200]
+        timeout: 30
+      register: puc2_reh_cases_after
+      no_log: true
+      failed_when: false
+      retries: 5
+      delay: 6
+      until: puc2_reh_cases_after.status | default(0) == 200
+      when:
+        - inventory_hostname == 'docker-server'
+        - puc2_reh_case_max_id is defined
+
+    # Ids as a comma-joined STRING, not a list: a folded-scalar set_fact is not
+    # guaranteed to hand back a native list (see puc2_preflight/tasks/ng_siem.yml).
+    - name: Pick the cases created after the snapshot
+      ansible.builtin.set_fact:
+        puc2_reh_new_case_ids: >-
+          {{ (puc2_reh_cases_after.json.data.data
+              | default(puc2_reh_cases_after.json.data, true)
+              | default([], true))
+             | selectattr('case_id', 'defined')
+             | selectattr('case_id', 'gt', puc2_reh_case_max_id | int)
+             | map(attribute='case_id') | map('string') | join(',') }}
+      when:
+        - inventory_hostname == 'docker-server'
+        - puc2_reh_case_max_id is defined
+        - puc2_reh_cases_after.status | default(0) == 200
+
+    # POST /manage/cases/delete/<id> is the route in iris-web v2.4.29 and on
+    # master alike (blueprints manage_cases_routes.py).
+    - name: Delete the cases the drill created
+      ansible.builtin.uri:
+        url: "{{ puc2_iris_url }}/manage/cases/delete/{{ item }}"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ puc2_iris_api_key }}"
+          Content-Type: "application/json"
+        body_format: json
+        body: {}
+        return_content: true
+        validate_certs: false
+        status_code: [200]
+        timeout: 60
+      loop: "{{ (puc2_reh_new_case_ids | default('')).split(',') | select | list }}"
+      register: puc2_reh_case_delete
+      no_log: true
+      failed_when: false
+      when: inventory_hostname == 'docker-server'
+
+    - name: Count the CICMS cases actually deleted
+      ansible.builtin.set_fact:
+        puc2_reh_cases_targeted: "{{ (puc2_reh_new_case_ids | default('')).split(',') | select | list | length }}"
+        puc2_reh_cases_deleted: >-
+          {{ puc2_reh_case_delete.results | default([])
+             | selectattr('status', 'defined') | selectattr('status', 'equalto', 200)
+             | list | length }}
+      when: inventory_hostname == 'docker-server'
+
+    # One message per host, saying what was done THERE. This used to print the
+    # victim's containment rollback for every host that was not ng-siem, so the
+    # log claimed a quarantine had been emptied on docker-server.
     - name: Report the cleanup outcome
       ansible.builtin.debug:
         msg: >-
           Cleanup done on {{ inventory_hostname }}.
           {% if inventory_hostname == 'ng-siem' %}Purged
           {{ puc2_reh_alerts_purged_bytes | default(0) }} bytes of rehearsal
-          alerts.{% else %}Containment rolled back, sinkhole and baseline
-          restored, quarantine emptied, markers removed.{% endif %}
+          alerts from alerts.log.{% elif inventory_hostname == 'docker-server' %}{% if puc2_reh_case_max_id is defined %}Deleted
+          {{ puc2_reh_cases_deleted | default(0) }} of
+          {{ puc2_reh_cases_targeted | default(0) }} CICMS case(s) created after
+          case id {{ puc2_reh_case_max_id }}
+          ({{ puc2_reh_new_case_ids | default('') or 'none' }}).{% else %}CICMS
+          was not snapshotted before the drill, so no case was deleted; the
+          preflight gate reports any PUC2 case left behind.{% endif %}{% else %}Containment
+          rolled back, sinkhole and baseline restored, quarantine emptied,
+          markers removed.{% endif %}
 
   # ── Report — written once, from the controller, before anything can fail ────
   # Evidence is split across hosts (alert lines on ng-siem, markers on victim),

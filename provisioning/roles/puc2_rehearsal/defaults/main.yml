@@ -63,6 +63,10 @@ puc2_rehearsal_alert_delay: 10
 puc2_rehearsal_marker_retries: 30
 puc2_rehearsal_marker_delay: 10
 
+# Seconds cleanup waits for custom-iris to post the drill's last alerts to CICMS
+# before it lists and deletes the cases created after the pre-drill snapshot.
+puc2_rehearsal_case_settle: 20
+
 # Seconds between injection stages, passed through to inject_scenario.sh. The
 # default (20) is well inside the 600 s correlation window; lowered only if a
 # rehearsal needs to run faster, never raised past ~180.

@@ -70,6 +70,10 @@
     for dm in gdm3 gdm sddm lightdm xrdp; do
       systemctl is-enabled "$dm" >/dev/null 2>&1 && echo "  display-manager enabled: $dm"
     done
+    # The last command sets the exit code, and a display manager that is not
+    # installed made it 4 on every healthy run. End on true: rc now only means
+    # the probe itself ran; the facts below decide the verdict.
+    true
   args:
     executable: /bin/bash
   register: puc2_pf_desktop
