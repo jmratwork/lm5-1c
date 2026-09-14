@@ -152,6 +152,22 @@
          | select('search', '1001(00|01|02|03)')
          | join(' / ') }}
 
+# A rule can load cleanly, survive every warning check above, and still never
+# match, because it names a field analysisd does not have. Rule 100101 did
+# exactly that until 2026-09-14: `<list field="md5_after">`. The alert JSON
+# prints FIM values as md5_after, sha256_after, size_after..., but those are
+# output names only - the FIM decoder fields analysisd matches on are md5,
+# sha256, size (decoders/syscheck.c). No decoder in the ruleset names a field
+# *_after, so any such name in a PUC2 rule is a lookup that can never resolve.
+# Only the rehearsal could catch it at runtime, since no logtest line can
+# synthesise a syscheck event; this catches it from the file.
+- name: Find PUC2 rule fields named like alert output rather than decoder fields
+  ansible.builtin.set_fact:
+    puc2_pf_after_fields: >-
+      {{ puc2_pf_rules.content | b64decode
+         | regex_findall('(?:field|name)="([A-Za-z0-9_]+_after)"')
+         | unique | join(', ') }}
+
 # ── The agent side of the same blind spot ───────────────────────────────────
 # Rules 100100 -> 100101 -> 100103 are fed by the victim agent's FIM telemetry.
 # Nothing in the 2026-09-10 build asked the MANAGER whether that agent had ever
@@ -261,6 +277,8 @@
       # ...and it must not have QUIETLY DISCARDED any of the four. A rule
       # analysisd refused is a level with no evidence behind it.
       - puc2_pf_rule_warnings | length == 0
+      # ...and none of them may key on a field name analysisd never produces.
+      - puc2_pf_after_fields | length == 0
       # The FIM telemetry 100100/100101/100103 are built on has to be arriving:
       # an agent that never enrolled leaves L10 with no alert to read. Enrolment
       # is decidable from client.keys, which always exists.
@@ -310,6 +328,11 @@
          else '(none)' }}
       (any of these means analysisd DISCARDED that rule — the level behind it has
       no evidence);
+      rule fields named like alert output instead of decoder fields:
+      {{ puc2_pf_after_fields if (puc2_pf_after_fields | default('') | length > 0)
+         else '(none)' }}
+      (e.g. md5_after: the FIM decoder field is md5, so such a rule loads and
+      never matches);
       an agent other than the manager is enrolled:
       {{ puc2_pf_agent_enrolled | default(false) }},
       reporting Active: {{ puc2_pf_agent_active | default(false) }}

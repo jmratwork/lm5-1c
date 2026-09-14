@@ -82,7 +82,7 @@ added no selectivity.
 | L5 | `invoice.exe` | lure has `<a href="…/invoice.exe">invoice.exe</a>` written to `/var/mail/victim`; gate now checks the rendered mail, not just that the spool is non-empty |
 | L8 | `44d886…b02f` | payload generated from the EICAR string, hash **checked against the IOC at provision time with a hard fail**; `/opt/puc2/invoice.exe` is *not* in the quarantine sweep, so the level's "always present" fallback holds |
 | L9 | `T1566.001` | tag on the MISP event; read back live by the gate |
-| L10 | `100101` | 100100 (`if_sid 550,554` + `.exe`) → 100101 (`md5_after` in the CDB list); FIM is `realtime="yes" check_all="yes"` on both drop directories, so events arrive in seconds |
+| L10 | `100101` | 100100 (`if_sid 550,554` + `.exe`) → 100101 (FIM decoder field `md5` in the CDB list — **not** `md5_after`, which is only the alert-JSON name; keyed on it the rule never matched until 2026-09-14); FIM is `realtime="yes" check_all="yes"` on both drop directories, so events arrive in seconds |
 | L11 | `targeted` | conceptual; evidence = 100103 + 100102 — **100102 was dead, now fixed** |
 | L14 | `CASE-PUC2-2C` | case matched on its `case_soc_id` field |
 | L15 | `c2.puc2-training.lab` | domain IOC on the event |

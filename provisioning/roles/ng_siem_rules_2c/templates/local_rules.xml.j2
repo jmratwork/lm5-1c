@@ -39,10 +39,17 @@
   </rule>
 
   <!-- File hash present on the CTI/IOC watchlist seeded from CTI-SS (MISP).
-       syscheck exposes the post-change hash as md5_after. -->
+
+       The field is md5, NOT md5_after. The alert JSON prints the new hash as
+       syscheck.md5_after, but that is output naming only: analysisd names the
+       FIM decoder field md5 (FIM_MD5 in decoders/syscheck.c, Wazuh 4.4.0), and
+       a list lookup on a named field resolves it by that name. Keyed on
+       md5_after the lookup found no field at all, so this rule never matched,
+       while 100100 above, keyed on the decoder name file, fired normally
+       (rehearsal of 2026-09-14 11:48). -->
   <rule id="100101" level="12">
     <if_sid>100100</if_sid>
-    <list field="md5_after" lookup="match_key">etc/lists/cti-malware-hashes</list>
+    <list field="md5" lookup="match_key">etc/lists/cti-malware-hashes</list>
     <description>PUC2: file hash matches CTI-SS malware IOC - MALWARE DETECTED</description>
     <mitre>
       <id>T1566</id>
