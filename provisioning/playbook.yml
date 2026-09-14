@@ -129,6 +129,25 @@
 # on the endpoint. The node still gets the `all` role and sandbox-logging, which
 # is where its rsyslog fix lives.
 
+# =============================================================================
+# The second of the two overlay plays that run AHEAD of a substrate role, for
+# the same reason as the clock play at the top: it must be in place before the
+# substrate acts. roles/victim installs "latest Wazuh agent" with no version;
+# this pins apt to the manager's version first, so that untouched task installs
+# an agent the manager accepts. roles/puc2_agent_pin explains why a pin and not
+# a downgrade afterwards (67cb586 tried that, and the agent never started).
+#
+# After "Configuring NG-SIEM", because it reads the version off the manager.
+# =============================================================================
+- name: PUC2 2c — pin the endpoint's Wazuh agent to the manager's version
+  hosts: victim
+  become: true
+  gather_facts: false
+  vars_files:
+    - group_vars/puc2_2c.yml
+  roles:
+    - puc2_agent_pin
+
 - name: Configuring victim PC
   hosts: victim
   become: yes
@@ -159,10 +178,12 @@
 # PUC2 (CYNET) — Sub Case 2c overlay
 # -----------------------------------------------------------------------------
 # Everything above this line is the ng-soc-ansible@integrations substrate —
-# with ONE exception, the one-clock play at the very top, which is ours. It
-# leads the file rather than the overlay because a clock corrected after the
-# substrate has written by it leaves a seam in the logs; it touches nothing
-# else. Everything below is the ADDITIVE scenario overlay: it never modifies a
+# with TWO exceptions, both ours. The one-clock play at the very top leads the
+# file because a clock corrected after the substrate has written by it leaves a
+# seam in the logs. The agent-pin play just before "Configuring victim PC" sits
+# there because apt must see the pin before the substrate installs the Wazuh
+# agent. Neither touches anything else. Everything below is the ADDITIVE
+# scenario overlay: it never modifies a
 # substrate role and it always runs AFTER them, so the MISP / custom-iris
 # integrations injected into ossec.conf by the ng-siem role are already in place
 # (the overlay uses distinct blockinfile markers).

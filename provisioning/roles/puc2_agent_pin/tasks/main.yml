@@ -1,0 +1,65 @@
+---
+# =============================================================================
+# role: puc2_agent_pin    (host: victim — its own play BEFORE roles/victim, and
+#                          included again by lab_endpoint_2c)
+#
+# Makes the substrate's untouched "Install latest Wazuh agent" task install the
+# agent at the version the NG-SIEM manager runs, by pinning it in apt BEFORE
+# that task runs. An agent newer than its manager enrols on 1515 and is then
+# refused on 1514 (2026-09-14 07:32: agent 4.14.7, manager 4.4.0, `Never
+# connected`).
+#
+# WHY A PIN AND NOT A DOWNGRADE. 67cb586 let the substrate install 4.14.7 and
+# downgraded it in place afterwards. The 2026-09-14 11:02 deploy showed that
+# cannot work. The 4.4.0 preinst saves the existing ossec.conf and its postinst
+# restores it, so the agent kept the file 4.14.7 had generated. That file's
+# syscollector block carries <users>, <groups>, <services> and
+# <browser_extensions> (generic/wodle-syscollector.template in the 4.14.7
+# package), and 4.4.0's wm_sys_read answers an unknown tag with "No such tag"
+# and OS_INVALID: wazuh-agent never started again. A purge and a clean
+# re-enrolment is no way out either: with authd's default <force> settings
+# (disconnected 1h, 1h since registration) the manager refuses the same agent
+# name minutes after the first registration.
+#
+# Pinned first, the only package ever installed is the right one: it generates
+# its own ossec.conf and enrols once.
+# =============================================================================
+
+# Read from the manager rather than hardcoded, so a future siemng image moves
+# the agent with it.
+- name: Read the Wazuh version the NG-SIEM manager runs
+  ansible.builtin.shell:
+    cmd: |
+      { /var/ossec/bin/wazuh-control info 2>/dev/null
+        /var/ossec/bin/wazuh-analysisd -V 2>&1
+      } | grep -aoE 'v?[0-9]+\.[0-9]+\.[0-9]+' | head -1 | sed 's/^v//'
+    executable: /bin/bash
+  delegate_to: ng-siem
+  register: puc2_manager_version
+  changed_when: false
+  failed_when: puc2_manager_version.stdout | trim is not match('^[0-9]+\.[0-9]+\.[0-9]+$')
+
+- name: Choose the agent package version to pin
+  ansible.builtin.set_fact:
+    puc2_agent_target_version: >-
+      {{ puc2_wazuh_agent_version
+         if (puc2_wazuh_agent_version | default('') | length > 0)
+         else (puc2_manager_version.stdout | trim) ~ '-1' }}
+
+# Priority 1001 makes this version the apt candidate even though the 4.x
+# repository offers newer ones, which is exactly what the substrate's
+# version-less `apt: name=wazuh-agent state=present` then installs. It is read
+# when apt runs, so it takes effect even though the Wazuh repository is only
+# added later, by roles/victim.
+- name: Pin wazuh-agent to that version before the substrate installs it
+  ansible.builtin.copy:
+    dest: /etc/apt/preferences.d/wazuh-agent
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      # Managed by Ansible (role puc2_agent_pin). The NG-SIEM manager runs Wazuh
+      # {{ puc2_manager_version.stdout | trim }}; an agent newer than its manager is refused.
+      Package: wazuh-agent
+      Pin: version {{ puc2_agent_target_version }}
+      Pin-Priority: 1001

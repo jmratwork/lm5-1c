@@ -1,0 +1,8 @@
+---
+# role: puc2_agent_pin
+# Fallbacks only. The authoritative value lives in group_vars/puc2_2c.yml.
+#
+# Empty: pin the agent to the version the NG-SIEM manager runs. Set a full
+# package version (e.g. "4.4.0-1") to pin that instead; lab_endpoint_2c still
+# fails if it is newer than the manager.
+puc2_wazuh_agent_version: ""

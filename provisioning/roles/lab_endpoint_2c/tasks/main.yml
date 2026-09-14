@@ -4,10 +4,10 @@
 #
 # ADDITIVE OVERLAY. The substrate's `victim` role already installs and enrols
 # the Wazuh agent against hostvars['ng-siem'].ng_siem_internal_ip — this role
-# NEVER re-enrols it. The one thing it changes about the agent is its PACKAGE
-# VERSION, pinned to the manager's (see "Agent version" below), because the
-# substrate installs the newest agent and the siemng manager is older. On top
-# of that it adds what Sub Case 2c needs:
+# NEVER reinstalls or re-enrols it. The agent's version is fixed BEFORE the
+# substrate installs it, by puc2_agent_pin; this role only re-asserts that pin
+# and gates on the result (see "Agent version" below). On top of that it adds
+# what Sub Case 2c needs:
 #
 #   UML step 3  - FIM on the victim's Downloads dir so the payload drop emits
 #                 the file-hash telemetry rules 100100/100101 correlate
@@ -24,89 +24,53 @@
   failed_when: not puc2_agent_conf.stat.exists
 
 # ── Agent version: never newer than the manager ──────────────────────────────
-# The substrate installs "latest Wazuh agent" from the 4.x repository, with no
-# version. On 2026-09-14 that was 4.14.7, while the siemng image runs manager
-# 4.4.0 — and Wazuh only guarantees compatibility when the manager is at least
-# as new as the agent. Enrolment on 1515 still succeeded, so client.keys had an
-# entry and every endpoint-side check was green, but the manager closed each
-# connection on 1514: `Never connected`, no FIM telemetry, no 100101, no
-# 100103, no containment. Four graded levels and the whole rehearsal, lost to
-# an unpinned package.
+# The substrate installs "latest Wazuh agent" with no version. On 2026-09-14 that
+# was 4.14.7 against the siemng manager's 4.4.0, and Wazuh only guarantees
+# compatibility when the manager is at least as new as the agent. Enrolment on
+# 1515 still worked, then the manager closed every connection on 1514: `Never
+# connected`, no FIM telemetry, no 100101, no 100103, no containment.
 #
-# The fix lives here and not in roles/victim, which is vendored substrate kept
-# byte-identical. The version is READ from the manager rather than hardcoded,
-# so a future siemng image moves the agent with it; puc2_wazuh_agent_version
-# overrides that when a specific package build is wanted.
-- name: Read the Wazuh version the NG-SIEM manager runs
-  ansible.builtin.shell:
-    cmd: |
-      { /var/ossec/bin/wazuh-control info 2>/dev/null
-        /var/ossec/bin/wazuh-analysisd -V 2>&1
-      } | grep -aoE 'v?[0-9]+\.[0-9]+\.[0-9]+' | head -1 | sed 's/^v//'
-    executable: /bin/bash
-  delegate_to: ng-siem
-  register: puc2_manager_version
-  changed_when: false
-  failed_when: puc2_manager_version.stdout | trim is not match('^[0-9]+\.[0-9]+\.[0-9]+$')
+# puc2_agent_pin fixes that BEFORE the substrate installs anything, in its own
+# play ahead of roles/victim. It is included again here so this role stands on
+# its own and has the manager version for the gate. What this role deliberately
+# no longer does is DOWNGRADE a newer agent in place: the downgrade keeps the
+# newer ossec.conf, which the older agent refuses to start on (see
+# puc2_agent_pin). A host that reaches this point with the wrong version fails
+# the gate instead, and the remedy is a fresh sandbox, not a repair.
+- name: Re-assert the agent pin and read the manager version
+  ansible.builtin.include_role:
+    name: puc2_agent_pin
 
-- name: Read the Wazuh agent version the substrate installed
+- name: Read the Wazuh agent version installed
   ansible.builtin.command:
     argv: [dpkg-query, --show, "--showformat=${Version}", wazuh-agent]
-  register: puc2_agent_pkg_before
+  register: puc2_agent_pkg
   changed_when: false
 
-- name: Choose the agent package version to run
-  ansible.builtin.set_fact:
-    puc2_agent_target_version: >-
-      {{ puc2_wazuh_agent_version
-         if (puc2_wazuh_agent_version | default('') | length > 0)
-         else (puc2_manager_version.stdout | trim) ~ '-1' }}
+- name: GATE — the agent is the pinned version, not newer than the manager
+  ansible.builtin.assert:
+    that:
+      - puc2_agent_pkg.stdout | trim == puc2_agent_target_version
+      - >-
+        (puc2_agent_pkg.stdout | trim | regex_replace('-.*$', ''))
+        is version(puc2_manager_version.stdout | trim, '<=')
+    fail_msg: >-
+      wazuh-agent is {{ puc2_agent_pkg.stdout | trim }}, but the pin says
+      {{ puc2_agent_target_version }} and the manager runs
+      {{ puc2_manager_version.stdout | trim }}. Either the pin play ahead of
+      roles/victim did not take effect and the substrate installed an unpinned
+      agent, or puc2_wazuh_agent_version names a version newer than the manager.
+      Do NOT downgrade in place - the older agent will not start on the newer
+      ossec.conf. Check /etc/apt/preferences.d/wazuh-agent and
+      `apt-cache policy wazuh-agent` on victim, then deploy a fresh sandbox.
+    success_msg: >-
+      wazuh-agent {{ puc2_agent_pkg.stdout | trim }} against manager
+      {{ puc2_manager_version.stdout | trim }}, installed at the pinned version.
 
-# allow_downgrade: every range built so far already carries the newer agent.
-# The package keeps client.keys and ossec.conf across the downgrade; the FIM
-# block below is written AFTER it, so no maintainer script can drop it.
-- name: Align the Wazuh agent with the manager's version
-  ansible.builtin.apt:
-    name: "wazuh-agent={{ puc2_agent_target_version }}"
-    state: present
-    allow_downgrade: true
-    allow_change_held_packages: true
-  environment:
-    # The values the substrate installed with, so a maintainer script that reads
-    # them finds the manager the agent is already enrolled against.
-    WAZUH_MANAGER: "{{ puc2_ng_siem_ip }}"
-    WAZUH_REGISTRATION_SERVER: "{{ puc2_ng_siem_ip }}"
-  when: puc2_agent_pkg_before.stdout | trim != puc2_agent_target_version
-  notify: restart wazuh-agent
-
-- name: Hold the agent there so no apt upgrade brings the mismatch back
+- name: Hold the agent there so no apt upgrade moves it
   ansible.builtin.dpkg_selections:
     name: wazuh-agent
     selection: hold
-
-- name: Read back the agent version now installed
-  ansible.builtin.command:
-    argv: [dpkg-query, --show, "--showformat=${Version}", wazuh-agent]
-  register: puc2_agent_pkg_after
-  changed_when: false
-
-- name: GATE — the agent is not newer than the manager
-  ansible.builtin.assert:
-    that:
-      - puc2_agent_pkg_after.stdout | trim == puc2_agent_target_version
-      - >-
-        (puc2_agent_pkg_after.stdout | trim | regex_replace('-.*$', ''))
-        is version(puc2_manager_version.stdout | trim, '<=')
-    fail_msg: >-
-      wazuh-agent is {{ puc2_agent_pkg_after.stdout | trim }} (the substrate
-      installed {{ puc2_agent_pkg_before.stdout | trim }}), target
-      {{ puc2_agent_target_version }}, manager {{ puc2_manager_version.stdout | trim }}.
-      An agent newer than its manager enrols and is then refused on 1514, so
-      NG-SIEM receives no FIM telemetry and rules 100101/100103 never fire.
-    success_msg: >-
-      wazuh-agent {{ puc2_agent_pkg_after.stdout | trim }} against manager
-      {{ puc2_manager_version.stdout | trim }} (the substrate had installed
-      {{ puc2_agent_pkg_before.stdout | trim }}).
 
 # ── The account that "receives" the phishing email ───────────────────────────
 - name: Create the victim user account
@@ -142,7 +106,7 @@
         <log_format>syslog</log_format>
         <location>/var/log/kern.log</location>
       </localfile>
-  notify: restart wazuh-agent
+  register: puc2_fim_block
 
 # ── Pre-staged firewall rule producing that telemetry (UML step 6) ───────────
 # Installed BEFORE the exercise so the payload's C2 beacon is blocked AND
@@ -170,7 +134,6 @@
 
       [Install]
       WantedBy=multi-user.target
-  notify: restart wazuh-agent
 
 - name: Enable and start the baseline egress filter
   ansible.builtin.systemd:
@@ -202,7 +165,7 @@
     owner: root
     group: wazuh
     mode: '0750'
-  notify: restart wazuh-agent
+  register: puc2_ar_script
 
 - name: Ensure iptables is available for the containment action
   ansible.builtin.apt:
@@ -210,8 +173,62 @@
     state: present
     update_cache: false
 
-- name: Apply the endpoint configuration now
-  ansible.builtin.meta: flush_handlers
+# ── Start the agent on its configuration, and keep the reason if it will not ─
+# This used to be a handler, flushed here. On 2026-09-14 11:02 that handler
+# failed with "control process exited with error code" and nothing more: a
+# failing handler ends the host before any diagnostic task can run, and as the
+# only host of this play it took the whole playbook with it. A task inside a
+# block can be rescued, so the reason is collected where the failure happens.
+#
+# Restarted when the configuration it reads changed (the FIM block in ossec.conf
+# or the active-response script), otherwise only made sure to be running. The
+# egress-filter unit used to trigger a restart too; the agent never reads it.
+- name: Start the Wazuh agent on its configuration
+  block:
+    - name: Restart the agent if its configuration changed, else ensure it runs
+      ansible.builtin.systemd:
+        name: wazuh-agent
+        state: "{{ 'restarted' if (puc2_fim_block is changed or puc2_ar_script is changed) else 'started' }}"
+        enabled: true
+        daemon_reload: true
+  rescue:
+    - name: Collect why wazuh-agent will not start
+      ansible.builtin.shell:
+        cmd: |
+          set +e
+          echo "=== package ==="
+          dpkg-query --show wazuh-agent 2>&1
+          echo "=== systemctl status wazuh-agent ==="
+          systemctl status wazuh-agent --no-pager -l 2>&1 | tail -25
+          echo "=== journalctl -u wazuh-agent, last 50 lines ==="
+          journalctl -u wazuh-agent --no-pager -n 50 2>&1
+          echo "=== agent ossec.log, today, errors only ==="
+          out=$(grep -a "$(date '+%Y/%m/%d')" /var/ossec/logs/ossec.log 2>/dev/null \
+            | grep -aiE 'error|critical|invalid|no such tag' | tail -30)
+          if [ -n "$out" ]; then echo "$out"; else echo "  (nothing from today)"; fi
+          echo "=== configuration test, wazuh-agentd -t ==="
+          /var/ossec/bin/wazuh-agentd -t 2>&1 | tail -15
+          echo "=== configuration test, wazuh-modulesd -t ==="
+          /var/ossec/bin/wazuh-modulesd -t 2>&1 | tail -15
+        executable: /bin/bash
+      register: puc2_agent_start_diag
+      changed_when: false
+      failed_when: false
+
+    - name: Show why wazuh-agent will not start
+      ansible.builtin.debug:
+        var: puc2_agent_start_diag.stdout_lines
+
+    - name: FAIL with the reason wazuh-agent will not start
+      ansible.builtin.fail:
+        msg: >-
+          wazuh-agent did not start on victim
+          ({{ ansible_failed_result.msg | default('no message') }}). The block
+          above holds systemd, the journal, the agent log and a configuration
+          test from both daemons: a "No such tag" or "Invalid element" line means
+          ossec.conf carries options this agent version does not know. Without a
+          running agent NG-SIEM gets no FIM telemetry, and levels L10, L11, L19
+          and L21 have nothing behind them.
 
 # ═════════════════════════════════════════════════════════════════════════════
 # IS THE AGENT ACTUALLY TALKING TO THE MANAGER?
@@ -355,7 +372,7 @@
         or not puc2_agent_control_bin.stat.exists
     fail_msg: >-
       The victim agent (ID '{{ puc2_agent_id.stdout | trim }}', wazuh-agent
-      {{ puc2_agent_pkg_after.stdout | trim }}) is not Active on the manager
+      {{ puc2_agent_pkg.stdout | trim }}) is not Active on the manager
       (Wazuh {{ puc2_manager_version.stdout | trim }}) after
       {{ (puc2_agent_connect_retries | int) * (puc2_agent_connect_delay | int) }} s.
       Without it NG-SIEM gets no FIM telemetry: L10 has no alert, 100103 never
