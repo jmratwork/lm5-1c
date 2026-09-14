@@ -13,8 +13,9 @@
 # encrypt it with ansible-vault) if a pre-seeded key is ever genuinely needed.
 iris_bootstrap_api_key: "{{ vault_iris_bootstrap_key | default('') }}"
 
-# ── Which revision of misp-docker to build ───────────────────────────────────
-# PINNED, after `master` broke three deployments in a row with one restructure:
+# ── Which revision of misp-docker to build, and which images to run ──────────
+# PINNED - the clone AND its images - after `master` broke three deployments in a
+# row with one restructure:
 #
 #   compose variables renamed   ~130 warnings drowning every build log
 #   CORE_*_PORT -> NGINX_*_PORT MISP published on :443, the project used :8443
@@ -23,14 +24,36 @@ iris_bootstrap_api_key: "{{ vault_iris_bootstrap_key | default('') }}"
 # None was predictable from the one before it, each cost a deploy, and each
 # surfaced the same way: HTTP -1, eight plays downstream.
 #
-# This is the revision the 2026-09-10 13:51 build cloned - the first run in which
-# docker-server finished with failed=0, MISP included. Upstream had already moved
-# past it 32 minutes later (6e3f19b), which is the argument in miniature.
+# The first pin (5fe2022) fixed only the clone. The compose file pulls its images
+# by TAG - `latest` unless CORE_RUNNING_TAG says otherwise - and on 2026-09-11
+# 12:52 upstream CI rebuilt `latest`, and the version tag v2.5.46 with it, from
+# e8b11b9. A ghcr tag is a moving label: the 2026-09-14 deploy ran a 5fe2022
+# compose file against images built two commits later. Both halves now come from
+# ONE commit - the clone by sha, every image by digest, the images written into
+# docker-compose.override.yml by the role.
 #
-# TO BUMP IT: set this to a newer sha, deploy, and confirm docker-server still
-# ends failed=0 and the MISP HTTPS gate still passes. Do not move it to a branch
-# name - a training range wants the build it was tested with, not the newest one.
-misp_docker_version: "5fe20225a92d8143ebf16a7e7d208135252bada1"
+# e8b11b9 is upstream's own coherent pairing, but NOT yet proven end to end here.
+# Against 5fe2022 it changes only nginx/files/01-listen.sh, nginx/files/04-ssl.sh
+# and one healthcheck interval, and both nginx changes enforce what this role
+# already provides: cert.pem/key.pem present and an https BASE_URL.
+#
+# TO BUMP IT: choose a newer upstream commit. ghcr tags each image with that
+# commit's 7-character sha (misp-core:e8b11b9 and so on) - resolve each tag to its
+# digest, change the clone sha and all four digests together, deploy, and confirm
+# docker-server ends failed=0 and the MISP HTTPS gate passes. Never a branch name
+# or a version tag: a training range wants the build it was tested with.
+misp_docker_version: "e8b11b9dd85c81deb6f41679f350b95b110a1d45"
+misp_docker_images:
+  misp-core: "ghcr.io/misp/misp-docker/misp-core@sha256:cce037ef71c22457e65a1c75ab8bce07c3950ccd62a50694145a4fa530c7c16d"
+  misp-nginx: "ghcr.io/misp/misp-docker/misp-nginx@sha256:0df35c71ed517d165c42b641d3b804b2a1d58df918e6429b7eed144bab56afb1"
+  misp-modules: "ghcr.io/misp/misp-docker/misp-modules@sha256:22e9c6a7d925a8dac096ad2f13f7fc6fc956dfddcbf0dedc1837c4088956d4ab"
+  misp-guard: "ghcr.io/misp/misp-docker/misp-guard@sha256:7bece761bccb02fb949328028740176452530a67f1bfdf6db849feeefcf113d8"
+
+# How long misp-core may take to open php-fpm on 9002 before its healthcheck starts
+# counting failures. Upstream ships 60s. A passing probe ends the start period at
+# once, so this delays nothing when MISP is healthy; it only stops a slow first
+# boot from being reported as a broken one. See the override task for the why.
+misp_core_start_period: "600s"
 
 # ── Where MISP is published on the host ──────────────────────────────────────
 # The whole project addresses MISP at :8443 — group_vars/puc2_2c.yml, the
@@ -126,7 +149,7 @@ docker_hub_rate_limit_help: >-
 # both identical. All four tags answered HTTP 200 on the alternative registry.
 #
 # Re-tagging rather than rewriting the compose files is deliberate: all three
-# files are upstream artefacts (misp-docker cloned at master, NG-SOAR off the
+# files are upstream artefacts (misp-docker cloned from upstream, NG-SOAR off the
 # SMB share, dfir-iris-custom unzipped), and editing them means re-doing the
 # edit every time upstream moves. The local image cache is a supported way to
 # say "already have it" and needs no edit at all.

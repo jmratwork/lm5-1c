@@ -43,17 +43,24 @@ Sub Case 2c is layered on top as an **additive overlay** of `*_2c` roles that ru
 > | What changed | How it failed | Fixed by |
 > |---|---|---|
 > | Compose variables renamed | ~130 warnings drowning the log | pinning unset ones |
-> | `CORE_*_PORT` → `NGINX_*_PORT` | MISP published on :443, project addressed :8443 | writing both names |
+> | `CORE_*_PORT` → `NGINX_*_PORT` | MISP published on :443, project addressed :8443 | writing the `NGINX_*` names |
 > | `./ssl` moved to a **read-only** mount on a `read_only` container | no certificate → upstream disables SSL → nothing listens on 8443 | generating certs before the compose |
 >
 > Each cost a deploy that died eight plays later on `HTTP -1`. The role now
 > handles all three and asserts, right after the compose, that MISP *answers
 > HTTPS* — not merely that a port is bound, which `docker-proxy` makes true
-> whether or not anything is listening. And the clone is now **pinned** to
-> `5fe2022` — the revision of the first build in which `docker-server` finished
-> `failed=0`. Upstream had already moved past it 32 minutes later, which is the
-> argument in miniature. `misp_docker_version` in the role's defaults carries
-> the sha and the procedure for bumping it.
+> whether or not anything is listening.
+>
+> **Both halves are pinned, to one commit.** Pinning only the clone (`5fe2022`)
+> pinned half the build: the compose file pulls its images by tag, and upstream
+> CI rebuilt `latest` — and the version tag `v2.5.46` with it — two commits
+> later, so the 2026-09-14 deploy ran a compose file against images it had never
+> been tested with. The clone and every image now come from `e8b11b9`, the images
+> **by digest**, through a `docker-compose.override.yml` (upstream's own
+> `.gitignore` reserves that file for local adjustment). The same override gives
+> `misp-core` a 600 s start-up window, and the MISP rescue now records
+> `misp-core`'s own logs. `misp_docker_version` and `misp_docker_images` in the
+> role's defaults carry the pins and the procedure for bumping them.
 
 One substrate promise is worth singling out: `roles/victim` sets
 `WAZUH_MANAGER` at package-install time, so the agent enrols itself. Nothing

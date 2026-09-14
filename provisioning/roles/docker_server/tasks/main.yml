@@ -419,36 +419,22 @@
     dest: /opt/misp-docker/.env
     remote_src: yes
 
-- name: Change env http port for MISP
-  lineinfile:
-    path: /opt/misp-docker/.env
-    regexp: '^#?\s*CORE_HTTP_PORT='
-    line: "CORE_HTTP_PORT={{ misp_http_host_port }}"
-    state: present
-
-- name: Change env https port for MISP
-  lineinfile:
-    path: /opt/misp-docker/.env
-    regexp: '^#?\s*CORE_HTTPS_PORT='
-    line: "CORE_HTTPS_PORT={{ misp_https_host_port }}"
-    state: present
-
-# ── The variables misp-docker ACTUALLY reads now ─────────────────────────────
-# The two tasks above became dead config. Upstream restructured: a separate
-# misp-nginx container owns the host ports and declares them as
+# ── The port variables misp-docker reads ─────────────────────────────────────
+# Upstream split nginx out of misp-core, and that container owns the host ports:
 #     - "${NGINX_HTTP_PORT:-80}:8080"
 #     - "${NGINX_HTTPS_PORT:-443}:8443"
-# CORE_HTTP_PORT and CORE_HTTPS_PORT are gone from both the compose file and
-# template.env. Nothing read them, so MISP published on 80/443 while the entire
-# project kept addressing :8443 — and the 2026-09-10 12:22 build died on
-# `MISP /servers/getVersion -> HTTP -1`, five minutes of retries into a port
-# with nothing behind it.
+# The names used to be CORE_HTTP_PORT / CORE_HTTPS_PORT. Nothing read those any
+# more, so MISP published on 80/443 while the whole project addressed :8443, and
+# the 2026-09-10 12:22 build died on `MISP /servers/getVersion -> HTTP -1`.
 #
-# The CORE_* pair is kept rather than deleted, deliberately: this role clones
-# misp-docker at `master`, and pinning it to an older ref is a separate open
-# question. Writing both means the port is {{ misp_https_host_port }} whichever
-# naming the cloned revision happens to use. Two inert lines is a cheap price
-# for surviving that choice either way.
+# This role wrote BOTH names for a while, to survive whichever revision the clone
+# landed on. It no longer does: the clone and its images are now pinned together
+# to one upstream commit (misp_docker_version / misp_docker_images in defaults),
+# so there is one naming to satisfy. Upstream's misp-core entrypoint has also
+# since declared CORE_HTTP_PORT / CORE_HTTPS_PORT deprecated and exits 1 if either
+# reaches the container. They never did - the compose passes no env_file and never
+# lists them - but writing names upstream has made fatal is a trap waiting for the
+# next compose change.
 - name: Publish MISP on the ports this project addresses (current upstream names)
   ansible.builtin.lineinfile:
     path: /opt/misp-docker/.env
@@ -477,9 +463,9 @@
 # which is the overwhelming majority of the warnings in the build log and the
 # noise a real problem has to be spotted against.
 #
-# The names are DERIVED from the compose file rather than listed here: this repo
-# clones misp-docker at `master`, so any hardcoded list would silently rot the
-# first time upstream adds a variable.
+# The names are DERIVED from the compose file rather than listed here: the pinned
+# misp-docker revision gets bumped over time, and a hardcoded list would silently
+# rot at the first bump that adds a variable.
 #
 # Only BARE `${VAR}` references are touched — the exact set compose warns about.
 # For those, compose already substitutes an empty string, so writing `VAR=`
@@ -561,6 +547,47 @@
   args:
     creates: /opt/misp-docker/ssl/cert.pem
 
+# ── Pin the images, and give misp-core a realistic start-up window ───────────
+# Both go in docker-compose.override.yml, which compose loads automatically beside
+# docker-compose.yml and which upstream's own .gitignore excludes: it is the
+# mechanism misp-docker intends for local adjustment, so nothing upstream is
+# edited and the pinned clone stays clean for git.
+#
+# IMAGES. Pinning the clone alone pinned half the build. The compose file pulls
+# ghcr.io/misp/misp-docker/*:${CORE_RUNNING_TAG:-latest}, and upstream CI rebuilt
+# `latest` - and the version tag v2.5.46 with it - on 2026-09-11 12:52 from
+# e8b11b9. The 2026-09-14 deploy therefore ran a 5fe2022 compose file against
+# images built two commits later. Every image is now referenced by DIGEST, from
+# the same commit as the clone. Tags on ghcr move; digests do not.
+#
+# START-UP WINDOW. That deploy failed on `container misp-docker-misp-core-1 is
+# unhealthy`. misp-core's healthcheck probes php-fpm on 9002 with a 60s grace
+# period, and in images built since bd648a5 the fpm entrypoint runs init_mysql,
+# init_misp.sh and configure_misp.sh BEFORE starting php-fpm - a first boot, on
+# an empty database, on a sandbox VM. That is the best-supported explanation and
+# NOT a proven one: the log held no container output, and two other candidates
+# were refuted against upstream's source first. A passing probe ends the start
+# period at once, so a healthy MISP is not delayed at all; only a slow first boot
+# stops being reported as a broken one. The rescue below now records misp-core's
+# own logs, so a failure that survives this names its cause.
+- name: Pin MISP images by digest and widen misp-core's start-up window
+  ansible.builtin.copy:
+    dest: /opt/misp-docker/docker-compose.override.yml
+    mode: '0644'
+    content: |
+      # Managed by the lm5-1c docker_server role - edit the role defaults, not this.
+      services:
+        misp-core:
+          image: "{{ misp_docker_images['misp-core'] }}"
+          healthcheck:
+            start_period: {{ misp_core_start_period }}
+        misp-nginx:
+          image: "{{ misp_docker_images['misp-nginx'] }}"
+        misp-modules:
+          image: "{{ misp_docker_images['misp-modules'] }}"
+        misp-guard:
+          image: "{{ misp_docker_images['misp-guard'] }}"
+
 # No retry here, and none wanted: this task already fails on the first attempt.
 # What it lacked was a reason. MISP pulls mariadb and valkey from Docker Hub, so
 # it is just as exposed to the 429 as DFIR-IRIS is - it simply happens to pull
@@ -575,6 +602,33 @@
       register: misp_output
 
   rescue:
+    # A compose failure says WHICH container, never WHY. The 2026-09-14 deploy
+    # stopped on "misp-core is unhealthy" with nothing more to go on, and two
+    # plausible causes had to be refuted against upstream's source before a third
+    # could even be offered - none provable, because misp-core's own output was
+    # never collected. Collect it before the failure message, whatever the cause.
+    # `cmd:` form, so split_args never parses the script at playbook load.
+    - name: Collect misp-core and misp-nginx logs and health state
+      ansible.builtin.shell:
+        cmd: |
+          set +e
+          echo "=== containers ==="
+          docker ps -a --filter name=misp-docker
+          for c in misp-docker-misp-core-1 misp-docker-misp-nginx-1; do
+            echo "=== state of $c ==="
+            docker inspect --format '{{ "{{" }}json .State{{ "}}" }}' "$c" 2>&1 | cut -c1-3000
+            echo "=== last log lines of $c ==="
+            docker logs --tail 80 "$c" 2>&1
+          done
+        executable: /bin/bash
+      register: misp_evidence
+      changed_when: false
+      failed_when: false
+
+    - name: Show why MISP did not come up
+      ansible.builtin.debug:
+        var: misp_evidence.stdout_lines
+
     - name: Say whether MISP failed on the Docker Hub rate limit
       ansible.builtin.fail:
         msg: >-
@@ -584,6 +638,8 @@
           Docker said: {{ misp_output.msg | default('(no message)') }}
           {% else %}
           MISP could not be deployed, and it is NOT a Docker Hub rate limit.
+          misp-core's and misp-nginx's own logs and health state are in the
+          task output just above this one - read those first.
           Docker said: {{ misp_output.msg | default('(no message)') }}
           {{ misp_output.stderr | default('') }}
           {% endif %}
@@ -653,8 +709,8 @@
       https://<docker-server>:{{ misp_https_host_port }}.
       The probe returned status {{ misp_https.status | default('-1') }}
       ({{ misp_https.msg | default('no message') }}).
-      TWO CAUSES HAVE DONE THIS, both from upstream restructuring misp-docker,
-      which this role clones at `master`:
+      TWO CAUSES HAVE DONE THIS, both from upstream restructuring misp-docker
+      while this role still cloned it at `master`:
       (1) NO CERTIFICATE. misp-nginx mounts ./ssl read-only and runs read_only,
       so it cannot make its own, and upstream disables SSL outright when
       cert.pem / key.pem are missing - the port stays bound by docker-proxy and
@@ -662,8 +718,8 @@
       check the SSL DIRECTORY listing below.
       (2) WRONG PORT. The port variables were renamed
       (CORE_HTTP_PORT/CORE_HTTPS_PORT -> NGINX_HTTP_PORT/NGINX_HTTPS_PORT);
-      this role writes both, so check PUBLISHED PORTS below against
-      {{ misp_https_host_port }}.
+      this role writes the NGINX_* names the pinned revision reads, so check
+      PUBLISHED PORTS below against {{ misp_https_host_port }}.
       {{ misp_published.stdout | default('(could not read)') | trim }}
     success_msg: >-
       MISP answers HTTPS on {{ misp_https_host_port }}
