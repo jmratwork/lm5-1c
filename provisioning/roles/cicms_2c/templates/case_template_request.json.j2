@@ -1,0 +1,12 @@
+{#-
+  Body of POST /manage/case-templates/add (role cicms_2c).
+
+  DFIR-IRIS reads the case_template_json field with json.loads(), so the case
+  template has to travel as a JSON *string* inside this JSON object. to_json
+  produces exactly that. This file is rendered by the template action, which
+  Ansible runs with a non-native environment, so what lands on disk is that JSON
+  text - and uri sends it byte for byte with src=. Building the same body inline
+  in the task does not work on a jinja2_native controller: see the registration
+  task in tasks/main.yml.
+-#}
+{{ {'case_template_json': lookup('template', 'case_template_puc2.json.j2') | trim} | to_json }}

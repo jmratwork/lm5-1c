@@ -36,6 +36,14 @@
     dest: "{{ puc2_iris_assets_dir }}/case_template_puc2.json"
     mode: '0644'
 
+# The registration request itself, rendered to a file and POSTed from it. The
+# registration task below explains why the body cannot be built inline.
+- name: Render the PUC2 2c case-template registration request
+  ansible.builtin.template:
+    src: case_template_request.json.j2
+    dest: "{{ puc2_iris_assets_dir }}/case_template_request.json"
+    mode: '0644'
+
 # puc2_keys has already proved /api/ping answers 200 with the elected key, which
 # is what the old wait-loop was for.
 
@@ -72,21 +80,22 @@
     headers:
       Authorization: "Bearer {{ puc2_iris_api_key }}"
       Content-Type: "application/json"
-    body_format: json
-    body:
-      # THE TRAILING NEWLINE IS LOAD-BEARING. IRIS does json.loads() on this
-      # field, so it must arrive as a JSON *string*. `lookup('template', ...)`
-      # returns one — but a value that is nothing but a single "{{ }}" expression
-      # is converted to a native Python object when jinja2_native is enabled, as
-      # it is on the CyberRangeCZ runner. The JSON text was therefore parsed back
-      # into a dict before it ever left the controller, and IRIS answered:
-      #   HTTP 400 — Invalid JSON
-      #   the JSON object must be str, bytes or bytearray, not dict
-      # Appending a literal newline makes this a concatenation of two nodes
-      # rather than a lone expression, so the result stays a string. json.loads
-      # ignores trailing whitespace, and the fix is correct with jinja2_native
-      # either on or off.
-      case_template_json: "{{ lookup('template', 'case_template_puc2.json.j2') | trim }}\n"
+    # POSTED FROM A FILE, NEVER BUILT INLINE. IRIS does json.loads() on the
+    # case_template_json field, so it must arrive as a JSON *string*. An inline
+    # body cannot guarantee that on the CyberRangeCZ runner, where jinja2_native
+    # is on: Ansible 2.16's ansible_native_concat passes a rendered string to
+    # ast.literal_eval, the template's JSON text parses as a Python dict, and it
+    # leaves the controller as an object. IRIS answered, on every build:
+    #   HTTP 400 - Invalid JSON
+    #   the JSON object must be str, bytes or bytearray, not dict
+    # The trailing-newline workaround that used to sit here could not help:
+    # literal_eval parses the text just the same with a newline after it
+    # (reproduced), and the 2026-09-14 15:26 build still got that 400.
+    # case_template_request.json.j2 is rendered by the template action, which
+    # always uses a non-native environment, so the file holds the JSON text
+    # to_json produced, and src= sends it untouched.
+    src: "{{ puc2_iris_assets_dir }}/case_template_request.json"
+    remote_src: true
     return_content: true
     validate_certs: false
     status_code: [200, 201]

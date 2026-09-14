@@ -1,12 +1,32 @@
-> **Status (2026-09-14): still not registered, but no longer able to hurt.** The
-> Phase 2 change below landed. The template is non-fatal and reports IRIS's own
-> body, and `CASE-PUC2-2C` is created and gated on its own. The 15:26 build
-> printed that body: `CICMS case template NOT registered — HTTP 400, IRIS said:
-> Invalid JSON / the JSON object must be str, bytes or bytearray, not dict`. That
-> is a different refusal from the three schema violations analysed below. It reads
-> as the endpoint expecting the template as a JSON-encoded string rather than an
-> object, but that is not yet verified. Still open; cosmetic; no training level
-> depends on it.
+> **Status (2026-09-14): fixed in the overlay, pending a deploy to confirm.** The
+> Phase 2 change below landed: the template is non-fatal and reports IRIS's own
+> body, and `CASE-PUC2-2C` is created and gated on its own. With the body visible,
+> two faults turned out to stack, and **section 2 below is wrong for the deployed
+> IRIS**.
+>
+> 1. *Transport.* The 15:26 build logged `HTTP 400 — Invalid JSON: the JSON object
+>    must be str, bytes or bytearray, not dict`. The endpoint (`add_case_template`,
+>    iris-web v2.4.29 and master) does `json.loads(data.get('case_template_json'))`,
+>    so it needs a JSON *string*. The task built the body inline, and on the
+>    runner's `jinja2_native` controller Ansible 2.16's `ansible_native_concat`
+>    passes rendered strings to `ast.literal_eval`, which turned the template text
+>    into a dict. The trailing-newline workaround in the task could not prevent
+>    that, because `literal_eval` accepts the trailing newline. The request body is
+>    now rendered to a file by the template action, which always runs non-native,
+>    and POSTed with `uri src=… remote_src=true`.
+> 2. *Schema.* The deployed zip carries the migrations
+>    `35c095f8be2b_case_templates_note_groups_to_…` and
+>    `c29ef01617f5_migrate_notes_directories`, so it is IRIS 2.4 or later. Its
+>    validator answers `note_groups` with "Note groups has been replaced by
+>    note_directories." Section 2 below followed older documentation (v2.3.x
+>    really does use `note_groups`) and led the template the wrong way. It now
+>    sends `note_directories`.
+>
+> Verified statically: the rendered body keeps `case_template_json` as a string,
+> and iris-web v2.4.29's own `validate_case_template` accepts the template (and
+> rejects the previous one with the message above). Not yet confirmed against the
+> deployed IRIS; the next build's log will say `registered — confirmed present in
+> IRIS's own template list`. Cosmetic either way: no training level depends on it.
 
 # Diagnosis — `cicms_2c` fails registering the PUC2 2c case template
 
