@@ -2,11 +2,18 @@
   Body of POST /manage/case-templates/add (role cicms_2c).
 
   DFIR-IRIS reads the case_template_json field with json.loads(), so the case
-  template has to travel as a JSON *string* inside this JSON object. to_json
-  produces exactly that. This file is rendered by the template action, which
-  Ansible runs with a non-native environment, so what lands on disk is that JSON
-  text - and uri sends it byte for byte with src=. Building the same body inline
-  in the task does not work on a jinja2_native controller: see the registration
-  task in tasks/main.yml.
+  template has to travel as a JSON *string* inside this JSON object, and to_json
+  produces exactly that - provided what it is given is still the template TEXT.
+
+  convert_data=False is what keeps it text. The template lookup defaults to
+  convert_data=True, which hands its rendered output to ast.literal_eval
+  whenever it starts with '{' or '['. The template's JSON therefore came back
+  as a Python dict, `| trim` turned that dict into its repr ({'name': ...}, single
+  quotes), and IRIS refused it on the 2026-09-15 build with
+    Invalid JSON - Expecting property name enclosed in double quotes: line 1 column 2
+  Reproduced with ansible-core 2.16.14, the runner's version, with jinja2_native
+  both off (the runner's default) and on. No from_json here on purpose: a
+  malformed template must reach IRIS and be reported, not abort the play over a
+  cosmetic resource.
 -#}
-{{ {'case_template_json': lookup('template', 'case_template_puc2.json.j2') | trim} | to_json }}
+{{ {'case_template_json': lookup('template', 'case_template_puc2.json.j2', convert_data=False) | trim} | to_json }}

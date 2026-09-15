@@ -1,19 +1,29 @@
-> **Status (2026-09-14): fixed in the overlay, pending a deploy to confirm.** The
-> Phase 2 change below landed: the template is non-fatal and reports IRIS's own
-> body, and `CASE-PUC2-2C` is created and gated on its own. With the body visible,
-> two faults turned out to stack, and **section 2 below is wrong for the deployed
-> IRIS**.
+> **Status (2026-09-15): fixed again in the overlay, pending a deploy to confirm.**
+> The Phase 2 change below landed: the template is non-fatal and reports IRIS's
+> own body, and `CASE-PUC2-2C` is created and gated on its own. With the body
+> visible, two faults turned out to stack, and **section 2 below is wrong for the
+> deployed IRIS**.
 >
-> 1. *Transport.* The 15:26 build logged `HTTP 400 — Invalid JSON: the JSON object
->    must be str, bytes or bytearray, not dict`. The endpoint (`add_case_template`,
->    iris-web v2.4.29 and master) does `json.loads(data.get('case_template_json'))`,
->    so it needs a JSON *string*. The task built the body inline, and on the
->    runner's `jinja2_native` controller Ansible 2.16's `ansible_native_concat`
->    passes rendered strings to `ast.literal_eval`, which turned the template text
->    into a dict. The trailing-newline workaround in the task could not prevent
->    that, because `literal_eval` accepts the trailing newline. The request body is
->    now rendered to a file by the template action, which always runs non-native,
->    and POSTed with `uri src=… remote_src=true`.
+> 1. *Transport.* The endpoint (`add_case_template`, iris-web v2.4.29 and master)
+>    does `json.loads(data.get('case_template_json'))`, so it needs a JSON
+>    *string*. Ansible 2.16's `convert_data=True` defeated that twice. That
+>    setting is the default for task arguments and for `lookup('template')`, and
+>    it passes any rendered text starting with `{` to `ast.literal_eval`.
+>    - 2026-09-14 15:26, body built inline: `the JSON object must be str, bytes or
+>      bytearray, not dict`.
+>    - 2026-09-15, body rendered to a file with `lookup('template', …) | trim`:
+>      the lookup returned a dict, `trim` turned it into its Python repr, and IRIS
+>      answered `Expecting property name enclosed in double quotes: line 1
+>      column 2 (char 1)`. The file was 2725 bytes against the template's 3017; an
+>      escaped JSON string would have been larger.
+>
+>    The first fix blamed `jinja2_native`. That was wrong: the runner has no
+>    `ansible.cfg` (`No config file found; using defaults`), so native mode is off,
+>    and the conversion happens in either mode. The lookup now passes
+>    `convert_data=False`, the body is serialised with `to_json` and POSTed with
+>    `uri src=… remote_src=true`. Verified with the real ansible-core 2.16.14
+>    Templar, which reproduces the 2026-09-15 error verbatim before the change and
+>    yields a valid string after it, native off and on.
 > 2. *Schema.* The deployed zip carries the migrations
 >    `35c095f8be2b_case_templates_note_groups_to_…` and
 >    `c29ef01617f5_migrate_notes_directories`, so it is IRIS 2.4 or later. Its

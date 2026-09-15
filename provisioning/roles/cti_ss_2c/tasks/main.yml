@@ -128,7 +128,12 @@
       Authorization: "{{ puc2_misp_api_key }}"
       Accept: "application/json"
       Content-Type: "application/json"
-    body: "{{ lookup('template', 'misp_event_puc2_malware.json.j2') }}"
+    # convert_data=False + from_json: the lookup hands back the JSON text and
+    # from_json makes it a dict, which uri serialises itself. The bare lookup only
+    # worked because the runner leaves jinja2_native off. With it on, uri receives
+    # the dict's Python repr and MISP gets a body that is not JSON (reproduced
+    # with ansible-core 2.16.14). This form works in both modes.
+    body: "{{ lookup('template', 'misp_event_puc2_malware.json.j2', convert_data=False) | from_json }}"
     body_format: json
     return_content: true
     validate_certs: false

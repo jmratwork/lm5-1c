@@ -81,19 +81,19 @@
       Authorization: "Bearer {{ puc2_iris_api_key }}"
       Content-Type: "application/json"
     # POSTED FROM A FILE, NEVER BUILT INLINE. IRIS does json.loads() on the
-    # case_template_json field, so it must arrive as a JSON *string*. An inline
-    # body cannot guarantee that on the CyberRangeCZ runner, where jinja2_native
-    # is on: Ansible 2.16's ansible_native_concat passes a rendered string to
-    # ast.literal_eval, the template's JSON text parses as a Python dict, and it
-    # leaves the controller as an object. IRIS answered, on every build:
-    #   HTTP 400 - Invalid JSON
-    #   the JSON object must be str, bytes or bytearray, not dict
-    # The trailing-newline workaround that used to sit here could not help:
-    # literal_eval parses the text just the same with a newline after it
-    # (reproduced), and the 2026-09-14 15:26 build still got that 400.
-    # case_template_request.json.j2 is rendered by the template action, which
-    # always uses a non-native environment, so the file holds the JSON text
-    # to_json produced, and src= sends it untouched.
+    # case_template_json field, so it must arrive as a JSON *string*. Ansible
+    # 2.16 keeps turning JSON-looking text into data: with convert_data=True
+    # (the default for task arguments and for the template lookup) a rendered
+    # value that starts with '{' goes through ast.literal_eval. Both builds so far
+    # were refused for that reason:
+    #   inline body (to 2026-09-14): "the JSON object must be str ... not dict"
+    #   lookup | trim (2026-09-15):  "Expecting property name enclosed in
+    #                                 double quotes: line 1 column 2" - the
+    #                                 dict's Python repr, single quotes
+    # case_template_request.json.j2 now reads the template with
+    # convert_data=False and serialises the body with to_json. uri sends that
+    # file untouched with src=. Reproduced and verified with ansible-core
+    # 2.16.14, jinja2_native off (the runner has no ansible.cfg) and on.
     src: "{{ puc2_iris_assets_dir }}/case_template_request.json"
     remote_src: true
     return_content: true
