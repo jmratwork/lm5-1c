@@ -1,4 +1,5 @@
-> **Status (2026-09-15): fixed again in the overlay, pending a deploy to confirm.**
+> **Status (2026-09-15): resolved and confirmed by a deploy.** The 08:46 build
+> registered the template (`d7de819`).
 > The Phase 2 change below landed: the template is non-fatal and reports IRIS's
 > own body, and `CASE-PUC2-2C` is created and gated on its own. With the body
 > visible, two faults turned out to stack, and **section 2 below is wrong for the
@@ -34,9 +35,15 @@
 >
 > Verified statically: the rendered body keeps `case_template_json` as a string,
 > and iris-web v2.4.29's own `validate_case_template` accepts the template (and
-> rejects the previous one with the message above). Not yet confirmed against the
-> deployed IRIS; the next build's log will say `registered — confirmed present in
-> IRIS's own template list`. Cosmetic either way: no training level depends on it.
+> rejects the previous one with the message above).
+>
+> **Confirmed against the deployed IRIS.** The 2026-09-15 08:46 build logged
+> `CICMS case template 'PUC2-2C-Malware' registered — confirmed present in IRIS's
+> own template list, not merely accepted by the POST`. That line comes from a
+> second `GET /manage/case-templates/list`, not from the POST's answer. MISP
+> seeding, whose body was hardened in the same commit, still logged `event seeded
+> (id 1, published)`. The template remains cosmetic: no training level depends on
+> it.
 
 # Diagnosis — `cicms_2c` fails registering the PUC2 2c case template
 

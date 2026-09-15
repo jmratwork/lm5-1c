@@ -266,7 +266,7 @@ operator can guarantee the L19/L21 markers without cross-node plumbing.
 | 4 | Enrich hash with CTI | ng-siem ↔ docker-server | `roles/ng_siem_rules_2c` (CDB list `etc/lists/cti-malware-hashes`) + `roles/cti_ss_2c` (same IOCs seeded into MISP) + the substrate's MISP integration |
 | 5 | Alert: malware detected | ng-siem | `roles/ng_siem_rules_2c/templates/local_rules.xml.j2` rule `100101` (level 12), deployed as `/var/ossec/ruleset/rules/9999-puc2-2c.xml` — **not** `etc/rules/`, which this image does not read. Its CDB lookup keys on the FIM decoder field `md5`: the alert JSON prints `md5_after`, but that is output naming only, and keyed on it the rule never matched |
 | 6 | Correlate logs + confirm attack pattern | ng-siem | rule `100102` (firewall source: the endpoint's baseline egress filter, decoded by Wazuh's built-in kernel decoder) and rule `100103` (fired by the multi-stage delivery) + `training/ng_siem_correlation_guide.md` |
-| 7 | Open incident case + attach SIEM context | ng-siem → docker-server | **automatic:** substrate `custom-iris` integration (dedups by `case_soc_id`, which is the same on every run of this scenario — hence the rehearsal deletes the cases it creates); **operator-driven:** `roles/cicms_2c/templates/open_case.sh.j2` + the case template `PUC2-2C-Malware` — cosmetic, no level uses it, and refused by IRIS on every build so far: `5674ecf` fixed the schema (`note_directories`), the transport needed the template lookup's `convert_data=False` as well (see `diagnostics/DIAGNOSIS-cicms-template.md`); its registration is still to be confirmed by a deploy |
+| 7 | Open incident case + attach SIEM context | ng-siem → docker-server | **automatic:** substrate `custom-iris` integration (dedups by `case_soc_id`, which is the same on every run of this scenario — hence the rehearsal deletes the cases it creates); **operator-driven:** `roles/cicms_2c/templates/open_case.sh.j2` + the case template `PUC2-2C-Malware` — cosmetic, no level uses it, and refused by IRIS on every build until 2026-09-15: `5674ecf` fixed the schema (`note_directories`), and `d7de819` fixed the transport with the template lookup's `convert_data=False` (see `diagnostics/DIAGNOSIS-cicms-template.md`). Registered since the 2026-09-15 08:46 build, which logged it as `confirmed present in IRIS's own template list` |
 | 8 | Enrich with CTI (IOCs/TTPs) | docker-server | `roles/cicms_2c` + `roles/cti_ss_2c`; the IRIS↔MISP module is wired by the substrate |
 | 9 | Execute containment playbooks | ng-siem / docker-server | **automatic:** `<active-response>` block injected by `roles/ng_siem_rules_2c` (rule `100103` only — see *Containment*); **operator-driven:** `roles/soar_actions_2c/templates/ngsoar_trigger.sh.j2` → the NG-SOAR webhook |
 | 10 | Apply isolation and remediation | victim | `roles/lab_endpoint_2c/templates/puc2-isolate.j2` (isolation, C2 block, quarantine, credential reset, security updates); library in `roles/soar_actions_2c/files/*.yml` |
@@ -466,12 +466,18 @@ six is down to two:
    attempt and names the PAT as the fix.
 
 This has now met live deploys: since 2026-09-14 `docker-server` finishes on every
-run. The evidence is in three lines worth grepping for. The 2026-09-15 log reads
-`Docker Hub auth: LOGGED_IN as demongsoc`: the substrate's credential is in use,
-so pulls count against that account. It shows `SEEDED` for all four pre-pulled
-images, and a measured anonymous headroom of 54 of 100 per hour on the egress IP
-(84 the day before). That is the pool the deploy did not have to use, which is
-why the gate reports that it does not apply.
+run. The evidence is in three lines worth grepping for. The 2026-09-15 08:46 log
+reads `Docker Hub auth: LOGGED_IN as demongsoc`: the substrate's credential is in
+use, so pulls count against that account. It shows `SEEDED` for all four
+pre-pulled images, and a measured anonymous headroom of 31 of 100 on the egress
+IP. That is the pool the deploy did not have to use, which is why the gate
+reports that it does not apply.
+
+The anonymous figure has fallen from build to build: 84 (2026-09-14 15:26), then
+54 (2026-09-15 08:01), then 31. Other sandboxes share that egress IP. None of
+this matters while the substrate's credential works. If it is revoked, the
+deploy falls back to the anonymous pool, which must still hold the two Docker Hub
+pulls it needs, and the gate stops a build that it measures short.
 
 The last two plays of the file are diagnostics (`puc2_diag`,
 `puc2_access_probe`), tagged `never` and absent from a normal deploy:
@@ -515,19 +521,23 @@ the L10 answer (in `case_lookup.sh`, the helper L14 sends them to) and stops
 their own attack from creating any case at all. An alert left in the indexer
 shows up under L10's own hint, `rule.id 1001*`. Same trade-off as `alerts.log`:
 anything else the victim agent raised during the drill goes too. The 2026-09-15
-build was the first to report the full breakdown:
+builds were the first to report the full breakdown:
 
-```
-indexer: EXPECTED_IN_ALERTS_JSON=13, INDEXED_BEFORE_PURGE=13,
-         ALL_MATCHING_BEFORE_PURGE=92, DELETED=92, PUC2_REMAINING=0
-Deleted 5 of 5 CICMS case(s) created after case id 10
-```
+| Build | Indexer | CICMS |
+|---|---|---|
+| 08:01 | `EXPECTED_IN_ALERTS_JSON=13, INDEXED_BEFORE_PURGE=13, ALL_MATCHING_BEFORE_PURGE=92, DELETED=92, PUC2_REMAINING=0` | `Deleted 5 of 5 CICMS case(s) created after case id 10` |
+| 08:46 | `EXPECTED_IN_ALERTS_JSON=13, INDEXED_BEFORE_PURGE=13, ALL_MATCHING_BEFORE_PURGE=112, DELETED=112, PUC2_REMAINING=0` | `Deleted 6 of 6 CICMS case(s) created after case id 13` |
 
-The 13 PUC2 alerts are all indexed before the purge starts, the other 79 are the
-victim agent's own drill-window noise, and nothing matching survives. Cases that
-the agent raises for its own reasons *after* the drill (dpkg rules 2902/2904,
-say) can still turn up in CICMS. The gate lets them through, because they give no
-answer away.
+In both builds all 13 PUC2 alerts were indexed before the purge started, the rest
+of the purge was the victim agent's own drill-window noise, and nothing matching
+survived.
+
+CICMS is not empty at handover, and is not meant to be. It holds the scenario
+case `CASE-PUC2-2C` plus the `WAZUH-` cases that custom-iris opened for
+non-scenario rules. At 08:46 that was eleven, from rules 510, 550, 17101, 5901
+and others, all created before the drill. Such cases also arrive afterwards
+(dpkg rules 2902/2904, for example). The gate lets them through, because it only
+refuses `1001xx` cases, and none of these gives an answer away.
 
 `alerts.json` itself is not truncated — Filebeat ships it by byte offset and would
 re-index the whole file. The link checks read only what it gained after the
@@ -581,7 +591,7 @@ Each of these shipped green at least once:
 | An alert from an earlier run satisfies a rehearsal link | link checks read only what `alerts.json` gained after the pre-drill offset |
 | The rehearsal leaves its CICMS cases and indexer alerts behind, so `case_lookup.sh` and the dashboard show the L10 answer | the drill deletes both; the gate fails on any PUC2 case in CICMS or PUC2 alert in the indexer |
 | A probe ends on a false `&&` test, so a healthy run exits non-zero and real masked failures hide among false ones | probes end on an explicit exit path (`true`, `if … fi`) |
-| A JSON *string* reaches the API as an object, or as a Python repr. Ansible 2.16's `convert_data=True` (the default for task arguments and for `lookup('template')`) passes any rendered text that starts with `{` or `[` to `ast.literal_eval`, and this happens with `jinja2_native` off, which is the runner's setting. IRIS refused the case template first with `the JSON object must be str … not dict` (inline body), then with `Expecting property name enclosed in double quotes` (the lookup's dict, stringified by `trim`) | text that must stay text is read with `lookup('template', …, convert_data=False)`; the IRIS body is rendered to a file with `to_json` and sent with `uri src=… remote_src=true`, then checked against IRIS's own template list. The MISP body passes that text through the `from_json` filter, so it is a dict whatever the native setting. Both were reproduced with ansible-core 2.16.14 |
+| A JSON *string* reaches the API as an object, or as a Python repr. Ansible 2.16's `convert_data=True` (the default for task arguments and for `lookup('template')`) passes any rendered text that starts with `{` or `[` to `ast.literal_eval`, and this happens with `jinja2_native` off, which is the runner's setting. IRIS refused the case template first with `the JSON object must be str … not dict` (inline body), then with `Expecting property name enclosed in double quotes` (the lookup's dict, stringified by `trim`) | text that must stay text is read with `lookup('template', …, convert_data=False)`; the IRIS body is rendered to a file with `to_json` and sent with `uri src=… remote_src=true`, then checked against IRIS's own template list. The MISP body passes that text through the `from_json` filter, so it is a dict whatever the native setting. Both were reproduced with ansible-core 2.16.14. The 2026-09-15 08:46 deploy confirmed the fix: the template registered and MISP still seeded |
 
 ---
 
@@ -592,7 +602,8 @@ it — so the sandbox you are handed is both **proven** and **pristine**: no PUC
 alert in `alerts.log` or in the dashboard's indexer, no PUC2 case in CICMS, no
 markers, empty quarantine, payload staged but not delivered. The first three are
 asserted by the gate on every deploy, not assumed. They were first confirmed end
-to end by the 2026-09-14 15:26 build, and again on 2026-09-15: `PUC2_REMAINING=0`,
+to end by the 2026-09-14 15:26 build, and again by both 2026-09-15 builds (08:01
+and 08:46): `PUC2_REMAINING=0`,
 `PUC2_INDEXER_COUNT=0`, no `[1001xx]` case, and no probe masking a non-zero exit. Every step below starts from that state, and the trainee's own
 attack is the first to create PUC2 alerts and cases.
 
