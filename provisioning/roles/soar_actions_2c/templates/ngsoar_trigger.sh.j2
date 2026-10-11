@@ -67,5 +67,22 @@ case "${HTTP_CODE}" in
   000) echo "[NG-SOAR] Webhook unreachable. The active-response path remains the"
        echo "          authoritative containment route. Enforce it ON ${TARGET}:"
        echo "          sudo /var/ossec/active-response/bin/puc2-isolate --now" ; exit 1 ;;
-  *)  echo "[NG-SOAR] Webhook rejected the request; inspect the NG-SOAR workflow." ; exit 1 ;;
+  # A rejection used to end here with "inspect the NG-SOAR workflow" and no way
+  # forward. On 2026-10-11 the webhook answered 400 "Failed to decode playbook":
+  # the endpoint is SOARCA's, it expects a CACAO playbook document, and this
+  # helper sends a trigger request naming one of the library's playbooks, which
+  # are Ansible-style. Posting a CACAO stub would turn the 400 into a 200 that
+  # contains nothing, and executing real actions from SOARCA would mean giving it
+  # SSH credentials for the endpoint. So a rejection is treated like an
+  # unreachable webhook: say what it means, and hand the operator the same
+  # deterministic containment the active response runs.
+  4*) echo "[NG-SOAR] Webhook rejected the request (HTTP ${HTTP_CODE}). The NG-SOAR"
+      echo "          engine expects a CACAO playbook document; this range's library"
+      echo "          is Ansible-style, so the orchestration call is not executed."
+      echo "[NG-SOAR] Containment does not depend on it: the NG-SIEM active response"
+      echo "          (rule 100103) is the authoritative route. Check, then enforce ON ${TARGET}:"
+      echo "          cat {{ puc2_isolation_marker }} {{ puc2_eradication_marker }}"
+      echo "          sudo /var/ossec/active-response/bin/puc2-isolate --now" ; exit 1 ;;
+  *)  echo "[NG-SOAR] Webhook error (HTTP ${HTTP_CODE}). Enforce containment ON ${TARGET}:"
+      echo "          sudo /var/ossec/active-response/bin/puc2-isolate --now" ; exit 1 ;;
 esac

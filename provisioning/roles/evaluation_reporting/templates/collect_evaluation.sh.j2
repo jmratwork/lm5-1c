@@ -14,7 +14,15 @@ EVAL_ROOT="{{ puc2_eval_root }}"
 VICTIM_IP="{{ puc2_victim_ip }}"
 VICTIM_MGMT_USER="{{ puc2_victim_mgmt_user }}"
 OUT="${EVAL_ROOT}/report_$(date +%Y%m%d-%H%M%S).txt"
-SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=10 -o BatchMode=yes"
+# The endpoint half of the report comes over a dedicated key that this role
+# authorises on the victim ONLY from {{ puc2_ng_siem_ip }} and ONLY for a forced,
+# read-only command (/usr/local/sbin/puc2-evidence): whatever is asked, that
+# script runs, prints the two markers and the active-response log, and exits.
+# Before it existed nothing authorised this host at all, so the section always
+# read "unreachable ... host may be isolated" - the isolation keeps the sandbox
+# subnet open; it was the missing key.
+EVIDENCE_KEY="{{ puc2_eval_key }}"
+SSH_OPTS="-i ${EVIDENCE_KEY} -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o BatchMode=yes"
 
 mkdir -p "${EVAL_ROOT}"
 
@@ -25,8 +33,11 @@ mkdir -p "${EVAL_ROOT}"
 
   echo "---- Detection: NG-SIEM alerts for the 2c ruleset (UML steps 3-6) ----"
   for rid in 100100 100101 100102 100103; do
-    n=$(grep -c "\"id\":\"${rid}\"" /var/ossec/logs/alerts/alerts.json 2>/dev/null || echo 0)
-    echo "  rule ${rid}: ${n} alert(s)"
+    # grep -c already prints 0 when nothing matches - and exits 1, so the old
+    # "|| echo 0" printed a second 0 on its own line. Default only an empty answer
+    # (missing file).
+    n=$(grep -c "\"id\":\"${rid}\"" /var/ossec/logs/alerts/alerts.json 2>/dev/null)
+    echo "  rule ${rid}: ${n:-0} alert(s)"
   done
   echo
   echo "  last 50 matching alert lines:"
@@ -34,25 +45,15 @@ mkdir -p "${EVAL_ROOT}"
     | tail -n 50 || echo "  (no alerts yet — the scenario may not have been injected)"
   echo
 
-  echo "---- Response: active-response invocations (UML steps 9-10) ----"
-  grep -i "puc2-isolate" /var/ossec/logs/active-responses.log 2>/dev/null \
-    | tail -n 50 || echo "  (no puc2-isolate invocation recorded on the manager)"
-  echo
-
-  echo "---- Containment & eradication status from the endpoint (UML step 11) ----"
-  for marker in "{{ puc2_isolation_marker }}" "{{ puc2_eradication_marker }}"; do
-    echo "  == ${marker} on ${VICTIM_IP} =="
-    # shellcheck disable=SC2086
-    ssh ${SSH_OPTS} "${VICTIM_MGMT_USER}@${VICTIM_IP}" "sudo cat ${marker}" 2>/dev/null \
-      | sed 's/^/    /' || echo "    (unreachable or not present — host may be isolated)"
-  done
-  echo
-
-  echo "---- Endpoint active-response log ----"
+  # The active response runs ON the endpoint and logs there; the manager's
+  # active-responses.log never records it, so that section only ever said "no
+  # invocation recorded". Containment status and the AR log both come from the
+  # endpoint, in one read-only call.
+  echo "---- Response, containment & eradication on the endpoint (UML steps 9-11) ----"
   # shellcheck disable=SC2086
-  ssh ${SSH_OPTS} "${VICTIM_MGMT_USER}@${VICTIM_IP}" \
-    "sudo grep -i puc2-isolate /var/ossec/logs/active-responses.log | tail -n 30" 2>/dev/null \
-    | sed 's/^/    /' || echo "    (unreachable)"
+  ssh ${SSH_OPTS} "${VICTIM_MGMT_USER}@${VICTIM_IP}" 2>/dev/null \
+    | sed 's/^/    /' \
+    || echo "    (no answer from ${VICTIM_IP} over the evidence key ${EVIDENCE_KEY}; read the markers on the victim itself)"
   echo
 
   echo "---- Collaboration surfaces (UML steps 7-8, 12) ----"

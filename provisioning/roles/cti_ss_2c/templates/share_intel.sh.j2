@@ -33,8 +33,16 @@ fi
 echo "[CTI-SS] Event id ${EVENT_ID}"
 
 echo "[CTI-SS] Resolving sharing group '${SHARING_GROUP}'"
+# MISP answers /sharing_groups/index in two shapes: a bare list (older
+# releases) or {"response": [...]} (the one deployed here). The filter used to
+# assume the list; on the object, ".[]" yields the inner list and indexing it
+# with "SharingGroup" killed the script under set -e (2026-10-11: "jq: Cannot
+# index array with string SharingGroup"). Accept both, and both entry layouts.
 SG_ID=$(curl -sk "${auth[@]}" "${MISP_URL}/sharing_groups/index" \
-  | jq -r --arg n "${SHARING_GROUP}" '.[] | select(.SharingGroup.name==$n) | .SharingGroup.id' | head -n1)
+  | jq -r --arg n "${SHARING_GROUP}" '
+      (if type == "object" then (.response // []) else . end)
+      | .[]? | (.SharingGroup // .)
+      | select(.name == $n) | .id' | head -n1)
 
 if [ -z "${SG_ID}" ]; then
     echo "[CTI-SS] Sharing group not found; publishing with community distribution instead."

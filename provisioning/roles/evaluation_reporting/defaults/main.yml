@@ -2,6 +2,8 @@
 # role: evaluation_reporting (post-incident feedback — UML step 13)
 # Fallbacks only. The authoritative values live in group_vars/puc2_2c.yml.
 puc2_eval_root: "/opt/evaluation"
+# single-purpose key: read-only evidence off the victim (forced command)
+puc2_eval_key: "/root/.ssh/puc2_evidence_ed25519"
 puc2_victim_ip: "10.0.16.100"
 puc2_victim_mgmt_user: "ubuntu"
 puc2_ng_siem_ip: "10.0.16.70"

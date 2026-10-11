@@ -592,6 +592,10 @@ Each of these shipped green at least once:
 | The rehearsal leaves its CICMS cases and indexer alerts behind, so `case_lookup.sh` and the dashboard show the L10 answer | the drill deletes both; the gate fails on any PUC2 case in CICMS or PUC2 alert in the indexer |
 | A probe ends on a false `&&` test, so a healthy run exits non-zero and real masked failures hide among false ones | probes end on an explicit exit path (`true`, `if … fi`) |
 | A JSON *string* reaches the API as an object, or as a Python repr. Ansible 2.16's `convert_data=True` (the default for task arguments and for `lookup('template')`) passes any rendered text that starts with `{` or `[` to `ast.literal_eval`, and this happens with `jinja2_native` off, which is the runner's setting. IRIS refused the case template first with `the JSON object must be str … not dict` (inline body), then with `Expecting property name enclosed in double quotes` (the lookup's dict, stringified by `trim`) | text that must stay text is read with `lookup('template', …, convert_data=False)`; the IRIS body is rendered to a file with `to_json` and sent with `uri src=… remote_src=true`, then checked against IRIS's own template list. The MISP body passes that text through the `from_json` filter, so it is a dict whatever the native setting. Both were reproduced with ansible-core 2.16.14. The 2026-09-15 08:46 deploy confirmed the fix: the template registered and MISP still seeded |
+| Containment runs twice per attack (rule 100103 matches once per repeated IOC), every run inserted its rules again, and rollback deleted one copy of each. A C2 DROP therefore survived the rehearsal's cleanup at the top of OUTPUT, above the egress filter's LOG rule, and the first trainee's beacon was dropped unlogged: rule 100102 never fired. On victim619 (2026-10-11) the chain held five copies | `puc2-isolate` adds a rule only when it is absent, and its rollback removes every copy of every rule it can add, leaving the baseline LOG/DROP alone |
+| `inject_scenario.sh --arm` said OK on a range still contained from an earlier run. It checked proxies: `systemctl is-active` on a oneshot unit, and `getent hosts` while the C2 name was sinkholed to 0.0.0.0 | `--arm`, which the rehearsal and the gate both run, checks the LOG rule itself, checks that the C2 name resolves to the C2 address, and refuses to arm while any containment rule, marker or quarantined file from an earlier run remains |
+| The evaluation report's endpoint section always read "unreachable — host may be isolated". Isolation keeps the sandbox subnet open; no key had ever been authorised for that SSH call | a single-purpose key from ng-siem, authorised on the victim only from ng-siem's address and bound to a forced read-only command that prints the markers and the active-response log |
+| `ngsoar_trigger.sh` dead-ended on `HTTP 400 Failed to decode playbook` (SOARCA expects a CACAO document; the library is Ansible-style), and `share_intel.sh` died under `set -e` on MISP's `{"response": [...]}` sharing-group shape | a 4xx is explained and hands the operator the same containment the active response runs; the sharing-group filter accepts both response shapes |
 
 ---
 
@@ -606,6 +610,12 @@ to end by the 2026-09-14 15:26 build, and again by both 2026-09-15 builds (08:01
 and 08:46): `PUC2_REMAINING=0`,
 `PUC2_INDEXER_COUNT=0`, no `[1001xx]` case, and no probe masking a non-zero exit. Every step below starts from that state, and the trainee's own
 attack is the first to create PUC2 alerts and cases.
+
+That holds for a sandbox's **first** run. The platform can hand the same sandbox
+to a later training run: on 2026-10-11 run `lm5-1c-1148` landed on victim619,
+still contained, quarantined and with cases from a run on 2026-10-06. `--arm` now
+refuses to arm such a range (L4 tells the trainee to call the instructor), and
+`training/scenario_runbook.md` ("Resetting between runs") is the way back.
 
 ```bash
 # 1. Provision the sandbox (the platform does this from topology.yml)
@@ -630,7 +640,7 @@ trainee-facing brief, runbook and correlation guide.
 
 The 30-level linear training definition uploaded to CyberRangeCZ is
 `V<n>_puc2-cynet-2c-malware-detection-response_linear-training-definition.json`,
-currently **V7**. It **never reaches the remote**: `.gitignore` excludes
+currently **V9**. It **never reaches the remote**: `.gitignore` excludes
 `*training-definition.json`, because it is uploaded to the platform by hand. The
 working tree is only a hand-off point — the current version is dropped into the
 root when it needs changes and taken away afterwards, so do not expect a copy to
@@ -668,6 +678,17 @@ along with a live TCP route from kali to each of the four dashboards, and fails
 the deployment if any of it is missing. It used to say here that this was "not
 knowable from this repo" and to point at an opt-in probe — which meant the claim
 L1 makes to every trainee rested on a check nobody ran.
+
+**Reaching that desktop is a separate matter, and today the platform does not.**
+On 2026-10-11, *Open console* on kali opened an SSH **text** console, after a
+delay of tens of seconds, and offered no graphical console; ng-siem offered only
+the legacy console, still loading, and no *Open console*. The desktop the gate
+proves exists inside kali is therefore not reachable from the platform, and
+neither are the dashboards, which need a browser inside the sandbox. Both are
+platform or image settings, not something this repo provisions. Until they
+change, the console paths are the primary route: ng-siem is reached by SSH from
+the docker-server console (`ssh ubuntu@10.0.16.70`), and V9 of the training
+definition says so.
 
 The probe still exists, as a *diagnostic* rather than a gate: it reports browser,
 desktop and per-dashboard HTTP status for **every** node and writes

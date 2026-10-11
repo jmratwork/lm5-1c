@@ -72,14 +72,18 @@ it deduplicates on a SOC id that is the same every run.
 
 ```bash
 # On victim — lift containment and clear the payload. --lift resets the iptables
-# policies, removes the C2 DROP and SSH rules and both markers, and drops the C2
-# lines from /etc/hosts. Never `iptables -F`: it takes out the egress filter and
-# rules other roles own.
+# policies, removes EVERY copy of every rule containment adds (C2 DROP, loopback,
+# established, sandbox subnet, SSH) and both markers, and drops the C2 lines from
+# /etc/hosts. Every copy matters: containment runs twice per attack, and a single
+# leftover C2 DROP sits above the egress filter's LOG rule and silences rule
+# 100102 for the next run. Never `iptables -F`: it takes out the egress filter
+# and rules other roles own.
 sudo /var/ossec/active-response/bin/puc2-isolate --lift
 echo "10.0.16.50 c2.puc2-training.lab" | sudo tee -a /etc/hosts   # the observable sinkhole --arm checks
 sudo rm -rf /var/quarantine/* /home/victim/Downloads/*.exe /tmp/invoice.exe
 sudo chage -d "$(date +%F)" victim          # containment expired the password
 sudo systemctl restart puc2-fw-baseline     # re-arm the egress filter that feeds rule 100102
+sudo /opt/puc2/inject_scenario.sh --arm      # every check OK = this endpoint is clean again
 
 # On ng-siem — the console path of L10, and the dashboard's indexer:
 sudo truncate -s 0 /var/ossec/logs/alerts/alerts.log   # Filebeat reads alerts.json, not this file

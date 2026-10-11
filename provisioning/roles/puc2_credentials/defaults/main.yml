@@ -18,3 +18,4 @@ puc2_iris_admin_user: "administrator"
 puc2_iris_container: "iris_app"
 
 docker_server_internal_ip: "10.0.16.60"
+puc2_ng_siem_ip: "10.0.16.70"

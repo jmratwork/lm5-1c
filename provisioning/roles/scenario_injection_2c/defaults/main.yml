@@ -13,3 +13,8 @@ puc2_c2_port: 4444
 puc2_arm_token: "puc2-2c-armed"
 puc2_victim_mail_spool: "/var/mail/victim"
 puc2_c2_domain: "c2.puc2-training.lab"
+# read by --arm to prove the range is clean and the egress filter effective
+puc2_fw_log_prefix: "PUC2-FW-DROP"
+puc2_quarantine_dir: "/var/quarantine"
+puc2_isolation_marker: "/var/run/ngsoar_isolated"
+puc2_eradication_marker: "/var/run/ngsoar_eradication_status"

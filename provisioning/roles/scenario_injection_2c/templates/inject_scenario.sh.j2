@@ -45,6 +45,10 @@ C2_IP="{{ puc2_c2_ip }}"
 C2_PORT="{{ puc2_c2_port }}"
 EXPECTED_MD5="{{ puc2_payload_md5 }}"
 ARM_TOKEN="{{ puc2_arm_token }}"
+FW_PREFIX="{{ puc2_fw_log_prefix }}"
+QUARANTINE_DIR="{{ puc2_quarantine_dir }}"
+ISOLATION_MARKER="{{ puc2_isolation_marker }}"
+ERADICATION_MARKER="{{ puc2_eradication_marker }}"
 STAGE_PAUSE="${STAGE_PAUSE:-20}"   # seconds between stages; all well inside 600
 
 if [ "$(id -u)" -ne 0 ]; then
@@ -71,11 +75,23 @@ if [ "${1:-}" = "--arm" ]; then
     check "victim account exists"                       "id '${VICTIM}'"
     check "Wazuh agent running (telemetry to NG-SIEM)"  "systemctl is-active --quiet wazuh-agent"
     check "active response puc2-isolate deployed"       "[ -x /var/ossec/active-response/bin/puc2-isolate ]"
-    check "baseline egress filter armed (rule 100102)"  "systemctl is-active --quiet puc2-fw-baseline"
-    check "C2 domain resolves (${C2_DOMAIN})"           "getent hosts '${C2_DOMAIN}'"
+    # The next three checks read the state the scenario depends on, not a proxy
+    # for it. On 2026-10-11 all three proxies said OK on a range still contained
+    # from an earlier run: "systemctl is-active" holds for a oneshot unit whatever
+    # happened to its rules, and "getent hosts" succeeded with the C2 name
+    # sinkholed to 0.0.0.0. The beacon never reached the LOG rule, and rule
+    # 100102 had nothing to decode.
+    check "baseline egress filter armed (rule 100102)"  "iptables -C OUTPUT -p tcp --dport '${C2_PORT}' -j LOG --log-prefix '${FW_PREFIX}: ' --log-level 4"
+    check "C2 domain resolves to ${C2_IP} (${C2_DOMAIN})" "[ \"\$(getent hosts '${C2_DOMAIN}' | awk '{print \$1}')\" = '${C2_IP}' ]"
+    # A range handed over after an earlier run still holds that run's containment
+    # and evidence: the beacon is dropped before it is logged, the markers L19 and
+    # L21 grade already exist, the quarantine is full. Reset it first (see the
+    # runbook, "Resetting between runs": puc2-isolate --lift does the firewall).
+    check "no containment left from an earlier run"     "! iptables -C OUTPUT -d '${C2_IP}' -j DROP && [ ! -e '${ISOLATION_MARKER}' ] && [ ! -e '${ERADICATION_MARKER}' ] && [ -z \"\$(ls -A '${QUARANTINE_DIR}' 2>/dev/null)\" ]"
 
     if [ "${fail}" -ne 0 ]; then
         echo "SCENARIO NOT ARMED: fix the failures above and re-run." >&2
+        echo "Trainees: tell your instructor. The range is not ready for this run." >&2
         exit 1
     fi
     echo "SCENARIO ARMED: token=${ARM_TOKEN}"

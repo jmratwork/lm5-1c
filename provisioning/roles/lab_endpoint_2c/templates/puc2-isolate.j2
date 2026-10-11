@@ -34,6 +34,25 @@ log() {
     echo "$(date '+%Y/%m/%d %H:%M:%S') active-response/bin/puc2-isolate: $*" >>"${LOG_FILE}"
 }
 
+# ---- Idempotent firewall changes --------------------------------------------
+# Containment runs more than once per attack: rule {{ puc2_active_response_rules }}
+# matches once per repeated IOC, so a single delivery fires this script twice.
+# It used to insert every rule unconditionally, and rollback deleted one copy of
+# each. A second "-d ${C2_IP} -j DROP" therefore survived every rollback, at the
+# top of OUTPUT, above the baseline egress filter's LOG rule. The next trainee's
+# C2 beacon was dropped there in silence, never logged, and rule 100102 never
+# fired. On victim619 (2026-10-11) the OUTPUT chain held five copies.
+# add_rule inserts or appends only when the rule is absent; del_rule removes
+# every copy, so rollback returns the chain to the baseline whatever it holds.
+add_rule() {   # add_rule -I|-A CHAIN rule-spec...
+    local op="$1" chain="$2"; shift 2
+    iptables -C "${chain}" "$@" 2>/dev/null || iptables "${op}" "${chain}" "$@"
+}
+del_rule() {   # del_rule CHAIN rule-spec...
+    local chain="$1"; shift
+    while iptables -D "${chain}" "$@" 2>/dev/null; do :; done
+}
+
 # ---- Determine the AR command ----------------------------------------------
 # Two entry points, one containment:
 #   * Wazuh manager (rule {{ puc2_active_response_rules }}, UML steps 9-10): the
@@ -70,9 +89,17 @@ if [ "${COMMAND}" = "delete" ]; then
     log "rollback requested — lifting containment"
     iptables -P INPUT ACCEPT  2>/dev/null
     iptables -P OUTPUT ACCEPT 2>/dev/null
-    iptables -D OUTPUT -d "${C2_IP}" -j DROP 2>/dev/null
-    iptables -D INPUT  -p tcp --dport "${SSH_PORT}" -m conntrack --ctstate NEW -j ACCEPT 2>/dev/null
-    iptables -D OUTPUT -p tcp --sport "${SSH_PORT}" -j ACCEPT 2>/dev/null
+    # Every rule step 1 and 2 below can add, every copy of it. The baseline
+    # egress filter (LOG + DROP on tcp/{{ puc2_c2_port }}) is not containment and stays.
+    del_rule OUTPUT -d "${C2_IP}" -j DROP
+    del_rule INPUT  -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+    del_rule OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+    del_rule INPUT  -i lo -j ACCEPT
+    del_rule OUTPUT -o lo -j ACCEPT
+    del_rule INPUT  -s "${SANDBOX_CIDR}" -j ACCEPT
+    del_rule OUTPUT -d "${SANDBOX_CIDR}" -j ACCEPT
+    del_rule INPUT  -p tcp --dport "${SSH_PORT}" -m conntrack --ctstate NEW -j ACCEPT
+    del_rule OUTPUT -p tcp --sport "${SSH_PORT}" -j ACCEPT
     sed -i "/[[:space:]]${C2_DOMAIN}\$/d" /etc/hosts 2>/dev/null
     rm -f "${ISOLATION_MARKER}" "${ERADICATION_MARKER}"
     log "containment lifted"
@@ -91,12 +118,12 @@ log "containment triggered (UML steps 9-10)"
 #    Everything is dropped EXCEPT the flat sandbox subnet, so the Wazuh agent
 #    keeps reporting to NG-SIEM and the SOC control channel survives.
 # =============================================================================
-iptables -I INPUT  -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-iptables -I OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-iptables -I INPUT  -i lo -j ACCEPT
-iptables -I OUTPUT -o lo -j ACCEPT
-iptables -A INPUT  -s "${SANDBOX_CIDR}" -j ACCEPT
-iptables -A OUTPUT -d "${SANDBOX_CIDR}" -j ACCEPT
+add_rule -I INPUT  -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+add_rule -I OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+add_rule -I INPUT  -i lo -j ACCEPT
+add_rule -I OUTPUT -o lo -j ACCEPT
+add_rule -A INPUT  -s "${SANDBOX_CIDR}" -j ACCEPT
+add_rule -A OUTPUT -d "${SANDBOX_CIDR}" -j ACCEPT
 
 # ---- Preserve the administrative control channel ---------------------------
 # Real host isolation keeps an out-of-band path for the responder; here it is
@@ -108,8 +135,8 @@ iptables -A OUTPUT -d "${SANDBOX_CIDR}" -j ACCEPT
 # The already-open session survives on the conntrack rule above; these two make
 # a new one possible. Isolation of the malware's own traffic is unaffected: the
 # payload does not listen on tcp/${SSH_PORT}.
-iptables -A INPUT  -p tcp --dport "${SSH_PORT}" -m conntrack --ctstate NEW -j ACCEPT
-iptables -A OUTPUT -p tcp --sport "${SSH_PORT}" -j ACCEPT
+add_rule -A INPUT  -p tcp --dport "${SSH_PORT}" -m conntrack --ctstate NEW -j ACCEPT
+add_rule -A OUTPUT -p tcp --sport "${SSH_PORT}" -j ACCEPT
 
 iptables -P INPUT  DROP
 iptables -P OUTPUT DROP
@@ -120,7 +147,7 @@ log "network isolation applied (allow-list: ${SANDBOX_CIDR}, admin channel tcp/$
 #    The attacker host sits inside the sandbox CIDR allowed above, so it needs
 #    an explicit DROP inserted ahead of that allow rule.
 # =============================================================================
-iptables -I OUTPUT -d "${C2_IP}" -j DROP
+add_rule -I OUTPUT -d "${C2_IP}" -j DROP
 # The scenario pre-seeds "${C2_IP} ${C2_DOMAIN}" in /etc/hosts as a sinkhole so
 # the beacon is observable before containment. REPLACE that line rather than
 # appending: with two entries the first one wins, and the first would still be

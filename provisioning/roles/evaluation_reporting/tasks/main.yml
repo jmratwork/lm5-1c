@@ -27,6 +27,72 @@
     dest: "{{ puc2_eval_root }}/collect_evaluation.sh"
     mode: '0750'
 
+# ── Evidence channel to the endpoint (UML step 11 status, read for step 13) ──
+# collect_evaluation.sh reads the containment markers and the active-response
+# log off the victim. It used to ssh there in BatchMode with no key authorised
+# anywhere, so that half of every report was "unreachable" - on 2026-10-11 the
+# host was isolated, which the report blamed, but isolation keeps the sandbox
+# subnet open. The key below is single-purpose: authorised only from this
+# host's testnet address, and bound to a forced read-only command, so holding it
+# lets you read the evidence and nothing else.
+- name: Ensure the evidence key's directory exists on ng-siem
+  ansible.builtin.file:
+    path: "{{ puc2_eval_key | dirname }}"
+    state: directory
+    mode: '0700'
+
+- name: Create the evidence key on ng-siem
+  ansible.builtin.command: >-
+    ssh-keygen -q -t ed25519 -N "" -C puc2-evidence -f {{ puc2_eval_key }}
+  args:
+    creates: "{{ puc2_eval_key }}"
+
+- name: Read the evidence public key
+  ansible.builtin.slurp:
+    src: "{{ puc2_eval_key }}.pub"
+  register: puc2_eval_pubkey
+
+- name: Deploy the read-only evidence command on the victim
+  ansible.builtin.copy:
+    dest: /usr/local/sbin/puc2-evidence
+    owner: root
+    group: root
+    mode: '0755'
+    content: |
+      #!/bin/sh
+      # Forced command of the puc2-evidence key (role evaluation_reporting).
+      # Read-only: prints the containment markers and the active-response log
+      # for collect_evaluation.sh on ng-siem, whatever command was requested.
+      for m in {{ puc2_isolation_marker }} {{ puc2_eradication_marker }}; do
+        echo "== ${m} =="
+        cat "${m}" 2>/dev/null || echo "(not present)"
+      done
+      echo "== /var/ossec/logs/active-responses.log (puc2-isolate) =="
+      grep -i puc2-isolate /var/ossec/logs/active-responses.log 2>/dev/null | tail -n 30
+  delegate_to: victim
+
+- name: Ensure the victim management user has an ssh directory
+  ansible.builtin.file:
+    path: "/home/{{ puc2_victim_mgmt_user }}/.ssh"
+    state: directory
+    owner: "{{ puc2_victim_mgmt_user }}"
+    group: "{{ puc2_victim_mgmt_user }}"
+    mode: '0700'
+  delegate_to: victim
+
+- name: Authorise the evidence key on the victim, from ng-siem only, read-only
+  ansible.builtin.lineinfile:
+    path: "/home/{{ puc2_victim_mgmt_user }}/.ssh/authorized_keys"
+    create: true
+    owner: "{{ puc2_victim_mgmt_user }}"
+    group: "{{ puc2_victim_mgmt_user }}"
+    mode: '0600'
+    regexp: ' puc2-evidence$'
+    line: >-
+      from="{{ puc2_ng_siem_ip }}",command="sudo -n /usr/local/sbin/puc2-evidence",no-pty,no-port-forwarding,no-agent-forwarding,no-X11-forwarding
+      {{ puc2_eval_pubkey.content | b64decode | trim }}
+  delegate_to: victim
+
 - name: Report how to produce the debrief
   ansible.builtin.debug:
     msg: >-
