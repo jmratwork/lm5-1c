@@ -94,6 +94,23 @@
     dest: "/opt/dfir-iris-custom.zip"
     remote_src: true
     mode: "0644"
+  register: iris_bundle_copy
+
+# The IRIS bundle comes from the SMB share, outside this repo, and can change
+# between deploys without a commit here. When IRIS breaks in a way no commit
+# explains (2026-10-11: nginx exiting on start), the first question is whether
+# the bundle changed - and no earlier log kept its checksum to compare against.
+# Reference, from the 2026-10-11 15:07 deploy: sha1 061bfacf2bb3ec4d0bb221332b29b005c46b2187,
+# md5 d8913efbd84ad8ecf3762ca689032ca9, 15109320 bytes. (copy reports md5sum
+# only when it actually copies; the sha1 checksum is always there.)
+- name: Record which DFIR-IRIS bundle this deploy uses
+  ansible.builtin.debug:
+    msg: >-
+      DFIR-IRIS bundle: sha1 {{ iris_bundle_copy.checksum | default('?') }},
+      md5 {{ iris_bundle_copy.md5sum | default('(not reported, unchanged copy)') }},
+      {{ iris_bundle_copy.size | default('?') }} bytes, from
+      /mnt/smb_shared/dfir-iris-custom.zip. Compare with the previous deploy's
+      log when IRIS behaves differently.
 
 - name: Create NG-SOAR directory for the yml
   file:
@@ -895,11 +912,14 @@
         content = f.read()
 
     changed = False
+    missing = []
 
     # Fix port mapping 8083:80 → 8083:443 (nginx serves HTTPS on 443, not 80)
     if '"8083:80"' in content:
         content = content.replace('"8083:80"', '"8083:443"', 1)
         changed = True
+    elif '"8083:443"' not in content:
+        missing.append('the nginx port mapping "8083:80" / "8083:443"')
 
     # Add cert volumes to nginx service (insert before depends_on block)
     if 'nginx-certs' not in content:
@@ -913,16 +933,27 @@
         if old in content:
             content = content.replace(old, new, 1)
             changed = True
+        else:
+            missing.append("the nginx service's depends_on/networks block (where the cert volumes go)")
 
     if changed:
         with open(path, 'w') as f:
             f.write(content)
-        print('patched')
+
+    # "already_patched" used to be printed for BOTH a compose file this task had
+    # already patched AND one it could not patch at all - so a new IRIS bundle
+    # whose compose no longer matched would sail through, nginx would start
+    # without certificates or on the wrong port, and the failure would surface
+    # minutes later as a bare port timeout. Say which it is.
+    if missing:
+        print('not_applicable: could not find ' + '; '.join(missing))
     else:
-        print('already_patched')
+        print('patched' if changed else 'already_patched')
     PYEOF
   register: compose_patch
-  changed_when: "'patched' in compose_patch.stdout"
+  # an exact match: 'patched' is also a substring of 'already_patched'
+  changed_when: "compose_patch.stdout | trim == 'patched'"
+  failed_when: "'not_applicable' in compose_patch.stdout or compose_patch.rc != 0"
 
 # ── Make the image build independent of github.com egress (Option 2) ─────────
 # evtx2splunk pulls splunk-hec from git+https://github.com/... during
@@ -978,8 +1009,31 @@
 # The retry stays: a reset mid-build is real and a second attempt fixes it.
 # What it must NOT do is keep retrying a rate limit. See
 # defaults/main.yml (docker_hub_rate_limit_pattern) for why.
+# The 2026-10-11 15:07 build failed twice before it worked, and the log said
+# only "FAILED - RETRYING" each time: an until-loop keeps the result of the LAST
+# attempt and Ansible prints a retried attempt's result only at -vv. So the first
+# attempt runs on its own, its failure is reported in the log, and only then
+# does the retry loop start.
 - name: Build and run DFIR-IRIS
   block:
+    - name: Build and run DFIR-IRIS - first attempt
+      community.docker.docker_compose_v2:
+        project_src: "/opt/dfir-iris-custom"
+        state: present
+        build: always
+      register: dfir_iris_first
+      ignore_errors: true   # reported by the next task, then retried or failed
+
+    - name: Report why the first DFIR-IRIS attempt failed
+      ansible.builtin.debug:
+        msg: >-
+          The first DFIR-IRIS build/run attempt failed{{ ' (Docker Hub rate limit - not retried)'
+          if ((dfir_iris_first.msg | default('') ~ ' ' ~ dfir_iris_first.stderr | default('')) | lower
+              is search(docker_hub_rate_limit_pattern)) else '; retrying' }}. Docker said:
+          {{ ((dfir_iris_first.msg | default('(no message)')) ~ ' '
+              ~ (dfir_iris_first.stderr | default(''))) | trim | truncate(2000) }}
+      when: dfir_iris_first is failed
+
     - name: Build and run DFIR-IRIS
       community.docker.docker_compose_v2:
         project_src: "/opt/dfir-iris-custom"
@@ -988,64 +1042,122 @@
       register: dfir_iris_output
       # Stop the loop on success OR on a rate limit. Breaking out on 429 does
       # not make the task pass - it still fails, into the rescue below - it just
-      # fails after ONE attempt with the right diagnosis instead of after five
-      # and 2.5 minutes with the wrong one.
+      # fails with the right diagnosis instead of after every retry with the
+      # wrong one.
       until: >-
         dfir_iris_output is succeeded
         or ((dfir_iris_output.msg | default('') ~ ' ' ~ dfir_iris_output.stderr | default('')) | lower
             is search(docker_hub_rate_limit_pattern))
-      retries: 5
+      retries: 4
       delay: 30
+      when:
+        - dfir_iris_first is failed
+        - not ((dfir_iris_first.msg | default('') ~ ' ' ~ dfir_iris_first.stderr | default('')) | lower
+               is search(docker_hub_rate_limit_pattern))
+
+    - name: Stop on a Docker Hub rate limit hit by the first attempt
+      ansible.builtin.fail:
+        msg: "rate limit on the first attempt"
+      when:
+        - dfir_iris_first is failed
+        - (dfir_iris_first.msg | default('') ~ ' ' ~ dfir_iris_first.stderr | default('')) | lower
+          is search(docker_hub_rate_limit_pattern)
 
   rescue:
     - name: Say whether this was the rate limit or a genuine build failure
       ansible.builtin.fail:
+        # iris_build: the retry loop's result when it ran, otherwise the first
+        # attempt's. Set inside the template, so the result dict is never
+        # stringified on the way (a task-level var would be).
         msg: >-
-          {% if (dfir_iris_output.msg | default('') ~ ' ' ~ dfir_iris_output.stderr | default('')) | lower
+          {% set iris_build = dfir_iris_output
+             if (dfir_iris_output is defined and dfir_iris_output is not skipped)
+             else dfir_iris_first %}
+          {% if (iris_build.msg | default('') ~ ' ' ~ iris_build.stderr | default('')) | lower
                 is search(docker_hub_rate_limit_pattern) %}
           DFIR-IRIS could not be built. {{ docker_hub_rate_limit_help }}
-          Stopped after {{ dfir_iris_output.attempts | default(1) }} attempt(s) rather
+          Stopped after {{ 1 + (iris_build.attempts | default(0)) }} attempt(s) rather
           than retrying into the same limit. Docker said:
-          {{ dfir_iris_output.msg | default('(no message)') }}
+          {{ iris_build.msg | default('(no message)') }}
           {% else %}
           DFIR-IRIS could not be built, and it is NOT a Docker Hub rate limit -
-          the retry budget ({{ dfir_iris_output.attempts | default('?') }} attempts)
+          the retry budget (1 + {{ iris_build.attempts | default('?') }} attempts)
           was spent on a real failure. Docker said:
-          {{ dfir_iris_output.msg | default('(no message)') }}
-          {{ dfir_iris_output.stderr | default('') }}
+          {{ iris_build.msg | default('(no message)') }}
+          {{ iris_build.stderr | default('') }}
           {% endif %}
 
 # ── Wait for iris_app healthy ─────────────────────────────────────────────────
 
+# docker_container_info returns the whole container, environment included, and
+# Ansible logged that result: POSTGRES_PASSWORD, IRIS_SECRET_KEY and the MISP API
+# key, in clear, in the deployment log the platform keeps (2026-10-11 15:07).
+# Only the health status is needed, so only the health status is asked for.
 - name: Wait for iris_app container to become healthy
-  community.docker.docker_container_info:
-    name: iris_app
-  register: iris_app_info
-  until: iris_app_info.container.State.Health.Status == "healthy"
+  ansible.builtin.command:
+    cmd: "docker inspect --format '{% raw %}{{.State.Health.Status}}{% endraw %}' iris_app"
+  register: iris_app_health
+  until: iris_app_health.stdout | trim == 'healthy'
   retries: 36
   delay: 5
+  changed_when: false
 
 # ── Certs are volume-mounted from nginx-certs/ — nginx starts with them ──────
 # ── Restart to ensure clean state after compose up ───────────────────────────
 
-- name: Restart iris_nginx
-  ansible.builtin.command:
-    cmd: docker restart iris_nginx
-  changed_when: true
+# On 2026-10-11 15:07 iris_nginx exited with code 1 right after compose up and
+# again after this restart, port 8083 never opened, and the deploy died on a bare
+# "Timeout when waiting for 127.0.0.1:8083" - with no word from nginx itself,
+# which is the only thing that can say why. The rescue below collects that.
+- name: Start iris_nginx and wait for port 8083
+  block:
+    - name: Restart iris_nginx
+      ansible.builtin.command:
+        cmd: docker restart iris_nginx
+      changed_when: true
 
-- name: Wait for iris_nginx to stabilise
-  ansible.builtin.pause:
-    seconds: 8
+    - name: Wait for iris_nginx to stabilise
+      ansible.builtin.pause:
+        seconds: 8
 
-# ── Wait for port 8083 ────────────────────────────────────────────────────────
+    - name: Wait for DFIR-IRIS nginx port 8083
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: 8083
+        state: started
+        delay: 2
+        timeout: 60
 
-- name: Wait for DFIR-IRIS nginx port 8083
-  ansible.builtin.wait_for:
-    host: 127.0.0.1
-    port: 8083
-    state: started
-    delay: 2
-    timeout: 60
+  rescue:
+    # Read-only. No environment is printed (the container's env holds secrets):
+    # state, published ports, mounts, the certificates on disk and nginx's log.
+    - name: Collect iris_nginx's own account of why 8083 is not open
+      ansible.builtin.shell:
+        cmd: |
+          {% raw %}
+          set +e
+          echo "== state =="
+          docker inspect --format 'status={{.State.Status}} exit={{.State.ExitCode}} error={{.State.Error}} restarts={{.RestartCount}}' iris_nginx
+          echo "== published ports =="
+          docker inspect --format '{{json .HostConfig.PortBindings}}' iris_nginx
+          echo "== mounts =="
+          docker inspect --format '{{range .Mounts}}{{.Source}} -> {{.Destination}}{{println}}{{end}}' iris_nginx
+          echo "== certificates on the host =="
+          ls -l /opt/dfir-iris-custom/nginx-certs/
+          echo "== last 60 lines of the iris_nginx log =="
+          docker logs --tail 60 iris_nginx 2>&1
+          true
+          {% endraw %}
+      register: iris_nginx_diag
+      changed_when: false
+
+    - name: FAIL with nginx's own account of the failure
+      ansible.builtin.fail:
+        msg: |-
+          DFIR-IRIS nginx never listened on 127.0.0.1:8083, so CICMS is
+          unreachable and nothing after this point can run. What iris_nginx
+          reports about itself:
+          {{ iris_nginx_diag.stdout | default('(no diagnostics collected)') }}
 
 # ── Resolve DFIR-IRIS API key ─────────────────────────────────────────────────
 
@@ -1216,13 +1328,15 @@
   ansible.builtin.command: docker restart iris_app
   changed_when: true
 
+# Health status only - see "Wait for iris_app container to become healthy".
 - name: Wait for iris_app to be healthy after module config restart
-  community.docker.docker_container_info:
-    name: iris_app
-  register: iris_app_info2
-  until: iris_app_info2.container.State.Health.Status == "healthy"
+  ansible.builtin.command:
+    cmd: "docker inspect --format '{% raw %}{{.State.Health.Status}}{% endraw %}' iris_app"
+  register: iris_app_health2
+  until: iris_app_health2.stdout | trim == 'healthy'
   retries: 36
   delay: 5
+  changed_when: false
 
 ######################## MISP MCP Server ######################################
 
