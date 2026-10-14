@@ -388,6 +388,20 @@ without runtime proof that rule 100101 alerts, that 100103 correlates, or that
 containment writes the markers L19/L21 grade. The log says so explicitly when it
 happens. Do not hand a sandbox to students off such a run without re-checking.
 
+**A stray quote in a script stops the deploy before anything runs.** Many tasks
+pass their shell or Python script as free-form text (`ansible.builtin.shell: |`).
+Ansible pairs every `'` and `"` in that text when it loads the playbook, and it
+does not skip comments. On 2026-10-14 one apostrophe in a comment (`bundle's`, in
+the IRIS compose patch) aborted the deploy with `failed at splitting arguments,
+either an unbalanced jinja2 block or quotes`, and no host was touched. That run
+therefore tested nothing: the fixes from `1b98445`, `88f4081` and `759a464`
+still await their first deploy. It was the second time: `16f39ff` fixed the same
+failure on 2026-09-14. Keep the quotes paired everywhere in such a script,
+comments included, or pass the script as `cmd:`, which Ansible does not split.
+Before a commit, parse every task the way the runner does at load time: running
+the script on its own does not catch this, and that patch had passed against the
+compose files of both IRIS bundles.
+
 #### The Docker Hub limit is the most likely way a deploy dies
 
 `docker-server` is the first play, and a failure there ends the whole job — the
@@ -465,8 +479,10 @@ six is down to two:
    requests against the limit that was already the problem. It stops after one
    attempt and names the PAT as the fix.
 
-This has now met live deploys: since 2026-09-14 `docker-server` finishes on every
-run. The evidence is in three lines worth grepping for. The 2026-09-15 08:46 log
+This has now met live deploys: since 2026-09-14 no deploy has died on Docker
+Hub. `docker-server` finished on every run until 2026-10-11 15:07, when it died
+on the new IRIS bundle instead (see *Things a deploy now refuses to do quietly*).
+The evidence is in three lines worth grepping for. The 2026-09-15 08:46 log
 reads `Docker Hub auth: LOGGED_IN as demongsoc`: the substrate's credential is in
 use, so pulls count against that account. It shows `SEEDED` for all four
 pre-pulled images, and a measured anonymous headroom of 31 of 100 on the egress

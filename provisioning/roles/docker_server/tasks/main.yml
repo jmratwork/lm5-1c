@@ -922,6 +922,9 @@
   args:
     creates: /opt/dfir-iris-custom/nginx-certs/iris_dev_cert.pem
 
+# Free-form shell text: Ansible pairs the quotes in it when it loads the
+# playbook, comments included, so a lone apostrophe in a comment below aborts
+# the whole deploy before any task runs (2026-10-14: "bundle's").
 - name: Patch docker-compose.yml — mount certs into nginx and expose port 443
   ansible.builtin.shell: |
     python3 <<'PYEOF'
@@ -946,7 +949,7 @@
         if '"8083:443"' not in content:
             missing.append('the nginx port mapping "8083:80" / "8080:80" / "8083:443"')
 
-    # The new bundle's worker waits for "app:8000", but the service is iris_app,
+    # The worker in the new bundle waits for "app:8000", but the service is iris_app,
     # so the worker never starts: no module hooks, no webhooks. Optional - the old
     # bundle does not carry this line at all.
     if '"app:8000"' in content:
