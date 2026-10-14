@@ -100,9 +100,11 @@
 # between deploys without a commit here. When IRIS breaks in a way no commit
 # explains (2026-10-11: nginx exiting on start), the first question is whether
 # the bundle changed - and no earlier log kept its checksum to compare against.
-# Reference, from the 2026-10-11 15:07 deploy: sha1 061bfacf2bb3ec4d0bb221332b29b005c46b2187,
-# md5 d8913efbd84ad8ecf3762ca689032ca9, 15109320 bytes. (copy reports md5sum
-# only when it actually copies; the sha1 checksum is always there.)
+# Reference, from the 2026-10-11 15:07 deploy - the NEW bundle (nginx "8080:80",
+# worker "app:8000"), on the share since about 2026-10-07: sha1
+# 061bfacf2bb3ec4d0bb221332b29b005c46b2187, md5 d8913efbd84ad8ecf3762ca689032ca9,
+# 15109320 bytes. (copy reports md5sum only when it actually copies; the sha1
+# checksum is always there.)
 - name: Record which DFIR-IRIS bundle this deploy uses
   ansible.builtin.debug:
     msg: >-
@@ -885,6 +887,22 @@
     line: "SESSION_COOKIE_SECURE=False"
     state: present
 
+# Re-synced from ng-soc-ansible@integrations (bb871d3, 2026-10-13): the IRIS
+# bundle that replaced the old one around 2026-10-07 talks to NG-SOAR itself.
+- name: Inject NG-SOAR integration settings into DFIR-IRIS .env
+  ansible.builtin.lineinfile:
+    path: /opt/dfir-iris-custom/.env
+    regexp: '^{{ item.key }}='
+    line: "{{ item.key }}={{ item.value }}"
+    state: present
+  loop:
+    # cacao_roaster container from /opt/NG-SOAR (0.0.0.0:3000)
+    - { key: CACAO_ROASTER_URL, value: "http://{{ docker_server_internal_ip }}:3000" }
+    # soarca_server container from /opt/NG-SOAR (0.0.0.0:8080, plain HTTP)
+    - { key: SOARCA_URL,        value: "http://{{ docker_server_internal_ip }}:8080" }
+    # false = real runs through SOARCA, true = mocked demo output
+    - { key: NGSOAR_DEMO,       value: "false" }
+
 # ── Pre-generate TLS certs so nginx has them on first boot ───────────────────
 
 - name: Create nginx-certs directory on host
@@ -914,12 +932,26 @@
     changed = False
     missing = []
 
-    # Fix port mapping 8083:80 → 8083:443 (nginx serves HTTPS on 443, not 80)
-    if '"8083:80"' in content:
-        content = content.replace('"8083:80"', '"8083:443"', 1)
+    # nginx listens on 443 ssl and the project addresses it as host 8083. The old
+    # bundle mapped "8083:80"; the bundle on the share since ~2026-10-07 maps
+    # "8080:80" (ng-soc-ansible@integrations handles both since bb871d3). Patching
+    # only the old form left nginx asking for host 8080, which SOARCA already
+    # holds, so it exited at once and 8083 never opened (2026-10-11 15:07).
+    for _src in ('"8083:80"', '"8080:80"'):
+        if _src in content:
+            content = content.replace(_src, '"8083:443"', 1)
+            changed = True
+            break
+    else:
+        if '"8083:443"' not in content:
+            missing.append('the nginx port mapping "8083:80" / "8080:80" / "8083:443"')
+
+    # The new bundle's worker waits for "app:8000", but the service is iris_app,
+    # so the worker never starts: no module hooks, no webhooks. Optional - the old
+    # bundle does not carry this line at all.
+    if '"app:8000"' in content:
+        content = content.replace('"app:8000"', '"iris_app:8000"', 1)
         changed = True
-    elif '"8083:443"' not in content:
-        missing.append('the nginx port mapping "8083:80" / "8083:443"')
 
     # Add cert volumes to nginx service (insert before depends_on block)
     if 'nginx-certs' not in content:
@@ -1104,6 +1136,45 @@
 
 # ── Certs are volume-mounted from nginx-certs/ — nginx starts with them ──────
 # ── Restart to ensure clean state after compose up ───────────────────────────
+
+# ── DFIR-IRIS administrator password ─────────────────────────────────────────
+# The bundle on the share since ~2026-10-07 seeds its database from a dump that
+# already holds the administrator, so IRIS_ADM_PASSWORD is ignored and no
+# password is printed at first boot - which is exactly where CREDENTIALS.txt
+# used to send people. ng-soc-ansible@integrations (bb871d3) now sets it to a
+# fixed "IrisAdmin123", a password published in a public repository. Here it is
+# random per deploy, kept in a root-only file on this host, set with the
+# application's own bcrypt, and published inside the sandbox by puc2_credentials.
+# It never becomes an Ansible variable or a log line: the file is read by the
+# shell, and only the bcrypt hash crosses into the database.
+- name: Create a per-deploy DFIR-IRIS administrator password (root-only file)
+  ansible.builtin.shell:
+    cmd: |
+      set -eu
+      f="{{ iris_admin_password_file }}"
+      if [ -s "$f" ]; then echo kept; exit 0; fi
+      umask 077
+      openssl rand -base64 32 | tr -dc 'A-Za-z0-9' | cut -c1-20 > "$f"
+      [ "$(wc -c < "$f")" -ge 16 ] || { echo "password too short"; exit 1; }
+      echo created
+  register: iris_admin_pw_file
+  changed_when: "'created' in iris_admin_pw_file.stdout"
+
+- name: Set the DFIR-IRIS administrator password with the application's own bcrypt
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+      hash=$(docker exec -i iris_app python3 -c 'import sys, bcrypt; print(bcrypt.hashpw(sys.stdin.read().strip().encode(), bcrypt.gensalt(12)).decode())' < "{{ iris_admin_password_file }}")
+      case "$hash" in
+        '$2'[aby]'$'*) ;;
+        *) echo "the iris_app bcrypt did not return a hash"; exit 1 ;;
+      esac
+      printf "UPDATE \"user\" SET password = '%s' WHERE \"user\" = 'administrator';\n" "$hash" \
+        | docker exec -i iris_db psql -U postgres -d iris_db -v ON_ERROR_STOP=1
+    executable: /bin/bash
+  register: iris_admin_pw_set
+  changed_when: "'UPDATE 1' in iris_admin_pw_set.stdout"
+  failed_when: "iris_admin_pw_set.rc != 0 or 'UPDATE 1' not in iris_admin_pw_set.stdout"
 
 # On 2026-10-11 15:07 iris_nginx exited with code 1 right after compose up and
 # again after this restart, port 8083 never opened, and the deploy died on a bare
@@ -1337,6 +1408,56 @@
   retries: 36
   delay: 5
   changed_when: false
+
+# ── DFIR-IRIS MISP module ────────────────────────────────────────────────────
+# The new bundle ships its modules disabled in the database. Enabling the MISP
+# module through the API is also what registers its hooks ("Get MISP insight"),
+# which the IRIS-MISP enrichment of UML step 8 relies on. Re-synced from
+# ng-soc-ansible@integrations bb871d3. Non-fatal and self-reporting: no graded
+# level depends on it (L9 and L15 read MISP through cti_lookup.sh).
+- name: Get DFIR-IRIS MISP module id
+  community.docker.docker_container_exec:
+    container: iris_db
+    command: >-
+      psql -U postgres -d iris_db -t -A -c
+      "SELECT id FROM iris_module WHERE module_name = 'iris_misp_module';"
+  register: iris_misp_mod_id
+  changed_when: false
+  failed_when: false
+
+- name: Enable the DFIR-IRIS MISP module (registers its hooks)
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:8083/manage/modules/enable/{{ iris_misp_mod_id.stdout | default('') | trim }}"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ iris_api_key }}"
+    validate_certs: false
+    return_content: true
+    timeout: 30
+    status_code: [200, 400]
+  register: iris_misp_enable
+  # "Module enabled", or an "already enabled" answer on a re-run
+  until: "'enabled' in (iris_misp_enable.content | default('') | lower)"
+  retries: 10
+  delay: 6
+  failed_when: false
+  no_log: true            # the Authorization header is a credential
+  when: iris_misp_mod_id.stdout | default('') | trim is match('^[0-9]+$')
+
+# The request is hidden for its token; the answer carries none, so it is shown.
+- name: Report whether the DFIR-IRIS MISP module is enabled
+  ansible.builtin.debug:
+    msg: >-
+      {% if iris_misp_enable is skipped %}
+      DFIR-IRIS MISP module NOT enabled: its id could not be read from iris_db
+      ({{ iris_misp_mod_id.stdout | default('') | trim | default('no output', true) }}).
+      {% elif 'enabled' in (iris_misp_enable.content | default('') | lower) %}
+      DFIR-IRIS MISP module enabled (HTTP {{ iris_misp_enable.status | default('?') }}).
+      {% else %}
+      DFIR-IRIS MISP module NOT enabled - HTTP {{ iris_misp_enable.status | default('?') }}:
+      {{ (iris_misp_enable.content | default('(no body)'))[:300] }}
+      {% endif %}
+      No graded level depends on it; L9 and L15 read MISP through cti_lookup.sh.
 
 ######################## MISP MCP Server ######################################
 

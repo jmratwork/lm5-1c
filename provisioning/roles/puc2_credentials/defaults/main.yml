@@ -17,5 +17,9 @@ puc2_iris_admin_user: "administrator"
 # operator where to read a password the .env does not carry.
 puc2_iris_container: "iris_app"
 
+# Written by docker_server (iris_admin_password_file): the per-deploy IRIS
+# administrator password. The new IRIS bundle ignores IRIS_ADM_PASSWORD.
+puc2_iris_admin_password_file: "/root/.puc2_iris_admin_password"
+
 docker_server_internal_ip: "10.0.16.60"
 puc2_ng_siem_ip: "10.0.16.70"

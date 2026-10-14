@@ -21,7 +21,7 @@ vendored here:
 |---|---|---|
 | `topology.yml` | the tested flat `testnet` 10.0.16.0/24 | none |
 | `provisioning/roles/all/` | `/etc/hosts` wiring, sandbox command logging | none of substance |
-| `provisioning/roles/docker_server/` | MISP, DFIR-IRIS, NG-SOAR; publishes `misp_api_key`, `iris_api_key`, `docker_server_internal_ip` | **yes, the most** — hardcoded credentials taken out of the repo, the DFIR-IRIS build no longer depends on a `github.com` clone, unset MISP compose variables pinned, obsolete `version:` key dropped, and the whole Docker Hub rate-limit story below (preflight, pre-pull from other registries, fail-fast on 429) |
+| `provisioning/roles/docker_server/` | MISP, DFIR-IRIS, NG-SOAR; publishes `misp_api_key`, `iris_api_key`, `docker_server_internal_ip` | **yes, the most** — hardcoded credentials taken out of the repo, the DFIR-IRIS build no longer depends on a `github.com` clone, unset MISP compose variables pinned, obsolete `version:` key dropped, and the whole Docker Hub rate-limit story below (preflight, pre-pull from other registries, fail-fast on 429). Its DFIR-IRIS part was **re-synced with `integrations@bb871d3` (2026-10-13)** for the IRIS bundle that replaced the old one on the SMB share around 2026-10-07: nginx published as `"8080:80"` and patched to `8083:443`, the worker's `app:8000` corrected to `iris_app:8000`, NG-SOAR settings in IRIS's `.env`, and the MISP module enabled through the API. Upstream's fixed administrator password (`IrisAdmin123`, public) is **not** taken: the password is random per deploy and published in `CREDENTIALS.txt` |
 | `provisioning/roles/ng-siem/` | the `siemng` image (Wazuh + SPHYNX stack); injects the MISP and `custom-iris` integrations into `ossec.conf` | minor |
 | `provisioning/roles/victim/` | Wazuh agent, enrolled against `ng-siem` at install time via `WAZUH_MANAGER` | minor — its version-less `apt` install is steered by an apt pin the overlay writes *beforehand* (`puc2_agent_pin`), not by editing the role |
 
@@ -595,7 +595,7 @@ Each of these shipped green at least once:
 | Containment runs twice per attack (rule 100103 matches once per repeated IOC), every run inserted its rules again, and rollback deleted one copy of each. A C2 DROP therefore survived the rehearsal's cleanup at the top of OUTPUT, above the egress filter's LOG rule, and the first trainee's beacon was dropped unlogged: rule 100102 never fired. On victim619 (2026-10-11) the chain held five copies | `puc2-isolate` adds a rule only when it is absent, and its rollback removes every copy of every rule it can add, leaving the baseline LOG/DROP alone |
 | `inject_scenario.sh --arm` said OK on a range still contained from an earlier run. It checked proxies: `systemctl is-active` on a oneshot unit, and `getent hosts` while the C2 name was sinkholed to 0.0.0.0 | `--arm`, which the rehearsal and the gate both run, checks the LOG rule itself, checks that the C2 name resolves to the C2 address, and refuses to arm while any containment rule, marker or quarantined file from an earlier run remains |
 | The evaluation report's endpoint section always read "unreachable — host may be isolated". Isolation keeps the sandbox subnet open; no key had ever been authorised for that SSH call | a single-purpose key from ng-siem, authorised on the victim only from ng-siem's address and bound to a forced read-only command that prints the markers and the active-response log |
-| `iris_nginx` exited with code 1 on start and the deploy died on a bare `Timeout when waiting for 127.0.0.1:8083`, with nothing from nginx itself (2026-10-11 15:07). In the same run the iris_app health wait printed the container's whole environment, including the database password, the IRIS secret key and the MISP API key, into the deployment log | the nginx restart and port wait sit in a block whose rescue reports the container state, published ports, mounts, certificates and nginx's own log. The health waits ask Docker for the health status only. The compose patch fails when it cannot find what it patches, instead of saying "already_patched". Each deploy logs the IRIS bundle's checksum, and a failed first build attempt reports why |
+| `iris_nginx` exited with code 1 on start and the deploy died on a bare `Timeout when waiting for 127.0.0.1:8083`, with nothing from nginx itself (2026-10-11 15:07). The cause turned out to sit outside this repo: the IRIS bundle on the SMB share had been replaced around 2026-10-07, and the new one publishes nginx as `"8080:80"`. The compose patch converted only the old `"8083:80"`, said "already_patched" anyway, and left nginx asking for host 8080, which SOARCA already holds. In the same run the iris_app health wait printed the container's whole environment, including the database password, the IRIS secret key and the MISP API key, into the deployment log | the compose patch handles both bundles (`"8083:80"` and `"8080:80"` to `8083:443`, and the new worker's `app:8000` to `iris_app:8000`, as `integrations@bb871d3` does), and fails when it cannot find what it patches. The nginx restart and port wait sit in a block whose rescue reports the container state, published ports, mounts, certificates and nginx's own log. The health waits ask Docker for the health status only. Each deploy logs the IRIS bundle's checksum, and a failed first build attempt reports why |
 | `ngsoar_trigger.sh` dead-ended on `HTTP 400 Failed to decode playbook` (SOARCA expects a CACAO document; the library is Ansible-style), and `share_intel.sh` died under `set -e` on MISP's `{"response": [...]}` sharing-group shape | a 4xx is explained and hands the operator the same containment the active response runs; the sharing-group filter accepts both response shapes |
 
 ---
@@ -703,8 +703,16 @@ ansible-playbook provisioning/playbook.yml \
 
 **Credentials.** Dashboard logins are published inside the sandbox, never in this
 repo or the training JSON: `sudo cat /opt/puc2/CREDENTIALS.txt` on
-**docker-server** (0600, root). Any password not resolvable from the deployed
-`.env` is named in that file with where to fetch it, rather than guessed.
+**docker-server** (0600, root). What it holds, entry by entry:
+
+| Entry | Where the value comes from |
+|---|---|
+| CTI-SS (MISP) | `ADMIN_PASSWORD` in MISP's `.env`, or MISP-docker's default, flagged as unconfirmed |
+| CICMS (DFIR-IRIS) | a password `docker_server` generates for **this** deploy, keeps in `/root/.puc2_iris_admin_password` and sets with IRIS's own bcrypt. The current IRIS bundle seeds its database from a dump and ignores `IRIS_ADM_PASSWORD`, so the old "read it in `docker logs` at first boot" route is gone |
+| NG-SIEM (Wazuh dashboard) | user `admin`; the password is set by the siemng image on ng-siem, not by this deployment, so the file says the instructor confirms it. Every level that mentions the dashboard has a console path |
+| Nodes | the range password, the same one the training definition gives |
+
+No value is guessed, and none travels through an Ansible variable or the log.
 
 **Level → console → dashboard.** All 15 hands-on levels, and the gate that
 verifies each is answerable:
@@ -763,6 +771,18 @@ publishes; `provisioning/group_vars/vault.yml` (git-ignored, see
 > public in the upstream substrate and the IRIS key is in this repo's history —
 > and **this repository is public**. All three must be rotated;
 > `validation/SECURITY_ROTATION.md` has the steps.
+>
+> **Upstream added a fourth (2026-10-13).** `integrations@bb871d3` sets the
+> DFIR-IRIS administrator to a fixed `IrisAdmin123`. This overlay took the rest
+> of that IRIS re-sync but not the password: here it is random per deploy (see
+> *Credentials* above).
+>
+> **And the IRIS bundle carries two.** The 2026-10-11 15:07 deployment log, which
+> the platform keeps, printed iris_app's environment before that was fixed:
+> `POSTGRES_PASSWORD` and `IRIS_SECRET_KEY` come from the `.env` inside
+> `dfir-iris-custom.zip` on the SMB share, so they are the same in every sandbox
+> built from it and should be changed in the bundle. The MISP key in that log
+> belonged to that sandbox alone.
 >
 > **Supplying the Docker Hub PAT.** Not needed today: the role falls back to the
 > substrate's published credential and pre-pulls four of the six images from

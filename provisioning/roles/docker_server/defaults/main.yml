@@ -182,3 +182,9 @@ docker_hub_required_pulls: 2
 # Set false to skip the preflight entirely (an air-gapped mirror, a registry
 # proxy, or any setup where reaching auth.docker.io is not meaningful).
 docker_hub_preflight_enabled: true
+
+# ── DFIR-IRIS administrator password ─────────────────────────────────────────
+# Random per deploy, written here (root, 0600) and set with IRIS's own bcrypt;
+# puc2_credentials publishes it in CREDENTIALS.txt. Never a fixed value: the
+# upstream substrate's "IrisAdmin123" is public.
+iris_admin_password_file: "/root/.puc2_iris_admin_password"
