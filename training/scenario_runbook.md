@@ -80,7 +80,12 @@ it deduplicates on a SOC id that is the same every run.
 # and rules other roles own.
 sudo /var/ossec/active-response/bin/puc2-isolate --lift
 echo "10.0.16.50 c2.puc2-training.lab" | sudo tee -a /etc/hosts   # the observable sinkhole --arm checks
-sudo rm -rf /var/quarantine/* /home/victim/Downloads/*.exe /tmp/invoice.exe
+# No globs here: the calling user's shell expands them before sudo runs, and it
+# cannot read /var/quarantine (0700 root:wazuh) or a 0750 /home/victim, so
+# `sudo rm -rf /var/quarantine/*` removed nothing and still exited 0 (2026-10-16).
+sudo find /var/quarantine -mindepth 1 -delete
+sudo find /home/victim/Downloads -maxdepth 1 -name '*.exe' -delete
+sudo rm -f /tmp/invoice.exe
 sudo chage -d "$(date +%F)" victim          # containment expired the password
 sudo systemctl restart puc2-fw-baseline     # re-arm the egress filter that feeds rule 100102
 sudo /opt/puc2/inject_scenario.sh --arm      # every check OK = this endpoint is clean again
